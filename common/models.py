@@ -48,6 +48,8 @@ class CCTV(Base):
     name = Column(String(255), nullable=False)
     rtsp_url = Column(String(255), nullable=False)
     time = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    worker_id = Column(String(255), nullable=True)
+    claimed_at = Column(DateTime(timezone=True), nullable=True)
     intersection = relationship("Intersection", back_populates="cctvs")
     detections = relationship("Detection", back_populates="cctv", cascade="all, delete")
     regions = relationship("Region", back_populates="cctv", cascade="all, delete")

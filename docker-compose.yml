@@ -1,0 +1,73 @@
+services:
+  db:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-eyegila_root}
+      MYSQL_DATABASE: ${DB_NAME:-eyegila}
+      MYSQL_USER: ${DB_USER:-eyegila}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-eyegila}
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_ROOT_PASSWORD:-eyegila_root}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+
+  server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: mysql+mysqlconnector://${DB_USER:-eyegila}:${DB_PASSWORD:-eyegila}@db/${DB_NAME:-eyegila}
+      REDIS_URL: redis://redis:6379
+      TZ: ${TZ:-Asia/Manila}
+      SUPER_KEY: ${SUPER_KEY}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      UPLOAD_DIR: /app/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    ports:
+      - "8000:8000"
+
+  worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: mysql+mysqlconnector://${DB_USER:-eyegila}:${DB_PASSWORD:-eyegila}@db/${DB_NAME:-eyegila}
+      TZ: ${TZ:-Asia/Manila}
+    depends_on:
+      db:
+        condition: service_healthy
+    # Each replica claims one camera automatically.
+    # Set WORKER_REPLICAS to match the max cameras you expect.
+    deploy:
+      replicas: ${WORKER_REPLICAS:-5}
+
+  frontend:
+    build:
+      context: eyegila
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - server
+    ports:
+      - "80:80"
+
+volumes:
+  db_data:
+  redis_data:

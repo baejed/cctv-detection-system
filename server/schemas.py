@@ -82,6 +82,8 @@ class CCTVUpdate(BaseModel):
 class CCTVResponse(CCTVBase):
     id: int
     time: datetime
+    worker_id: Optional[str] = None
+    claimed_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
 
 
