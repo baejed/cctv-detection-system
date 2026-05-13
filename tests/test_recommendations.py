@@ -1,11 +1,13 @@
 """Tests for the warrant model inference + the /recommendations endpoints."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from server.ml.inference import load_warrant_model, predict_warrants
+from server.routers.recommendations import _compute_features_from_rows
 
 
 @pytest.fixture(scope="module")
@@ -67,11 +69,6 @@ def test_predict_warrants_output_shape(artifacts):
     assert list(probs.keys()) == artifacts.warrants
     for name, p in probs.items():
         assert 0.0 <= p <= 1.0, f"{name} probability out of [0,1]: {p}"
-
-
-from datetime import datetime, timezone
-
-from server.routers.recommendations import _compute_features_from_rows
 
 
 # Simple row objects (mimics SQLAlchemy Row) — name, value pairs the function reads.
@@ -170,10 +167,10 @@ def test_feature_extraction_no_data_returns_zeros():
     }
 
 
-def test_feature_extraction_phf_clamp_min():
-    """PHF is clamped to a minimum of 0.25 (the theoretical floor)."""
-    # Construct an extreme spike — impossible normally but tests the clamp.
-    # 100 vehicles all in minute 0 → 15-min bucket 0 = 100; total = 100; phf = 100/(4*100)=0.25
+def test_feature_extraction_phf_single_minute_spike():
+    """A single-minute spike yields the natural PHF floor of 0.25."""
+    # All 100 vehicles arrive in minute 0 → 15-min bucket 0 = 100; total = 100;
+    # phf = 100 / (4 * 100) = 0.25.  This is the mathematical minimum, not a clamp.
     rows = [_Row(1, "car", _ts(0), 100)]
     feats = _compute_features_from_rows(rows)
     assert feats["phf"] == pytest.approx(0.25)

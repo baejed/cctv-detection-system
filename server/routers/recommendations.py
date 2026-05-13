@@ -1,7 +1,7 @@
 # server/routers/recommendations.py
 from collections import defaultdict
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from common.database import SessionLocal, get_db
 from common import models
 from server.utils import get_current_user
@@ -13,23 +13,7 @@ from pydantic import BaseModel
 
 router = APIRouter(prefix="/recommendations", tags=["Recommendations"])
 
-# MUTCD simplified thresholds (urban, 2-lane)
-# Warrant 1: 8-hour vehicular volume -major ≥500 veh/hr OR minor ≥150 veh/hr for 8 hrs
-# Warrant 2: 4-hour vehicular volume -same thresholds but only 4 hrs needed
-# Warrant 4: pedestrian volume -≥100 pedestrians/hr for 4 hrs
-
-WARRANT_1_VEHICLE_THRESHOLD = 300   # total vehicles per hour at the intersection
-WARRANT_1_HOURS_NEEDED = 8
-
-WARRANT_2_VEHICLE_THRESHOLD = 300
-WARRANT_2_HOURS_NEEDED = 4
-
-WARRANT_4_PED_THRESHOLD = 50        # pedestrians per hour
-WARRANT_4_HOURS_NEEDED = 4
-
 PEDESTRIAN_TYPES = {"pedestrian", "person"}
-
-LOOKBACK_DAYS = 7
 
 
 class RecommendationResponse(BaseModel):
@@ -134,89 +118,50 @@ def _compute_features(intersection_id: int, db: Session) -> tuple[dict[str, floa
     return _compute_features_from_rows(rows), hour_start
 
 
-def _run_warrant_analysis(intersection_id: int, db: Session) -> dict:
-    """
-    Run MUTCD warrant analysis for a single intersection.
-    Queries aggregation_summaries for the past LOOKBACK_DAYS days.
-    Returns a dict with all warrant results.
-    """
-    now = datetime.now(timezone.utc)
-    since = now -timedelta(days=LOOKBACK_DAYS)
+def _analyze(
+    intersection_id: int,
+    artifacts,
+    db: Session,
+) -> dict:
+    """Compute features for the most recent hour, run the model, format result.
 
-    rows = db.execute(text("""
-        SELECT
-            DATE_TRUNC('hour', window_start) AS hour_bucket,
-            object_type,
-            SUM(count)::int AS total
-        FROM aggregation_summaries
-        WHERE intersection_id = :iid
-          AND window_start >= :since
-        GROUP BY DATE_TRUNC('hour', window_start), object_type
-        ORDER BY hour_bucket
-    """), {"iid": intersection_id, "since": since}).fetchall()
+    Returns a dict with all the columns of the Recommendation model.
+    """
+    from server.ml.inference import predict_warrants  # local import keeps top of file clean
 
-    if not rows:
+    features, hour_start = _compute_features(intersection_id, db)
+
+    if features["major_volume"] == 0 and features["minor_volume"] == 0 and features["peds"] == 0:
         return {
             "warrant_1_met": False, "warrant_1_confidence": 0.0,
             "warrant_2_met": False, "warrant_2_confidence": 0.0,
             "warrant_4_met": False, "warrant_4_confidence": 0.0,
-            "recommended": False,
-            "notes": f"No data found in the last {LOOKBACK_DAYS} days.",
+            "recommended":   False,
+            "notes": f"No data for hour starting {hour_start.isoformat()}.",
         }
 
-    # Aggregate by hour bucket
-    vehicles_by_hour: dict[datetime, int] = defaultdict(int)
-    peds_by_hour: dict[datetime, int] = defaultdict(int)
+    probs = predict_warrants(artifacts, features)
+    w1, w2, w4, rec = probs["w1"], probs["w2"], probs["w4"], probs["recommended"]
 
-    for r in rows:
-        if r.object_type in PEDESTRIAN_TYPES:
-            peds_by_hour[r.hour_bucket] += r.total
-        else:
-            vehicles_by_hour[r.hour_bucket] += r.total
-
-    # Count qualifying hours
-    w1_qualifying = sum(1 for v in vehicles_by_hour.values() if v >= WARRANT_1_VEHICLE_THRESHOLD)
-    w2_qualifying = sum(1 for v in vehicles_by_hour.values() if v >= WARRANT_2_VEHICLE_THRESHOLD)
-    w4_qualifying = sum(1 for v in peds_by_hour.values() if v >= WARRANT_4_PED_THRESHOLD)
-
-    w1_met = w1_qualifying >= WARRANT_1_HOURS_NEEDED
-    w2_met = w2_qualifying >= WARRANT_2_HOURS_NEEDED
-    w4_met = w4_qualifying >= WARRANT_4_HOURS_NEEDED
-
-    w1_conf = min(1.0, w1_qualifying / WARRANT_1_HOURS_NEEDED)
-    w2_conf = min(1.0, w2_qualifying / WARRANT_2_HOURS_NEEDED)
-    w4_conf = min(1.0, w4_qualifying / WARRANT_4_HOURS_NEEDED)
-
-    recommended = w1_met or w2_met or w4_met
-
-    warrants_met = []
-    if w1_met:
-        warrants_met.append("Warrant 1 (8-hr vehicular volume)")
-    if w2_met:
-        warrants_met.append("Warrant 2 (4-hr vehicular volume)")
-    if w4_met:
-        warrants_met.append("Warrant 4 (pedestrian volume)")
-
-    if recommended:
-        notes = f"Signal recommended. Met: {', '.join(warrants_met)}. Analysis covers {len(vehicles_by_hour)} hour-buckets over the last {LOOKBACK_DAYS} days."
-    else:
-        notes = (
-            f"Signal not warranted yet. "
-            f"Warrant 1: {w1_qualifying}/{WARRANT_1_HOURS_NEEDED} qualifying hours "
-            f"(need {WARRANT_1_VEHICLE_THRESHOLD} veh/hr). "
-            f"Warrant 4: {w4_qualifying}/{WARRANT_4_HOURS_NEEDED} qualifying hours "
-            f"(need {WARRANT_4_PED_THRESHOLD} ped/hr)."
-        )
+    notes = (
+        f"Hour starting {hour_start.isoformat()}. "
+        f"Major: {features['major_volume']} veh/hr, "
+        f"Minor: {features['minor_volume']} veh/hr, "
+        f"Peds: {features['peds']}/hr, "
+        f"VPM: {features['vpm']}, "
+        f"PHF: {features['phf']:.2f}. "
+        f"Probabilities — W1: {w1:.2f}, W2: {w2:.2f}, W4: {w4:.2f}."
+    )
 
     return {
-        "warrant_1_met": w1_met,
-        "warrant_1_confidence": round(w1_conf, 3),
-        "warrant_2_met": w2_met,
-        "warrant_2_confidence": round(w2_conf, 3),
-        "warrant_4_met": w4_met,
-        "warrant_4_confidence": round(w4_conf, 3),
-        "recommended": recommended,
-        "notes": notes,
+        "warrant_1_met":        w1 >= 0.5,
+        "warrant_1_confidence": round(float(w1), 4),
+        "warrant_2_met":        w2 >= 0.5,
+        "warrant_2_confidence": round(float(w2), 4),
+        "warrant_4_met":        w4 >= 0.5,
+        "warrant_4_confidence": round(float(w4), 4),
+        "recommended":          rec >= 0.5,
+        "notes":                notes,
     }
 
 
@@ -260,6 +205,7 @@ def list_recommendations(
 @router.post("/generate/{intersection_id}", response_model=RecommendationResponse)
 def generate_recommendation(
     intersection_id: int,
+    request: Request,
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[models.User, Depends(get_current_user)],
 ):
@@ -268,9 +214,8 @@ def generate_recommendation(
     if not intersection:
         raise HTTPException(status_code=404, detail="Intersection not found")
 
-    analysis = _run_warrant_analysis(intersection_id, db)
+    analysis = _analyze(intersection_id, request.app.state.warrant_artifacts, db)
 
-    # Upsert: delete old, insert new
     existing = (
         db.query(models.Recommendation)
         .filter(models.Recommendation.intersection_id == intersection_id)
@@ -280,10 +225,7 @@ def generate_recommendation(
         db.delete(existing)
         db.flush()
 
-    rec = models.Recommendation(
-        intersection_id=intersection_id,
-        **analysis,
-    )
+    rec = models.Recommendation(intersection_id=intersection_id, **analysis)
     db.add(rec)
     db.commit()
     db.refresh(rec)
@@ -306,6 +248,7 @@ def generate_recommendation(
 
 @router.post("/generate-all", response_model=list[RecommendationResponse])
 def generate_all_recommendations(
+    request: Request,
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[models.User, Depends(get_current_user)],
 ):
@@ -313,8 +256,10 @@ def generate_all_recommendations(
     intersections = db.query(models.Intersection).all()
     results = []
 
+    artifacts = request.app.state.warrant_artifacts
+
     for intersection in intersections:
-        analysis = _run_warrant_analysis(intersection.id, db)
+        analysis = _analyze(intersection.id, artifacts, db)
 
         existing = (
             db.query(models.Recommendation)
