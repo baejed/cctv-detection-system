@@ -1,6 +1,7 @@
 """Tests for the warrant model inference + the /recommendations endpoints."""
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -8,6 +9,8 @@ import pytest
 
 from server.ml.inference import load_warrant_model, predict_warrants
 from server.routers.recommendations import _compute_features_from_rows
+
+API_URL = os.getenv("API_URL", "http://localhost:8000")
 
 
 @pytest.fixture(scope="module")
@@ -174,3 +177,52 @@ def test_feature_extraction_phf_single_minute_spike():
     rows = [_Row(1, "car", _ts(0), 100)]
     feats = _compute_features_from_rows(rows)
     assert feats["phf"] == pytest.approx(0.25)
+
+
+# ─── Integration tests (require docker compose stack + seed data) ────────────
+
+
+def _first_intersection_id(auth) -> int:
+    """Helper — fetch the first intersection from the live API."""
+    r = auth.get(f"{API_URL}/intersections/")
+    assert r.status_code == 200, r.text
+    items = r.json()
+    assert items, "No intersections seeded — run scripts/fake_detections.py --seed first"
+    return items[0]["id"]
+
+
+def test_generate_recommendation_endpoint(auth):
+    """POST /recommendations/generate/{id} returns the expected schema."""
+    iid = _first_intersection_id(auth)
+    r = auth.post(f"{API_URL}/recommendations/generate/{iid}")
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    # Schema check
+    expected_keys = {
+        "id", "intersection_id", "intersection_name",
+        "warrant_1_met", "warrant_1_confidence",
+        "warrant_2_met", "warrant_2_confidence",
+        "warrant_4_met", "warrant_4_confidence",
+        "recommended", "notes", "generated_at",
+    }
+    assert set(body.keys()) == expected_keys
+
+    # Bool/float types
+    for k in ("warrant_1_met", "warrant_2_met", "warrant_4_met", "recommended"):
+        assert isinstance(body[k], bool)
+    for k in ("warrant_1_confidence", "warrant_2_confidence", "warrant_4_confidence"):
+        assert isinstance(body[k], (int, float))
+        assert 0.0 <= body[k] <= 1.0
+
+    # Notes is present and references the hour
+    assert body["notes"]
+
+
+def test_generate_all_endpoint(auth):
+    """POST /recommendations/generate-all returns one entry per intersection."""
+    r = auth.post(f"{API_URL}/recommendations/generate-all")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert isinstance(body, list)
+    assert len(body) >= 1
