@@ -67,3 +67,113 @@ def test_predict_warrants_output_shape(artifacts):
     assert list(probs.keys()) == artifacts.warrants
     for name, p in probs.items():
         assert 0.0 <= p <= 1.0, f"{name} probability out of [0,1]: {p}"
+
+
+from datetime import datetime, timezone
+
+from server.routers.recommendations import _compute_features_from_rows
+
+
+# Simple row objects (mimics SQLAlchemy Row) — name, value pairs the function reads.
+class _Row:
+    def __init__(self, street_id, object_type, window_start, count):
+        self.street_id = street_id
+        self.object_type = object_type
+        self.window_start = window_start
+        self.count = count
+
+
+def _ts(minute: int) -> datetime:
+    return datetime(2026, 5, 13, 14, minute, tzinfo=timezone.utc)
+
+
+def test_feature_extraction_major_minor():
+    """Busiest street is major; the rest summed is minor."""
+    rows = []
+    # Major street (id=1): 800 vehicles spread evenly
+    for m in range(60):
+        rows.append(_Row(1, "car", _ts(m), 800 // 60 + (1 if m < 800 % 60 else 0)))
+    # Minor street A (id=2): 200 vehicles
+    for m in range(60):
+        rows.append(_Row(2, "car", _ts(m), 200 // 60 + (1 if m < 200 % 60 else 0)))
+    # Minor street B (id=3): 100 vehicles
+    for m in range(60):
+        rows.append(_Row(3, "car", _ts(m), 100 // 60 + (1 if m < 100 % 60 else 0)))
+
+    feats = _compute_features_from_rows(rows)
+
+    assert feats["major_volume"] == 800
+    assert feats["minor_volume"] == 300  # 200 + 100
+
+
+def test_feature_extraction_peds_separated_from_vehicles():
+    """Pedestrian object types must not count toward major/minor volumes."""
+    rows = [
+        _Row(1, "car", _ts(0), 500),
+        _Row(1, "pedestrian", _ts(0), 40),
+        _Row(2, "person", _ts(0), 60),  # different street, still pedestrian
+    ]
+    feats = _compute_features_from_rows(rows)
+    assert feats["major_volume"] == 500
+    assert feats["minor_volume"] == 0
+    assert feats["peds"] == 100  # 40 + 60
+
+
+def test_feature_extraction_vpm_peak_per_minute():
+    """vpm is the highest per-minute vehicle count on the major street."""
+    rows = [
+        # Major street (id=1): 70 total, peak minute is 12
+        _Row(1, "car", _ts(0), 5),
+        _Row(1, "motorcycle", _ts(0), 3),  # same minute, same street → sum to 8
+        _Row(1, "car", _ts(1), 12),
+        _Row(1, "car", _ts(2), 7),
+        _Row(1, "car", _ts(3), 43),  # extra to keep street 1 as major (70 total)
+        # Minor street (id=2): 30 total in one minute; not major, so its 30 doesn't drive vpm
+        _Row(2, "car", _ts(0), 30),
+    ]
+    feats = _compute_features_from_rows(rows)
+    assert feats["major_volume"] == 70  # 8 + 12 + 7 + 43
+    assert feats["minor_volume"] == 30
+    assert feats["vpm"] == 43  # peak per-minute on major street (minute 3)
+
+
+def test_feature_extraction_phf_uniform_is_one():
+    """A perfectly uniform hour has PHF = 1.0."""
+    rows = [_Row(1, "car", _ts(m), 10) for m in range(60)]
+    feats = _compute_features_from_rows(rows)
+    assert feats["major_volume"] == 600
+    # 15-min buckets each = 150; peak15 = 150; phf = 600 / (4*150) = 1.0
+    assert feats["phf"] == pytest.approx(1.0)
+
+
+def test_feature_extraction_phf_spike_lower():
+    """A spike in one 15-min bucket lowers PHF."""
+    rows = []
+    # Minutes 0-14: 40/min = 600 in first quarter
+    for m in range(15):
+        rows.append(_Row(1, "car", _ts(m), 40))
+    # Minutes 15-59: 0
+    feats = _compute_features_from_rows(rows)
+    # major_volume = 600; peak15 = 600; phf = 600 / (4*600) = 0.25
+    assert feats["phf"] == pytest.approx(0.25)
+
+
+def test_feature_extraction_no_data_returns_zeros():
+    """Empty rows yields a zero-feature dict and phf defaults to 1.0."""
+    feats = _compute_features_from_rows([])
+    assert feats == {
+        "major_volume": 0,
+        "minor_volume": 0,
+        "peds": 0,
+        "vpm": 0,
+        "phf": 1.0,
+    }
+
+
+def test_feature_extraction_phf_clamp_min():
+    """PHF is clamped to a minimum of 0.25 (the theoretical floor)."""
+    # Construct an extreme spike — impossible normally but tests the clamp.
+    # 100 vehicles all in minute 0 → 15-min bucket 0 = 100; total = 100; phf = 100/(4*100)=0.25
+    rows = [_Row(1, "car", _ts(0), 100)]
+    feats = _compute_features_from_rows(rows)
+    assert feats["phf"] == pytest.approx(0.25)

@@ -1,4 +1,6 @@
 # server/routers/recommendations.py
+from collections import defaultdict
+
 from fastapi import APIRouter, Depends, HTTPException
 from common.database import SessionLocal, get_db
 from common import models
@@ -48,6 +50,90 @@ class RecommendationResponse(BaseModel):
         from_attributes = True
 
 
+def _compute_features_from_rows(rows) -> dict[str, float]:
+    """Pure function: from one hour of aggregation rows, compute the 5 features.
+
+    Each row must have attributes: street_id, object_type, window_start, count.
+
+    Returns a dict with major_volume, minor_volume, peds, vpm, phf.
+    """
+    # Per-street vehicle totals (excludes pedestrians) — used to pick major street
+    street_veh: dict[int, int] = defaultdict(int)
+    # Pedestrian total across all streets / directions
+    peds_total = 0
+    # Per-(street, minute) vehicle counts — for vpm and phf on the major street
+    per_minute: dict[tuple[int, int], int] = defaultdict(int)
+
+    for r in rows:
+        if r.object_type in PEDESTRIAN_TYPES:
+            peds_total += r.count
+            continue
+        street_veh[r.street_id] += r.count
+        per_minute[(r.street_id, r.window_start.minute)] += r.count
+
+    if not street_veh:
+        return {
+            "major_volume": 0,
+            "minor_volume": 0,
+            "peds": peds_total,
+            "vpm": 0,
+            "phf": 1.0,
+        }
+
+    major_id = max(street_veh, key=street_veh.get)
+    major_volume = street_veh[major_id]
+    minor_volume = sum(v for sid, v in street_veh.items() if sid != major_id)
+
+    # vpm = max per-minute total for the major street
+    major_minute_counts = [c for (sid, _m), c in per_minute.items() if sid == major_id]
+    vpm = max(major_minute_counts) if major_minute_counts else 0
+
+    # phf = hour_volume / (4 * peak_15min_volume) on the major street, clamped to [0.25, 1.0]
+    if major_volume == 0:
+        phf = 1.0
+    else:
+        bucket_15: dict[int, int] = defaultdict(int)
+        for (sid, minute), c in per_minute.items():
+            if sid != major_id:
+                continue
+            bucket_15[minute // 15] += c
+        peak_15 = max(bucket_15.values()) if bucket_15 else 0
+        if peak_15 == 0:
+            phf = 1.0
+        else:
+            phf = major_volume / (4 * peak_15)
+            phf = max(0.25, min(1.0, phf))
+
+    return {
+        "major_volume": int(major_volume),
+        "minor_volume": int(minor_volume),
+        "peds": int(peds_total),
+        "vpm": int(vpm),
+        "phf": float(phf),
+    }
+
+
+def _compute_features(intersection_id: int, db: Session) -> tuple[dict[str, float], datetime]:
+    """Query aggregation_summaries for the most-recent-complete-hour and compute features.
+
+    Returns (features_dict, hour_start_utc).
+    """
+    now = datetime.now(timezone.utc)
+    hour_end = now.replace(minute=0, second=0, microsecond=0)
+    hour_start = hour_end - timedelta(hours=1)
+
+    rows = db.execute(text("""
+        SELECT street_id, object_type, window_start, SUM(count)::int AS count
+        FROM aggregation_summaries
+        WHERE intersection_id = :iid
+          AND window_start >= :start
+          AND window_start <  :end
+        GROUP BY street_id, object_type, window_start
+    """), {"iid": intersection_id, "start": hour_start, "end": hour_end}).fetchall()
+
+    return _compute_features_from_rows(rows), hour_start
+
+
 def _run_warrant_analysis(intersection_id: int, db: Session) -> dict:
     """
     Run MUTCD warrant analysis for a single intersection.
@@ -79,7 +165,6 @@ def _run_warrant_analysis(intersection_id: int, db: Session) -> dict:
         }
 
     # Aggregate by hour bucket
-    from collections import defaultdict
     vehicles_by_hour: dict[datetime, int] = defaultdict(int)
     peds_by_hour: dict[datetime, int] = defaultdict(int)
 
