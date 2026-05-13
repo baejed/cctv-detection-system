@@ -31,6 +31,13 @@ load_dotenv()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
+    from pathlib import Path
+    from server.ml.inference import load_warrant_model
+    ml_dir = Path(__file__).resolve().parent / "ml"
+    app.state.warrant_artifacts = load_warrant_model(
+        ml_dir / "warrant_model.pt",
+        ml_dir / "warrant_scaler.pkl",
+    )
     task = asyncio.create_task(aggregation_pusher())
     yield
     task.cancel()
