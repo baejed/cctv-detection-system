@@ -1,4 +1,5 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { SetupGuide } from '@/components/SetupGuide';
 import { useAuth } from '@/hooks/useAuth';
 import { useSSE, type SSEStatus } from '@/hooks/useSSE';
 import type { AggregationRow } from '@/types';
@@ -139,6 +140,7 @@ export function Layout() {
           </main>
         </div>
       </div>
+      <SetupGuide />
     </SidebarProvider>
   );
 }

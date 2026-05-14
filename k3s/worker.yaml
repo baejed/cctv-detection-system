@@ -1,13 +1,13 @@
-# RTSP detection worker pool -each replica claims one camera.
-# Set replicas to the number of active cameras.
-# Requires NVIDIA Container Toolkit + device plugin on the node (see nvidia-device-plugin.yaml).
+# RTSP detection worker — each replica claims CAMERAS_PER_WORKER cameras.
+# For a single GPU node set replicas: 1 and tune CAMERAS_PER_WORKER.
+# Requires NVIDIA Container Toolkit + device plugin (see nvidia-device-plugin.yaml).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: worker
   namespace: eyegila
 spec:
-  replicas: 4
+  replicas: 1
   selector:
     matchLabels:
       app: worker
@@ -26,16 +26,44 @@ spec:
                 secretKeyRef:
                   name: eyegila-secret
                   key: DATABASE_URL
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: eyegila-secret
+                  key: REDIS_URL
+            - name: FERNET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: eyegila-secret
+                  key: FERNET_KEY
+            - name: CAMERAS_PER_WORKER
+              value: "16"
+            - name: INFERENCE_EVERY_N
+              value: "1"
+            - name: TRT_CACHE_DIR
+              value: /app/trt_cache
+          volumeMounts:
+            - name: trt-cache
+              mountPath: /app/trt_cache
+          livenessProbe:
+            exec:
+              command: ["test", "-f", "/tmp/worker-alive"]
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            failureThreshold: 3
           resources:
             requests:
               memory: 2Gi
               cpu: 1
               nvidia.com/gpu: "1"
             limits:
-              memory: 4Gi
+              memory: 6Gi
               cpu: 2
               nvidia.com/gpu: "1"
-      # Only schedule on nodes that have a GPU
+      volumes:
+        - name: trt-cache
+          persistentVolumeClaim:
+            claimName: trt-cache-pvc
       nodeSelector:
         nvidia.com/gpu.present: "true"
       tolerations:

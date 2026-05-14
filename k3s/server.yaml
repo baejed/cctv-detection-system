@@ -43,8 +43,26 @@ spec:
                 secretKeyRef:
                   name: eyegila-secret
                   key: SUPER_KEY
+            - name: FERNET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: eyegila-secret
+                  key: FERNET_KEY
             - name: UPLOAD_DIR
               value: /app/uploads
+            - name: CORS_ORIGINS
+              valueFrom:
+                secretKeyRef:
+                  name: eyegila-secret
+                  key: CORS_ORIGINS
+            - name: TZ
+              value: Asia/Manila
+            - name: TRUST_PROXY_HEADERS
+              value: "true"
+            - name: SESSION_TTL_HOURS
+              value: "24"
+            - name: MAX_UPLOAD_MB
+              value: "500"
           ports:
             - containerPort: 8000
           volumeMounts:
@@ -52,10 +70,18 @@ spec:
               mountPath: /app/uploads
           readinessProbe:
             httpGet:
-              path: /docs
+              path: /health
               port: 8000
             initialDelaySeconds: 10
             periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
           resources:
             requests:
               memory: 256Mi
@@ -65,7 +91,8 @@ spec:
               cpu: 1
       volumes:
         - name: uploads
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: uploads-pvc
 ---
 apiVersion: v1
 kind: Service

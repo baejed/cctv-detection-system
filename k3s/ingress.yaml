@@ -1,0 +1,32 @@
+# Ingress — routes all traffic through a single IP.
+# Assumes k3s default Traefik ingress controller.
+# Replace eyegila.local with your actual domain or IP.
+#
+# To use an IP directly (no DNS): set host to "" and use path-based routing only,
+# or add "eyegila.local" to /etc/hosts on client machines pointing to the node IP.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: eyegila-ingress
+  namespace: eyegila
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+spec:
+  rules:
+    - host: eyegila.local
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: server
+                port:
+                  number: 8000
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80

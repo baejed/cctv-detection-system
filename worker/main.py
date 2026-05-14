@@ -18,22 +18,24 @@ from ultralytics import YOLO
 
 from common import models
 from common.database import Base, SessionLocal, engine
+from common.geometry import is_point_in_polygon
 from worker.claim import try_claim_camera, release_camera, verify_claim
 from worker.heartbeat import HeartbeatThread
-from worker.stream import open_stream, reconnect_stream, resolve_rtsp_url
+from worker.stream import open_stream, reconnect_stream, resolve_rtsp_url, _stream_is_live
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 _redis = redis_lib.from_url(REDIS_URL)
 
-CAMERAS_PER_WORKER  = int(os.getenv("CAMERAS_PER_WORKER", "16"))
-INFERENCE_EVERY_N   = int(os.getenv("INFERENCE_EVERY_N", "1"))   # process 1-in-N frames for DB writes
-PRUNE_INTERVAL_SEC  = 10
-TRACK_MAX_AGE_SEC   = 30
-FPS_SAMPLE_INTERVAL = 30
-FLUSH_INTERVAL_SEC  = 0.3
-MAX_BUFFER_SIZE     = 1000
-CLAIM_CHECK_FRAMES  = 100
-RECLAIM_INTERVAL    = 5.0   # seconds between slot-fill attempts
+CAMERAS_PER_WORKER    = int(os.getenv("CAMERAS_PER_WORKER", "16"))
+INFERENCE_EVERY_N     = int(os.getenv("INFERENCE_EVERY_N", "1"))   # process 1-in-N frames for DB writes
+PRUNE_INTERVAL_SEC    = 10
+TRACK_MAX_AGE_SEC     = 30
+FPS_SAMPLE_INTERVAL   = 30
+FLUSH_INTERVAL_SEC    = 0.3
+MAX_BUFFER_SIZE       = 1000
+CLAIM_CHECK_FRAMES    = 100
+RECLAIM_INTERVAL      = 5.0   # seconds between slot-fill attempts
+REGION_REFRESH_SEC    = 60.0  # re-read regions from DB in case polygons changed
 
 _DUMMY_FRAME = np.zeros((480, 854, 3), dtype=np.uint8)
 
@@ -65,7 +67,9 @@ class CameraSlot:
     last_prune_ts: float = field(default_factory=time.time)
     fps_timer_start: float = field(default_factory=time.time)
     claim_lost: bool = False
-    last_frame: Optional[np.ndarray] = None   # held for fixed-order batching
+    last_frame: Optional[np.ndarray] = None
+    last_region_refresh_ts: float = field(default_factory=time.time)
+    saved_trackers: Optional[list] = None   # per-camera ByteTrack state
 
 
 def _camera_reader(
@@ -78,7 +82,8 @@ def _camera_reader(
     """Read frames from one RTSP stream, always keeping the queue fresh."""
     db = SessionLocal()
     cap = open_stream(rtsp_url, args.debug)
-    if not cap.isOpened():
+    if not _stream_is_live(cap):
+        cap.release()
         cap = reconnect_stream(rtsp_url, args.debug, db, cctv_id)
     try:
         while not stop_event.is_set():
@@ -192,34 +197,47 @@ def main() -> None:
                     slots.append(_start_slot(cctv, version, args, db))
                 last_claim_attempt = now
 
-            # Build a fixed-order batch — every slot occupies the same position
-            # each cycle so model.track(persist=True) keeps tracker state aligned.
-            # Slots without a new frame reuse their last frame (or a dummy until
-            # the first frame arrives); their results are skipped for DB writes.
-            frames: list[np.ndarray] = []
-            has_new: list[bool] = []
+            # Process each camera independently — TRT engine has static batch=1,
+            # so we call model.track once per slot and swap per-camera ByteTrack
+            # state in/out so track IDs don't collide across cameras.
+            any_new = False
+            target_h, target_w = _DUMMY_FRAME.shape[:2]
+
             for slot in slots:
                 try:
-                    f = slot.frame_q.get_nowait()
-                    slot.last_frame = f
-                    has_new.append(True)
+                    frame = slot.frame_q.get_nowait()
+                    slot.last_frame = frame
                 except queue.Empty:
-                    f = slot.last_frame if slot.last_frame is not None else _DUMMY_FRAME
-                    has_new.append(False)
-                frames.append(f)
+                    continue  # no new frame this cycle for this camera
 
-            if not any(has_new):
-                time.sleep(0.01)
-                continue
+                any_new = True
+                Path("/tmp/worker-alive").touch()
 
-            Path("/tmp/worker-alive").touch()
+                # Normalize to model input size
+                if frame.shape[:2] != (target_h, target_w):
+                    frame = cv2.resize(frame, (target_w, target_h))
 
-            # single batched GPU call WITH ByteTrack tracking
-            results_list = model.track(frames, persist=True, verbose=args.verbose)
+                # Swap in this camera's tracker state so track IDs don't bleed
+                # across cameras (each slot keeps its own ByteTrack instance).
+                #
+                # ultralytics on_predict_start skips tracker creation when
+                # (hasattr(predictor, "trackers") AND persist=True).
+                # So: if we HAVE saved state → set the attribute (creation skipped, state reused).
+                #     if this is the FIRST call → DELETE the attribute so on_predict_start
+                #     creates a fresh tracker for this camera.
+                predictor = getattr(model, 'predictor', None)
+                if predictor is not None:
+                    if slot.saved_trackers is not None:
+                        predictor.trackers = slot.saved_trackers
+                    elif hasattr(predictor, 'trackers'):
+                        del predictor.trackers
 
-            for slot, frame, results, is_new in zip(slots, frames, results_list, has_new):
-                if not is_new:
-                    continue
+                results = model.track([frame], persist=True, verbose=args.verbose)[0]
+
+                # Save updated tracker state for next cycle
+                predictor = getattr(model, 'predictor', None)
+                if predictor is not None and hasattr(predictor, 'trackers') and predictor.trackers:
+                    slot.saved_trackers = list(predictor.trackers)
 
                 slot.frame_count += 1
                 frame_h, frame_w = frame.shape[:2]
@@ -289,10 +307,22 @@ def main() -> None:
                     prune_tracks(slot.track_states)
                     slot.last_prune_ts = now
 
+                # refresh region polygons in case they changed in the DB
+                if now - slot.last_region_refresh_ts >= REGION_REFRESH_SEC:
+                    _rdb = SessionLocal()
+                    try:
+                        slot.regions = initialize_regions(_rdb, slot.cctv_id)
+                    finally:
+                        _rdb.close()
+                    slot.last_region_refresh_ts = now
+
                 # verify claim fencing token
                 if slot.frame_count % CLAIM_CHECK_FRAMES == 0:
                     if not verify_claim(db, slot.cctv_id, slot.claim_version):
                         slot.claim_lost = True
+
+            if not any_new:
+                time.sleep(0.01)
 
             if args.show and cv2.waitKey(1) & 0xFF == ord("q"):
                 break
@@ -427,21 +457,6 @@ def prune_tracks(track_states: dict, max_age_seconds: float = TRACK_MAX_AGE_SEC)
     stale = [tid for tid, s in track_states.items() if now - s.last_seen_ts > max_age_seconds]
     for tid in stale:
         del track_states[tid]
-
-
-def is_point_in_polygon(point: tuple, polygon: list) -> bool:
-    if len(polygon) < 3:
-        return False
-    x, y = point
-    inside = False
-    n = len(polygon)
-    for i in range(n):
-        x1, y1 = polygon[i]
-        x2, y2 = polygon[(i + 1) % n]
-        if (y1 > y) != (y2 > y):
-            if x < (x2 - x1) * (y - y1) / (y2 - y1) + x1:
-                inside = not inside
-    return inside
 
 
 def draw_regions(frame: np.ndarray, regions: list, frame_w: int, frame_h: int) -> np.ndarray:

@@ -33,11 +33,22 @@ spec:
                 secretKeyRef:
                   name: eyegila-secret
                   key: VAPID_PRIVATE_KEY
+            - name: FERNET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: eyegila-secret
+                  key: FERNET_KEY
             - name: UPLOAD_DIR
               value: /app/uploads
           volumeMounts:
             - name: uploads
               mountPath: /app/uploads
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "rq info --url $REDIS_URL | grep -q 'video'"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
           resources:
             requests:
               memory: 1Gi
@@ -47,4 +58,5 @@ spec:
               cpu: 2
       volumes:
         - name: uploads
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: uploads-pvc

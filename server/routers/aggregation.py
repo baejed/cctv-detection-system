@@ -69,9 +69,14 @@ async def stream_aggregation(token: str = Query(...)):
     connected_clients.append(queue)
 
     async def event_generator():
+        ticks = 0
         try:
             while True:
                 data = await queue.get()
+                ticks += 1
+                # Re-validate session every 60 ticks (~5 min at 5 s poll interval)
+                if ticks % 60 == 0 and not get_user_from_token(token):
+                    break
                 yield f"data: {data}\n\n"
         except asyncio.CancelledError:
             pass

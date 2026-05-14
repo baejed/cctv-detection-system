@@ -1,0 +1,45 @@
+# Configure where alert notifications are sent.
+# Uncomment and fill in the block that matches your setup.
+# Grafana supports email, Slack, Telegram, webhook, PagerDuty, and more.
+#
+# After editing this file, restart Grafana:
+#   docker compose restart grafana
+apiVersion: 1
+
+# Uncomment and configure a receiver, then uncomment the policies section below.
+# contactPoints:
+#   - orgId: 1
+#     name: eyegila-default
+#     receivers:
+#       # ── Webhook (generic — works with n8n, Make, Zapier, etc.) ──────────────
+#       # - uid: webhook-receiver
+#       #   type: webhook
+#       #   settings:
+#       #     url: https://your-webhook-url
+#       #     httpMethod: POST
+#
+#       # ── Email ────────────────────────────────────────────────────────────────
+#       # Requires GF_SMTP_* env vars in docker-compose:
+#       #   GF_SMTP_ENABLED=true
+#       #   GF_SMTP_HOST=smtp.gmail.com:587
+#       #   GF_SMTP_USER=you@gmail.com
+#       #   GF_SMTP_PASSWORD=your-app-password
+#       # - uid: email-receiver
+#       #   type: email
+#       #   settings:
+#       #     addresses: oncall@yourteam.com
+#
+#       # ── Telegram ─────────────────────────────────────────────────────────────
+#       # - uid: telegram-receiver
+#       #   type: telegram
+#       #   settings:
+#       #     bottoken: your-bot-token
+#       #     chatid: "your-chat-id"
+
+# policies:
+#   - orgId: 1
+#     receiver: eyegila-default
+#     group_by: ["alertname", "cctv_name"]
+#     group_wait: 30s
+#     group_interval: 5m
+#     repeat_interval: 4h

@@ -10,12 +10,24 @@ class User(Base):
     id       = Column(Integer, primary_key=True, autoincrement=True)
     username = Column(String(255), nullable=False, unique=True)
     hash     = Column(String(255), nullable=False)
-    session  = Column(String(255), nullable=True)
     role     = Column(String(50),  nullable=False, default="viewer")
     time     = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
+    sessions           = relationship("UserSession",      back_populates="user", cascade="all, delete")
     uploaded_videos    = relationship("Video",            back_populates="uploader",          foreign_keys="Video.uploaded_by")
     push_subscriptions = relationship("PushSubscription", back_populates="user", cascade="all, delete")
+
+
+class UserSession(Base):
+    __tablename__ = "user_sessions"
+
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    user_id    = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    token_hash = Column(String(64), nullable=False, unique=True, index=True)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    user = relationship("User", back_populates="sessions")
 
 
 class Log(Base):

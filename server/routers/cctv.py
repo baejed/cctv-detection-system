@@ -4,9 +4,10 @@ import select
 import re
 from server.schemas import CCTVBase, CCTVCreate, CCTVUpdate, CCTVResponse
 from server.utils import log_and_commit, get_current_user
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from common.models import User, CCTV
 from common.database import get_db
+from server.rate_limit import limiter
 from sqlalchemy.orm import Session
 from typing import Annotated
 from pydantic import BaseModel
@@ -163,7 +164,9 @@ def get_cctvs(
 
 
 @router.get("/discover", response_model=list[DiscoveredCamera])
+@limiter.limit("6/minute")
 def discover_cameras(
+    request: Request,
     user: Annotated[User, Depends(get_current_user)],
 ):
     """

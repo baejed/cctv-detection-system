@@ -36,24 +36,8 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r},${g},${b},${alpha})`;
 }
 
-const WS_BASE  = import.meta.env.DEV ? 'ws://localhost:8000'  : `ws://${window.location.host}/api`;
-const SSE_BASE = import.meta.env.DEV ? 'http://localhost:8000' : '/api';
+const WS_BASE = import.meta.env.DEV ? 'ws://localhost:8000' : `ws://${window.location.host}/api`;
 
-interface BoxPayload {
-  ts: number;
-  boxes: Array<{
-    track_id: number;
-    object_type: string;
-    confidence: number;
-    x1: number; y1: number; x2: number; y2: number;
-  }>;
-}
-
-const TYPE_COLORS: Record<string, string> = {
-  car: '#16a34a', motorcycle: '#0369a1', tricycle: '#d97706',
-  truck: '#dc2626', pedicab: '#7c3aed', pedestrian: '#0891b2', person: '#0891b2',
-};
-const DEFAULT_BOX_COLOR = '#64748b';
 
 // ── Inline editable street row ────────────────────────────────────────────────
 function StreetRow({
@@ -153,8 +137,6 @@ export function CameraDetailPage() {
   const [selectedDirection, setSelectedDirection] = useState<string>('unknown');
   const [saving, setSaving] = useState(false);
 
-  // Live box overlay from SSE
-  const boxesRef = useRef<BoxPayload['boxes']>([]);
   const redrawRef = useRef<() => void>(() => {});
 
   // Intersection inline edit
@@ -214,11 +196,11 @@ export function CameraDetailPage() {
     return () => ro.disconnect();
   }, [loading]);
 
-  // WebSocket → video canvas (clean frames, boxes drawn client-side via SSE)
+  // WebSocket → video canvas (server burns boxes onto frames before sending)
   useEffect(() => {
     if (loading) return;
     setWsStatus('connecting');
-    const ws = new WebSocket(`${WS_BASE}/cctvs/${cctv_id}/ws?token=${token ?? ''}&overlay=false`);
+    const ws = new WebSocket(`${WS_BASE}/cctvs/${cctv_id}/ws?token=${token ?? ''}&overlay=true`);
     ws.binaryType = 'arraybuffer';
     ws.onopen  = () => setWsStatus('live');
     ws.onerror = () => setWsStatus('error');
@@ -250,21 +232,6 @@ export function CameraDetailPage() {
     return () => ws.close();
   }, [cctv_id, loading]);
 
-  // SSE → bounding box overlay
-  useEffect(() => {
-    if (loading) return;
-    const es = new EventSource(`${SSE_BASE}/cctvs/${cctv_id}/boxes/stream?token=${token ?? ''}`);
-    es.onmessage = (e) => {
-      try {
-        const data: BoxPayload = JSON.parse(e.data);
-        boxesRef.current = data.boxes ?? [];
-        redrawRef.current();
-      } catch {}
-    };
-    es.onerror = () => { /* silently ignore — worker may not be running */ };
-    return () => es.close();
-  }, [cctv_id, loading]);
-
   // Sync canvas internal resolution to container size, scaled by devicePixelRatio for sharp rendering
   useEffect(() => {
     if (!canvasSize) return;
@@ -275,7 +242,7 @@ export function CameraDetailPage() {
     if (oc) { oc.width = canvasSize.w * dpr; oc.height = canvasSize.h * dpr; }
   }, [canvasSize]);
 
-  // Redraw region + box overlay
+  // Redraw region overlay (boxes are now burned into video frames server-side)
   const redrawOverlay = useCallback(() => {
     const canvas = overlayCanvasRef.current;
     if (!canvas || !canvasSize) return;
@@ -285,24 +252,6 @@ export function CameraDetailPage() {
     const { w, h } = canvasSize;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
-
-    // bounding boxes from SSE (drawn first so regions render on top)
-    for (const box of boxesRef.current) {
-      const bx1 = box.x1 * w, by1 = box.y1 * h;
-      const bx2 = box.x2 * w, by2 = box.y2 * h;
-      const color = TYPE_COLORS[box.object_type] ?? DEFAULT_BOX_COLOR;
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 2;
-      ctx.strokeRect(bx1, by1, bx2 - bx1, by2 - by1);
-      const label = `${box.object_type} ${Math.round(box.confidence * 100)}%`;
-      ctx.font = '11px monospace';
-      const tw = ctx.measureText(label).width;
-      const labelY = by1 > 16 ? by1 - 4 : by2 + 14;
-      ctx.fillStyle = color;
-      ctx.fillRect(bx1, labelY - 12, tw + 6, 14);
-      ctx.fillStyle = '#fff';
-      ctx.fillText(label, bx1 + 3, labelY - 2);
-    }
 
     // saved region polygons
     for (const region of regions) {

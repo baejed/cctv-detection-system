@@ -1,0 +1,17 @@
+.venv
+.git
+.pytest_cache
+__pycache__
+**/__pycache__
+**/*.pyc
+**/*.pyo
+*.egg-info
+.env
+.env.*
+node_modules
+eyegila/node_modules
+eyegila/.venv
+scripts/.venv
+tests/__pycache__
+.claude
+skills-lock.json

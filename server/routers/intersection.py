@@ -31,6 +31,7 @@ def create_intersection(
 @router.get("/", response_model=list[IntersectionResponse])
 def get_intersections(
     db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
 ) -> list[IntersectionResponse]:
     return db.query(Intersection).all()
 
@@ -39,6 +40,7 @@ def get_intersections(
 def get_intersection(
     intersection_id: int,
     db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
 ) -> IntersectionResponse:
     intersection = db.get(Intersection, intersection_id)
 

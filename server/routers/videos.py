@@ -1,11 +1,10 @@
 import os
-import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -14,6 +13,7 @@ from sqlalchemy.orm import Session
 from common.database import get_db
 from common import models
 from server.utils import get_current_user
+from server.rate_limit import limiter
 from worker.queue import video_queue
 
 router = APIRouter(tags=["Videos & Push"])
@@ -22,6 +22,9 @@ UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "uploads"))
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY", "")
+
+_MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_MB", "500")) * 1024 * 1024
+_ALLOWED_SUFFIXES = {".mp4", ".avi", ".mov", ".mkv", ".m4v", ".wmv", ".flv", ".webm"}
 
 class PushSubscribePayload(BaseModel):
     endpoint: str
@@ -37,7 +40,9 @@ class PushUnsubscribePayload(BaseModel):
 # ---------------------------------------------------------------------------
 
 @router.post("/videos/upload")
+@limiter.limit("20/minute")
 async def upload_video(
+    request:         Request,
     file:            UploadFile      = File(...),
     intersection_id: int | None      = Form(None),
     recorded_at:     str             = Form(None),
@@ -50,6 +55,10 @@ async def upload_video(
     intersection_id is optional - omit to analyse the video standalone.
     The browser can close - processing continues in the background.
     """
+    suffix = Path(file.filename or "upload").suffix.lower() or ".mp4"
+    if suffix not in _ALLOWED_SUFFIXES:
+        raise HTTPException(status_code=422, detail=f"Unsupported file type '{suffix}'. Allowed: {', '.join(sorted(_ALLOWED_SUFFIXES))}")
+
     if intersection_id is not None:
         intersection = db.query(models.Intersection).filter(
             models.Intersection.id == intersection_id
@@ -57,15 +66,30 @@ async def upload_video(
         if not intersection:
             raise HTTPException(status_code=404, detail="Intersection not found")
 
-    suffix   = Path(file.filename or "upload").suffix or ".mp4"
     unique   = uuid.uuid4().hex
     filename = f"{unique}{suffix}"
     filepath = UPLOAD_DIR / filename
 
     try:
+        written = 0
         with filepath.open("wb") as f:
-            shutil.copyfileobj(file.file, f)
+            while True:
+                chunk = await file.read(65_536)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > _MAX_UPLOAD_BYTES:
+                    f.close()
+                    filepath.unlink(missing_ok=True)
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File exceeds maximum allowed size of {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB",
+                    )
+                f.write(chunk)
+    except HTTPException:
+        raise
     except Exception as e:
+        filepath.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail=f"File save failed: {e}")
 
     recorded_at_dt = None

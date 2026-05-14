@@ -21,6 +21,7 @@ from ultralytics import YOLO
 
 from common.database import SessionLocal
 from common import models
+from common.geometry import is_point_in_polygon
 
 VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY", "")
 VAPID_CLAIMS = {"sub": "mailto:admin@eyegila.local"}
@@ -105,22 +106,6 @@ def load_regions(db: Session, cctv_id: int) -> list[dict]:
             "region_points": [{"x": p.x, "y": p.y} for p in r.region_points],
         })
     return regions
-
-
-def is_point_in_polygon(point: tuple, polygon: list) -> bool:
-    if len(polygon) < 3:
-        return False
-    x, y = point
-    inside = False
-    n = len(polygon)
-    for i in range(n):
-        x1, y1 = polygon[i]
-        x2, y2 = polygon[(i + 1) % n]
-        if (y1 > y) != (y2 > y):
-            x_intersect = (x2 - x1) * (y - y1) / (y2 - y1) + x1
-            if x < x_intersect:
-                inside = not inside
-    return inside
 
 
 # ---------------------------------------------------------------------------

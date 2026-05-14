@@ -1,0 +1,28 @@
+# Shared persistent volume for uploaded videos.
+# server and rq-worker both mount this at /app/uploads.
+# Uses ReadWriteMany so both pods can access it simultaneously.
+# On a single-node k3s cluster, local-path provisioner only supports RWO —
+# in that case change to ReadWriteOnce and ensure server and rq-worker land on the same node.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: uploads-pvc
+  namespace: eyegila
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: trt-cache-pvc
+  namespace: eyegila
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi

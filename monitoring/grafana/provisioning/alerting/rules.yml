@@ -1,0 +1,112 @@
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: eyegila-ops
+    folder: EyeGila
+    interval: 1m
+    rules:
+
+      # Fires when a claimed camera has reported 0 FPS for 5 minutes.
+      # A camera at 0 FPS while claimed means the RTSP stream is dead
+      # but the worker hasn't released the claim yet (stuck reconnecting).
+      - uid: camera-dead-stream
+        title: "Camera Dead Stream"
+        condition: C
+        for: 5m
+        annotations:
+          summary: "Camera {{ $labels.cctv_name }} is at 0 FPS"
+          description: >
+            Camera {{ $labels.cctv_name }} (id={{ $labels.cctv_id }}) has been
+            claimed by a worker but reporting 0 FPS for more than 5 minutes.
+            The RTSP stream may be down.
+        labels:
+          severity: warning
+        data:
+          - refId: A
+            datasourceUid: PBFA97CFB590B2093
+            model:
+              expr: worker_camera_fps
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: PBFA97CFB590B2093
+            model:
+              expr: worker_camera_claimed
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+          - refId: C
+            datasourceUid: "__expr__"
+            model:
+              type: math
+              expression: "$A == 0 && $B == 1"
+              refId: C
+
+      # Fires when the API error rate exceeds 5% over a 5-minute window.
+      - uid: api-high-error-rate
+        title: "API High Error Rate"
+        condition: C
+        for: 5m
+        annotations:
+          summary: "API error rate is above 5%"
+          description: >
+            More than 5% of API requests are returning 5xx errors.
+            Check server logs: docker compose logs server --tail=100
+        labels:
+          severity: critical
+        data:
+          - refId: A
+            datasourceUid: PBFA97CFB590B2093
+            model:
+              expr: sum(rate(http_requests_total{status_code=~"5.."}[5m]))
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: PBFA97CFB590B2093
+            model:
+              expr: sum(rate(http_requests_total[5m]))
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+          - refId: C
+            datasourceUid: "__expr__"
+            model:
+              type: math
+              expression: "($A / $B) * 100 > 5"
+              refId: C
+
+      # Fires when the server stops responding to Prometheus scrapes.
+      - uid: server-down
+        title: "EyeGila Server Down"
+        condition: C
+        for: 1m
+        annotations:
+          summary: "EyeGila API server is unreachable"
+          description: >
+            Prometheus cannot scrape the server metrics endpoint.
+            The server container may have crashed.
+            Check: docker compose ps server
+        labels:
+          severity: critical
+        data:
+          - refId: A
+            datasourceUid: PBFA97CFB590B2093
+            model:
+              expr: up{job="eyegila-api"}
+              instant: true
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: C
+            datasourceUid: "__expr__"
+            model:
+              type: math
+              expression: "$A == 0"
+              refId: C

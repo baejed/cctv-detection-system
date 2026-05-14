@@ -4,13 +4,13 @@ import threading
 import time
 
 import cv2
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import Session
-from typing import Annotated
 
-from common.database import SessionLocal, get_db
+from common.database import SessionLocal
 from common import models
+from common.crypto import decrypt_rtsp_url
+from server.utils import get_user_from_token
 
 router = APIRouter(prefix="/cctvs", tags=["MJPEG"])
 
@@ -59,16 +59,21 @@ def _set_viewed(cctv_id: int, value: bool):
 @router.get("/{cctv_id}/stream")
 async def mjpeg_stream(
     cctv_id: int,
-    db: Annotated[Session, Depends(get_db)],
+    token: str = Query(...),
 ):
-    cctv = db.get(models.CCTV, cctv_id)
-    if not cctv:
-        raise HTTPException(status_code=404, detail="Camera not found")
+    if not get_user_from_token(token):
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
-    rtsp_url = cctv.rtsp_url
-    cctv.is_being_viewed = True
-    db.commit()
-    db.close()
+    db = SessionLocal()
+    try:
+        cctv = db.get(models.CCTV, cctv_id)
+        if not cctv:
+            raise HTTPException(status_code=404, detail="Camera not found")
+        rtsp_url = decrypt_rtsp_url(cctv.rtsp_url)
+        cctv.is_being_viewed = True
+        db.commit()
+    finally:
+        db.close()
 
     frame_q: stdlib_queue.Queue = stdlib_queue.Queue(maxsize=2)
     stop_event = threading.Event()

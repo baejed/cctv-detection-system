@@ -1,11 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { intersectionsApi } from '@/services/intersections';
 import { streetsApi } from '@/services/streets';
 import { cctvsApi } from '@/services/cctvs';
 import { request } from '@/services/api';
 import type { Region } from '@/types';
-import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { cn } from '@/lib/utils';
@@ -35,7 +34,7 @@ const STEPS = [
     action: 'Open Intersections',
     Icon: MapPin,
     done: (d: SetupData) => d.intersections > 0,
-    blocked: (_d: SetupData) => false,
+    blocked: () => false,
   },
   {
     id: 'streets',
@@ -66,7 +65,7 @@ const STEPS = [
     title: 'Draw detection regions',
     subtitle: 'Mark polygon zones on the video for each approach street',
     detail:
-      'Open a camera and scroll to the Region Editor. Click "New Region", choose a street approach and direction (inbound or outbound), then click on the live video to place vertices. Click the first vertex again to close the polygon. The system counts detections inside each region.',
+      'Open a camera and scroll to the Region Editor. Click "New Region", choose a street approach and direction (inbound or outbound), then click on the live video to place vertices. Click the first vertex again to close the polygon.',
     href: '/cameras',
     action: 'Open Cameras',
     Icon: Layers,
@@ -78,7 +77,7 @@ const STEPS = [
     title: 'Start monitoring traffic',
     subtitle: 'View live counts, reports, and warrant recommendations',
     detail:
-      'The Dashboard shows real-time vehicle and pedestrian counts as workers process frames. Use Reports to view hourly and daily trends. Visit Recommendations to run MUTCD warrant analysis and determine if a traffic signal is needed at an intersection.',
+      'The Dashboard shows real-time vehicle and pedestrian counts as workers process frames. Use Reports to view hourly and daily trends. Visit Recommendations to run MUTCD warrant analysis.',
     href: '/',
     action: 'View Dashboard',
     Icon: BarChart3,
@@ -90,9 +89,11 @@ const STEPS = [
 export function SetupGuide() {
   const [data, setData] = useState<SetupData | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
   const [dismissed, setDismissed] = useState(
     () => localStorage.getItem(DISMISS_KEY) === '1',
   );
+  const autoDismissedRef = useRef(false);
 
   useEffect(() => {
     if (dismissed) return;
@@ -109,6 +110,13 @@ export function SetupGuide() {
         regions:       regs.status === 'fulfilled' ? regs.value.length : 0,
       };
       setData(d);
+      const allDone = STEPS.every(s => s.done(d));
+      if (allDone && !autoDismissedRef.current) {
+        autoDismissedRef.current = true;
+        localStorage.setItem(DISMISS_KEY, '1');
+        setDismissed(true);
+        return;
+      }
       const first = STEPS.find(s => !s.done(d) && !s.blocked(d));
       if (first) setExpanded(first.id);
     });
@@ -117,113 +125,129 @@ export function SetupGuide() {
   function dismiss() {
     localStorage.setItem(DISMISS_KEY, '1');
     setDismissed(true);
+    setOpen(false);
   }
 
   if (dismissed || !data) return null;
 
   const completedCount = STEPS.filter(s => s.done(data)).length;
-  const allDone = completedCount === STEPS.length;
   const progress = Math.round((completedCount / STEPS.length) * 100);
 
   return (
-    <Card className="overflow-hidden border-border">
-      {/* Header */}
-      <div className="flex items-center justify-between gap-4 px-5 py-4 border-b border-border">
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="flex-shrink-0 flex items-center justify-center size-8 rounded-lg bg-primary/10 text-primary">
-            <Rocket className="size-4" />
+    <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-2">
+      {/* Floating panel */}
+      {open && (
+        <div className="w-80 rounded-xl border border-border bg-card shadow-2xl shadow-black/20 overflow-hidden flex flex-col max-h-[calc(100vh-120px)]">
+          {/* Panel header */}
+          <div className="flex items-center gap-3 px-4 py-3 border-b border-border bg-card shrink-0">
+            <div className="flex-1 min-w-0">
+              <p className="font-semibold text-sm">Get started with EyeGila</p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {completedCount} of {STEPS.length} steps completed
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={dismiss}
+              className="shrink-0 text-muted-foreground hover:text-foreground transition-colors"
+              aria-label="Dismiss setup guide"
+            >
+              <X className="size-3.5" />
+            </button>
           </div>
-          <div className="min-w-0">
-            <p className="font-semibold text-sm">
-              {allDone ? 'Setup complete' : 'Get started with EyeGila'}
-            </p>
-            <p className="text-xs text-muted-foreground">
-              {allDone
-                ? 'All steps done. Your system is monitoring traffic.'
-                : `${completedCount} of ${STEPS.length} steps completed`}
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-3 flex-shrink-0">
-          <div className="w-24 hidden sm:block">
+
+          {/* Progress bar */}
+          <div className="px-4 py-2 border-b border-border shrink-0">
             <Progress value={progress} className="h-1.5" />
           </div>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-7 text-muted-foreground hover:text-foreground"
-            onClick={dismiss}
-            aria-label="Dismiss setup guide"
-          >
-            <X className="size-3.5" />
-          </Button>
-        </div>
-      </div>
 
-      {/* Steps */}
-      <div className="divide-y divide-border">
-        {STEPS.map(step => {
-          const done    = step.done(data);
-          const blocked = step.blocked(data);
-          const open    = expanded === step.id;
+          {/* Steps — scrollable */}
+          <div className="divide-y divide-border overflow-y-auto">
+            {STEPS.map(step => {
+              const done    = step.done(data);
+              const blocked = step.blocked(data);
+              const isOpen  = expanded === step.id;
 
-          return (
-            <div key={step.id} className={cn(blocked && 'opacity-40 pointer-events-none')}>
-              <button
-                type="button"
-                className="w-full flex items-center gap-3.5 px-5 py-3.5 hover:bg-muted/40 transition-colors text-left"
-                onClick={() => setExpanded(open ? null : step.id)}
-                aria-expanded={open}
-              >
-                <span className="flex-shrink-0">
-                  {done
-                    ? <CheckCircle2 className="size-5 text-emerald-500" />
-                    : <Circle className="size-5 text-muted-foreground/40" />}
-                </span>
+              return (
+                <div key={step.id} className={cn(blocked && 'opacity-40 pointer-events-none')}>
+                  <button
+                    type="button"
+                    className="w-full flex items-center gap-3 px-4 py-3 hover:bg-muted/40 transition-colors text-left"
+                    onClick={() => setExpanded(isOpen ? null : step.id)}
+                    aria-expanded={isOpen}
+                  >
+                    <span className="shrink-0">
+                      {done
+                        ? <CheckCircle2 className="size-4 text-emerald-500" />
+                        : <Circle className="size-4 text-muted-foreground/40" />}
+                    </span>
 
-                <span className={cn(
-                  'flex-shrink-0 flex items-center justify-center size-7 rounded-md',
-                  done
-                    ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
-                    : 'bg-primary/10 text-primary',
-                )}>
-                  <step.Icon className="size-3.5" />
-                </span>
+                    <span className={cn(
+                      'shrink-0 flex items-center justify-center size-6 rounded-md',
+                      done
+                        ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                        : 'bg-primary/10 text-primary',
+                    )}>
+                      <step.Icon className="size-3" />
+                    </span>
 
-                <div className="flex-1 min-w-0">
-                  <p className={cn(
-                    'text-sm font-medium leading-none mb-0.5',
-                    done && 'text-muted-foreground line-through',
-                  )}>
-                    {step.title}
-                  </p>
-                  <p className="text-xs text-muted-foreground truncate">{step.subtitle}</p>
-                </div>
+                    <div className="flex-1 min-w-0">
+                      <p className={cn(
+                        'text-xs font-medium leading-none mb-0.5',
+                        done && 'text-muted-foreground line-through',
+                      )}>
+                        {step.title}
+                      </p>
+                      <p className="text-[11px] text-muted-foreground truncate">{step.subtitle}</p>
+                    </div>
 
-                <span className="flex-shrink-0 text-muted-foreground">
-                  {open ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
-                </span>
-              </button>
+                    <span className="shrink-0 text-muted-foreground">
+                      {isOpen ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+                    </span>
+                  </button>
 
-              {open && (
-                <div className="px-5 pb-4 pl-[72px]">
-                  <p className="text-sm text-muted-foreground leading-relaxed mb-3">
-                    {step.detail}
-                  </p>
-                  {!done && (
-                    <Button size="sm" asChild>
-                      <Link to={step.href}>
-                        {step.action}
-                        <ArrowRight className="size-3.5 ml-1.5" />
-                      </Link>
-                    </Button>
+                  {isOpen && (
+                    <div className="px-4 pb-3 pl-[52px]">
+                      <p className="text-xs text-muted-foreground leading-relaxed mb-2.5">
+                        {step.detail}
+                      </p>
+                      {!done && (
+                        <Button size="sm" className="h-7 text-xs" asChild onClick={() => setOpen(false)}>
+                          <Link to={step.href}>
+                            {step.action}
+                            <ArrowRight className="size-3 ml-1" />
+                          </Link>
+                        </Button>
+                      )}
+                    </div>
                   )}
                 </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </Card>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* FAB trigger */}
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className={cn(
+          'flex items-center gap-2.5 rounded-full px-4 py-2.5 shadow-lg shadow-black/20',
+          'bg-primary text-primary-foreground hover:bg-primary/90 transition-all',
+          'text-sm font-medium',
+        )}
+        aria-label="Toggle setup guide"
+      >
+        <Rocket className="size-4 shrink-0" />
+        <span>Get started</span>
+        <span className={cn(
+          'flex items-center justify-center size-5 rounded-full text-[11px] font-semibold',
+          'bg-primary-foreground/20',
+        )}>
+          {completedCount}/{STEPS.length}
+        </span>
+      </button>
+    </div>
   );
 }

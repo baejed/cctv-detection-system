@@ -63,17 +63,13 @@ def update_region(
     if not db_region:
         raise HTTPException(status_code=404, detail="Region not found")
 
-    if region.cctv_id:
-        db_region.cctv_id = region.cctv_id
+    db_region.cctv_id = region.cctv_id
+    db_region.street_id = region.street_id
+    db_region.direction = region.direction
 
-    if region.street_id:
-        db_region.street_id = region.street_id
-
-    if region.region_points:
-        db_region.region_points.clear()
-
-        for region_point in region.region_points:
-            db_region.region_points.append(RegionPoint(x=region_point.x, y=region_point.y))
+    db_region.region_points.clear()
+    for region_point in region.region_points:
+        db_region.region_points.append(RegionPoint(x=region_point.x, y=region_point.y))
 
     db.commit()
     db.refresh(db_region)

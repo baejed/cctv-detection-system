@@ -6,7 +6,6 @@ CREATE TABLE IF NOT EXISTS users (
     id       SERIAL PRIMARY KEY,
     username VARCHAR(255) NOT NULL UNIQUE,
     hash     VARCHAR(255) NOT NULL,
-    session  VARCHAR(255),
     role     VARCHAR(50)  NOT NULL DEFAULT 'viewer',
     time     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
@@ -131,6 +130,14 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS user_sessions (
+    id         SERIAL PRIMARY KEY,
+    user_id    INTEGER      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash VARCHAR(64)  NOT NULL UNIQUE,
+    expires_at TIMESTAMPTZ  NOT NULL,
+    created_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
 
 SELECT create_hypertable(
     'detections',
@@ -239,6 +246,11 @@ CREATE INDEX IF NOT EXISTS idx_recommendations_intersection ON recommendations  
 
 -- push_subscriptions
 CREATE INDEX IF NOT EXISTS idx_push_user_id             ON push_subscriptions    (user_id);
+
+-- user_sessions
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_sessions_token_hash ON user_sessions (token_hash);
+CREATE        INDEX IF NOT EXISTS idx_user_sessions_user_id    ON user_sessions (user_id);
+CREATE        INDEX IF NOT EXISTS idx_user_sessions_expires_at ON user_sessions (expires_at);
 
 -- aggregation_summaries
 CREATE INDEX IF NOT EXISTS idx_agg_intersection_window  ON aggregation_summaries (intersection_id, window_start DESC);

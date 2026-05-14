@@ -7,8 +7,11 @@ import os
 import time
 import cv2
 
-# Force TCP transport for RTSP to reduce H.264 packet corruption on re-muxed streams
-os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
+# TCP transport + 10-second socket timeout so a dead MediaMTX/OBS stream fails fast
+os.environ.setdefault(
+    "OPENCV_FFMPEG_CAPTURE_OPTIONS",
+    "rtsp_transport;tcp|stimeout;10000000",
+)
 
 def resolve_rtsp_url(cctv: models.CCTV, args: argparse.Namespace) -> str | None:
     """
@@ -35,6 +38,14 @@ def open_stream(rtsp_url: str | None, debug: bool) -> cv2.VideoCapture:
     cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     return cap
+
+
+def _stream_is_live(cap: cv2.VideoCapture) -> bool:
+    """Validate the stream by reading a frame — isOpened() alone lies on MediaMTX."""
+    if not cap.isOpened():
+        return False
+    ret, _ = cap.read()
+    return ret
 
 
 def reconnect_stream(
@@ -67,7 +78,7 @@ def reconnect_stream(
         print(f"[worker cctv={cctv_id}] reconnect attempt {attempt}, waiting {delay}s...")
         time.sleep(delay)
         cap = open_stream(rtsp_url, debug)
-        if cap.isOpened():
+        if _stream_is_live(cap):
             print(f"[worker cctv={cctv_id}] reconnected")
             try:
                 db.execute(text(

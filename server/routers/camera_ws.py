@@ -5,7 +5,8 @@ import queue as stdlib_queue
 import threading
 import time
 
-os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp")
+os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS",
+                      "rtsp_transport;tcp|stimeout;5000000")  # 5 s socket timeout
 
 import cv2
 import numpy as np
@@ -251,9 +252,14 @@ async def boxes_stream(cctv_id: int, request: Request, token: str = Query(...)):
 
     async def generate():
         last_ts = 0.0
+        ticks = 0
         try:
             while True:
                 if await request.is_disconnected():
+                    break
+                ticks += 1
+                # Re-validate every 200 ticks (~10 s at 50 ms poll)
+                if ticks % 200 == 0 and not get_user_from_token(token):
                     break
                 raw = _redis.get(det_key)
                 if raw:
@@ -308,14 +314,24 @@ async def camera_ws(websocket: WebSocket, cctv_id: int, token: str = "", overlay
     )
     thread.start()
 
+    frame_count = 0
     try:
-        timeout = 30.0
         while True:
             try:
-                frame_bytes = await asyncio.to_thread(frame_q.get, True, timeout)
+                frame_bytes = await asyncio.to_thread(frame_q.get, True, 5.0)
+            except stdlib_queue.Empty:
+                # No frame within 5 s — _capture_thread is reconnecting to RTSP.
+                # Keep the WebSocket alive; break only if the thread has died.
+                if not thread.is_alive():
+                    break
+                continue
             except Exception:
                 break
-            timeout = 10.0
+            frame_count += 1
+            # Re-validate session every 150 frames (~10 s at 15 fps)
+            if frame_count % 150 == 0 and not get_user_from_token(token):
+                await websocket.close(code=4001)
+                break
             try:
                 await websocket.send_bytes(frame_bytes)
             except (WebSocketDisconnect, RuntimeError):

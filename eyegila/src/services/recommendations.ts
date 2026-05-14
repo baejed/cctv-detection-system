@@ -10,10 +10,10 @@ export const recommendationsApi = {
     return request('/recommendations/');
   },
   generate(intersectionId: number): Promise<RecommendationResponse> {
-    return request(`/recommendations/generate/${intersectionId}`, { method: 'POST' });
+    return request(`/recommendations/${intersectionId}`, { method: 'POST' });
   },
   generateAll(): Promise<RecommendationResponse[]> {
-    return request('/recommendations/generate-all', { method: 'POST' });
+    return request('/recommendations/bulk', { method: 'POST' });
   },
   history(intersectionId: number, limit = 50): Promise<RecommendationResponse[]> {
     return request(`/recommendations/history/${intersectionId}?limit=${limit}`);
