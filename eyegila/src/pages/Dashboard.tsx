@@ -5,6 +5,8 @@ import { cctvsApi } from '@/services/cctvs';
 import { streetsApi } from '@/services/streets';
 import { intersectionsApi } from '@/services/intersections';
 import { aggregationApi } from '@/services/aggregation';
+import { recommendationsApi, type RecommendationResponse } from '@/services/recommendations';
+import { statusBucket, BUCKET_LABEL, BUCKET_BADGE_CLASS } from '@/components/recommendations/statusBucket';
 import type { AggregationRow, CCTV, Street, Intersection } from '@/types';
 import type { SSEStatus } from '@/hooks/useSSE';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -232,6 +234,7 @@ export function DashboardPage() {
   const [historyData, setHistoryData]     = useState<AggregationRow[]>([]);
   const [loading, setLoading]             = useState(true);
   const [viewMode, setViewMode]           = useState<'grid' | 'map'>('grid');
+  const [recsById, setRecsById]           = useState<Map<number, RecommendationResponse>>(new Map());
 
   const selectedId = searchParams.get('intersection')
     ? Number(searchParams.get('intersection'))
@@ -256,6 +259,17 @@ export function DashboardPage() {
 
     const t = setInterval(() => cctvsApi.list().then(setCctvs).catch(console.error), 30_000);
     return () => clearInterval(t);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    recommendationsApi.list()
+      .then(recs => {
+        if (cancelled) return;
+        setRecsById(new Map(recs.map(r => [r.intersection_id, r])));
+      })
+      .catch(() => { /* silent — Dashboard still works without recs */ });
+    return () => { cancelled = true; };
   }, []);
 
   const streetMap = useMemo(() => new Map(streets.map(s => [s.id, s.name])), [streets]);
@@ -597,13 +611,23 @@ export function DashboardPage() {
                     </div>
                     <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent pointer-events-none" />
                     {/* Density badge */}
-                    <div className="absolute top-1.5 right-1.5">
+                    <div className="absolute top-1.5 right-1.5 flex flex-col items-end gap-1">
                       <Badge
                         variant="outline"
                         className={cn('text-[10px] px-1.5 py-0 backdrop-blur-sm bg-black/60 border-white/20', DENSITY_BADGE[level])}
                       >
                         {getDensityLabel(counts.total)}
                       </Badge>
+                      {(() => {
+                        const rec = recsById.get(inter.id);
+                        if (!rec) return null;
+                        const b = statusBucket(rec);
+                        return (
+                          <Badge variant="outline" className={cn('text-[10px] px-1.5 py-0 backdrop-blur-sm bg-black/60 border-white/20', BUCKET_BADGE_CLASS[b])}>
+                            {BUCKET_LABEL[b]}
+                          </Badge>
+                        );
+                      })()}
                     </div>
                     {/* Vehicles + pedestrians */}
                     <div className="absolute bottom-1.5 left-2 right-2 flex items-end justify-between">
@@ -787,21 +811,40 @@ export function DashboardPage() {
                   </div>
                 </CardHeader>
                 <CardContent className="px-4 pb-4 flex flex-col gap-3">
-                  {/* Placeholder warrant rows */}
-                  {(['W1 - 8-Hour Volume', 'W2 - 4-Hour Volume', 'W4 - Pedestrian Volume'] as const).map(label => (
-                    <div key={label} className="flex items-center justify-between">
-                      <span className="text-[11px] text-muted-foreground">{label}</span>
-                      <Badge variant="outline" className="text-[10px] border-slate-200 text-slate-400">
-                        -
-                      </Badge>
-                    </div>
-                  ))}
+                  {(() => {
+                    const rec = selectedInter ? recsById.get(selectedInter.id) : undefined;
+                    const rows = [
+                      { label: 'W1 - 8-Hour Volume',     met: rec?.warrant_1_met, conf: rec?.warrant_1_confidence },
+                      { label: 'W2 - 4-Hour Volume',     met: rec?.warrant_2_met, conf: rec?.warrant_2_confidence },
+                      { label: 'W4 - Pedestrian Volume', met: rec?.warrant_4_met, conf: rec?.warrant_4_confidence },
+                    ];
+                    return rows.map(r => (
+                      <div key={r.label} className="flex items-center justify-between">
+                        <span className="text-[11px] text-muted-foreground">{r.label}</span>
+                        {rec ? (
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              'text-[10px]',
+                              r.met
+                                ? 'border-emerald-500/40 text-emerald-700 bg-emerald-50'
+                                : 'border-slate-200 text-slate-500',
+                            )}
+                          >
+                            {r.met ? '✓' : '·'} {((r.conf ?? 0) * 100).toFixed(0)}%
+                          </Badge>
+                        ) : (
+                          <Badge variant="outline" className="text-[10px] border-slate-200 text-slate-400">—</Badge>
+                        )}
+                      </div>
+                    ));
+                  })()}
                   <Separator />
                   <Link
                     to="/recommendations"
                     className="text-[11px] text-primary hover:underline inline-flex items-center gap-1"
                   >
-                    Run warrant analysis
+                    {selectedInter && recsById.get(selectedInter.id) ? 'View details' : 'Run warrant analysis'}
                     <ExternalLink className="size-2.5" aria-hidden="true" />
                   </Link>
                 </CardContent>
