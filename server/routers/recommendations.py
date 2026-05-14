@@ -239,21 +239,12 @@ def generate_recommendation(
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[models.User, Depends(get_current_user)],
 ):
-    """Run warrant analysis for one intersection and upsert the result."""
+    """Run warrant analysis for one intersection and insert a new row."""
     intersection = db.get(models.Intersection, intersection_id)
     if not intersection:
         raise HTTPException(status_code=404, detail="Intersection not found")
 
     analysis = _analyze(intersection_id, request.app.state.warrant_artifacts, db)
-
-    existing = (
-        db.query(models.Recommendation)
-        .filter(models.Recommendation.intersection_id == intersection_id)
-        .first()
-    )
-    if existing:
-        db.delete(existing)
-        db.flush()
 
     rec = models.Recommendation(intersection_id=intersection_id, **analysis)
     db.add(rec)
@@ -269,29 +260,17 @@ def generate_all_recommendations(
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[models.User, Depends(get_current_user)],
 ):
-    """Run warrant analysis for every intersection."""
+    """Run warrant analysis for every intersection — inserts a new row per intersection."""
     intersections = db.query(models.Intersection).all()
     results = []
 
     artifacts = request.app.state.warrant_artifacts
-
     for intersection in intersections:
         analysis = _analyze(intersection.id, artifacts, db)
-
-        existing = (
-            db.query(models.Recommendation)
-            .filter(models.Recommendation.intersection_id == intersection.id)
-            .first()
-        )
-        if existing:
-            db.delete(existing)
-            db.flush()
-
         rec = models.Recommendation(intersection_id=intersection.id, **analysis)
         db.add(rec)
         db.flush()
         db.refresh(rec)
-
         results.append(_rec_to_response(rec, intersection.name))
 
     db.commit()

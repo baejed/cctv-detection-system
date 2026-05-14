@@ -251,3 +251,26 @@ def test_generate_returns_structured_fields(auth):
     # notes is no longer auto-populated by the analysis itself
     # (engineer-only after this change — may be null on a fresh row)
     assert "notes" in body
+
+
+def test_generate_inserts_does_not_replace(auth, db):
+    """Regenerating must keep the prior recommendation row, not delete it."""
+    from common.models import Recommendation
+
+    iid = _first_intersection_id(auth)
+
+    # Snapshot count before
+    before = db.query(Recommendation).filter(Recommendation.intersection_id == iid).count()
+
+    # Generate twice
+    r1 = auth.post(f"{API_URL}/recommendations/generate/{iid}")
+    assert r1.status_code == 200
+    r2 = auth.post(f"{API_URL}/recommendations/generate/{iid}")
+    assert r2.status_code == 200
+
+    db.expire_all()  # refresh from DB
+    after = db.query(Recommendation).filter(Recommendation.intersection_id == iid).count()
+    assert after == before + 2, f"Expected +2 rows, got {after - before}"
+
+    # The two responses are different rows
+    assert r1.json()["id"] != r2.json()["id"]
