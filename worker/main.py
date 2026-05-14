@@ -5,6 +5,7 @@ import queue
 import signal
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Set
@@ -56,7 +57,7 @@ class CameraSlot:
     rtsp_url: str
     regions: list
     track_states: dict = field(default_factory=dict)
-    dir_buffer: list = field(default_factory=list)
+    dir_buffer: deque = field(default_factory=deque)
     frame_q: queue.Queue = field(default_factory=lambda: queue.Queue(maxsize=1))
     fps_ref: list = field(default_factory=lambda: [0.0])
     heartbeat: Optional[HeartbeatThread] = None
@@ -69,7 +70,6 @@ class CameraSlot:
     claim_lost: bool = False
     last_frame: Optional[np.ndarray] = None
     last_region_refresh_ts: float = field(default_factory=time.time)
-    saved_trackers: Optional[list] = None   # per-camera ByteTrack state
 
 
 def _camera_reader(
@@ -130,7 +130,7 @@ def _start_slot(cctv: models.CCTV, claim_version: int, args: argparse.Namespace,
         name=f"reader-cam{cctv.id}",
     )
     slot.reader_thread.start()
-    slot.heartbeat = HeartbeatThread(cctv_id=cctv.id, fps_ref=slot.fps_ref)
+    slot.heartbeat = HeartbeatThread(cctv_id=cctv.id, fps_ref=slot.fps_ref, reader_thread=slot.reader_thread)
     slot.heartbeat.start()
     print(f"[worker] slot started cctv={cctv.id} name='{cctv.name}'")
     return slot
@@ -158,8 +158,24 @@ def main() -> None:
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
+    print(f"[worker] ── config ──────────────────────────────")
+    print(f"[worker]   DATABASE_URL       = {os.getenv('DATABASE_URL', '(default)')}")
+    print(f"[worker]   REDIS_URL          = {os.getenv('REDIS_URL', '(default)')}")
+    print(f"[worker]   CAMERAS_PER_WORKER = {CAMERAS_PER_WORKER}")
+    print(f"[worker]   INFERENCE_EVERY_N  = {INFERENCE_EVERY_N}")
+    print(f"[worker]   FERNET_KEY         = {'set' if os.getenv('FERNET_KEY') else 'NOT SET'}")
+    print(f"[worker] ────────────────────────────────────────")
+
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
+    # Add last_error column if it doesn't exist yet (idempotent migration)
+    try:
+        db.execute(text(
+            "ALTER TABLE worker_heartbeats ADD COLUMN IF NOT EXISTS last_error VARCHAR(500)"
+        ))
+        db.commit()
+    except Exception:
+        db.rollback()
     model = _load_model()
 
     # warm up GPU kernels so first real frame isn't slow
@@ -184,6 +200,7 @@ def main() -> None:
         slots.append(_start_slot(cctv, version, args, db))
 
     last_claim_attempt = time.time()
+    prev_slot_ids: list = []
 
     try:
         while not _shutdown.is_set():
@@ -197,129 +214,130 @@ def main() -> None:
                     slots.append(_start_slot(cctv, version, args, db))
                 last_claim_attempt = now
 
-            # Process each camera independently — TRT engine has static batch=1,
-            # so we call model.track once per slot and swap per-camera ByteTrack
-            # state in/out so track IDs don't collide across cameras.
-            any_new = False
             target_h, target_w = _DUMMY_FRAME.shape[:2]
 
+            # When slot composition changes, reset trackers so tracker[i] always
+            # corresponds to slots[i] — prevents track ID bleed after a camera
+            # is added or removed.
+            slot_ids = [s.cctv_id for s in slots]
+            if slot_ids != prev_slot_ids:
+                predictor = getattr(model, 'predictor', None)
+                if predictor is not None and hasattr(predictor, 'trackers'):
+                    del predictor.trackers
+                prev_slot_ids = slot_ids
+
+            # Collect one frame per slot. Slots without a new frame reuse their
+            # last-known frame so the batch size stays constant and tracker[i]
+            # keeps mapping to slots[i] across cycles.
+            frames: list = []
+            new_mask: list = []
             for slot in slots:
                 try:
                     frame = slot.frame_q.get_nowait()
                     slot.last_frame = frame
+                    new_mask.append(True)
                 except queue.Empty:
-                    continue  # no new frame this cycle for this camera
+                    frame = slot.last_frame
+                    new_mask.append(False)
+                if frame is None:
+                    frame = _DUMMY_FRAME
+                elif frame.shape[:2] != (target_h, target_w):
+                    frame = cv2.resize(frame, (target_w, target_h))
+                frames.append(frame)
 
-                any_new = True
+            any_new = any(new_mask)
+
+            if any_new:
                 Path("/tmp/worker-alive").touch()
 
-                # Normalize to model input size
-                if frame.shape[:2] != (target_h, target_w):
-                    frame = cv2.resize(frame, (target_w, target_h))
+                # Single batched GPU call for all cameras
+                batch_results = model.track(frames, persist=True, verbose=args.verbose)
 
-                # Swap in this camera's tracker state so track IDs don't bleed
-                # across cameras (each slot keeps its own ByteTrack instance).
-                #
-                # ultralytics on_predict_start skips tracker creation when
-                # (hasattr(predictor, "trackers") AND persist=True).
-                # So: if we HAVE saved state → set the attribute (creation skipped, state reused).
-                #     if this is the FIRST call → DELETE the attribute so on_predict_start
-                #     creates a fresh tracker for this camera.
-                predictor = getattr(model, 'predictor', None)
-                if predictor is not None:
-                    if slot.saved_trackers is not None:
-                        predictor.trackers = slot.saved_trackers
-                    elif hasattr(predictor, 'trackers'):
-                        del predictor.trackers
+                for slot, result, is_new in zip(slots, batch_results, new_mask):
+                    if not is_new:
+                        continue
 
-                results = model.track([frame], persist=True, verbose=args.verbose)[0]
+                    slot.frame_count += 1
+                    frame_h, frame_w = result.orig_img.shape[:2]
 
-                # Save updated tracker state for next cycle
-                predictor = getattr(model, 'predictor', None)
-                if predictor is not None and hasattr(predictor, 'trackers') and predictor.trackers:
-                    slot.saved_trackers = list(predictor.trackers)
+                    # publish bounding boxes to Redis for camera_ws overlay (every frame)
+                    try:
+                        boxes_payload = []
+                        for box in result.boxes:
+                            if box.id is None:
+                                continue
+                            bx1, by1, bx2, by2 = box.xyxy[0].tolist()
+                            boxes_payload.append({
+                                "track_id":    int(box.id[0]),
+                                "object_type": model.names[int(box.cls[0])],
+                                "confidence":  round(float(box.conf[0]), 3),
+                                "x1": round(bx1 / frame_w, 4),
+                                "y1": round(by1 / frame_h, 4),
+                                "x2": round(bx2 / frame_w, 4),
+                                "y2": round(by2 / frame_h, 4),
+                            })
+                        _redis.setex(f"cam:{slot.cctv_id}:detections", 5, _json.dumps({
+                            "ts":    now,
+                            "boxes": boxes_payload,
+                        }))
+                    except Exception:
+                        pass
 
-                slot.frame_count += 1
-                frame_h, frame_w = frame.shape[:2]
+                    # frame skipping: skip DB writes on non-sampled frames
+                    if INFERENCE_EVERY_N > 1 and slot.frame_count % INFERENCE_EVERY_N != 0:
+                        if args.show:
+                            cv2.imshow(f"cctv-{slot.cctv_id}", result.orig_img)
+                        continue
 
-                # publish bounding boxes to Redis for camera_ws overlay (every frame)
-                try:
-                    boxes_payload = []
-                    for box in results.boxes:
+                    # per-detection DB processing
+                    for box in result.boxes:
                         if box.id is None:
                             continue
-                        bx1, by1, bx2, by2 = box.xyxy[0].tolist()
-                        boxes_payload.append({
-                            "track_id":    int(box.id[0]),
-                            "object_type": model.names[int(box.cls[0])],
-                            "confidence":  round(float(box.conf[0]), 3),
-                            "x1": round(bx1 / frame_w, 4),
-                            "y1": round(by1 / frame_h, 4),
-                            "x2": round(bx2 / frame_w, 4),
-                            "y2": round(by2 / frame_h, 4),
-                        })
-                    _redis.setex(f"cam:{slot.cctv_id}:detections", 5, _json.dumps({
-                        "ts":    now,
-                        "boxes": boxes_payload,
-                    }))
-                except Exception:
-                    pass
+                        x1, y1, x2, y2 = box.xyxy[0].tolist()
+                        process_detection(
+                            db, slot.regions, slot.track_states,
+                            int(box.id[0]),
+                            model.names[int(box.cls[0])],
+                            float(box.conf[0]),
+                            (x1, y1, x2, y2),
+                            slot.cctv_id, frame_w, frame_h,
+                            slot.dir_buffer,
+                        )
 
-                # frame skipping: skip DB writes on non-sampled frames
-                if INFERENCE_EVERY_N > 1 and slot.frame_count % INFERENCE_EVERY_N != 0:
                     if args.show:
-                        cv2.imshow(f"cctv-{slot.cctv_id}", frame)
-                    continue
+                        annotated = result.plot()
+                        annotated = draw_regions(annotated, slot.regions, frame_w, frame_h)
+                        cv2.imshow(f"cctv-{slot.cctv_id}", annotated)
 
-                # per-detection DB processing
-                for box in results.boxes:
-                    if box.id is None:
-                        continue
-                    x1, y1, x2, y2 = box.xyxy[0].tolist()
-                    process_detection(
-                        db, slot.regions, slot.track_states,
-                        int(box.id[0]),
-                        model.names[int(box.cls[0])],
-                        float(box.conf[0]),
-                        (x1, y1, x2, y2),
-                        slot.cctv_id, frame_w, frame_h,
-                        slot.dir_buffer,
-                    )
+                    # FPS sample
+                    if slot.frame_count % FPS_SAMPLE_INTERVAL == 0:
+                        elapsed = now - slot.fps_timer_start
+                        slot.fps_ref[0] = round(FPS_SAMPLE_INTERVAL / elapsed if elapsed > 0 else 0, 1)
+                        slot.fps_timer_start = now
 
-                if args.show:
-                    annotated = results.plot()
-                    annotated = draw_regions(annotated, slot.regions, frame_w, frame_h)
-                    cv2.imshow(f"cctv-{slot.cctv_id}", annotated)
+                    # flush detection buffer
+                    if now - slot.last_flush_ts >= FLUSH_INTERVAL_SEC:
+                        flush_detection_buffer(db, slot.dir_buffer)
+                        slot.last_flush_ts = now
 
-                # FPS sample
-                if slot.frame_count % FPS_SAMPLE_INTERVAL == 0:
-                    elapsed = now - slot.fps_timer_start
-                    slot.fps_ref[0] = round(FPS_SAMPLE_INTERVAL / elapsed if elapsed > 0 else 0, 1)
-                    slot.fps_timer_start = now
+                    # prune stale tracks
+                    if now - slot.last_prune_ts >= PRUNE_INTERVAL_SEC:
+                        prune_tracks(slot.track_states)
+                        slot.last_prune_ts = now
 
-                # flush detection buffer
-                if now - slot.last_flush_ts >= FLUSH_INTERVAL_SEC:
-                    flush_detection_buffer(db, slot.dir_buffer)
-                    slot.last_flush_ts = now
+                    # refresh region polygons in case they changed in the DB
+                    if now - slot.last_region_refresh_ts >= REGION_REFRESH_SEC:
+                        _rdb = SessionLocal()
+                        try:
+                            slot.regions = initialize_regions(_rdb, slot.cctv_id)
+                        finally:
+                            _rdb.close()
+                        slot.last_region_refresh_ts = now
 
-                # prune stale tracks
-                if now - slot.last_prune_ts >= PRUNE_INTERVAL_SEC:
-                    prune_tracks(slot.track_states)
-                    slot.last_prune_ts = now
-
-                # refresh region polygons in case they changed in the DB
-                if now - slot.last_region_refresh_ts >= REGION_REFRESH_SEC:
-                    _rdb = SessionLocal()
-                    try:
-                        slot.regions = initialize_regions(_rdb, slot.cctv_id)
-                    finally:
-                        _rdb.close()
-                    slot.last_region_refresh_ts = now
-
-                # verify claim fencing token
-                if slot.frame_count % CLAIM_CHECK_FRAMES == 0:
-                    if not verify_claim(db, slot.cctv_id, slot.claim_version):
-                        slot.claim_lost = True
+                    # verify claim fencing token
+                    if slot.frame_count % CLAIM_CHECK_FRAMES == 0:
+                        if not verify_claim(db, slot.cctv_id, slot.claim_version):
+                            slot.claim_lost = True
 
             if not any_new:
                 time.sleep(0.01)
@@ -347,10 +365,24 @@ def _load_model() -> YOLO:
     trt_cache = os.getenv("TRT_CACHE_DIR", "/app/trt_cache")
     engine_path = Path(trt_cache) / "eyegila_v3.engine"
     if engine_path.exists():
+        if CAMERAS_PER_WORKER > 1:
+            print(
+                f"[worker] WARNING: TRT engine loaded with CAMERAS_PER_WORKER={CAMERAS_PER_WORKER}. "
+                f"If the engine was not exported with dynamic=True, inference will not be truly batched. "
+                f"Export once with: model.export(format='engine', dynamic=True, device=0)"
+            )
         print(f"[worker] loading TensorRT FP16 engine from {engine_path}")
         return YOLO(str(engine_path), task="detect")
-    print("[worker] TensorRT engine not found — loading PyTorch weights (eyegila_v3.pt)")
-    return YOLO("eyegila_v3.pt")
+
+    weights_path = Path("eyegila_v3.pt")
+    if not weights_path.exists():
+        raise FileNotFoundError(
+            f"No model found. Looked for TensorRT engine at '{engine_path}' "
+            f"and PyTorch weights at '{weights_path}'. "
+            "Export the engine first: model.export(format='engine') or place eyegila_v3.pt in the working directory."
+        )
+    print("[worker] WARNING: TensorRT engine not found — falling back to PyTorch weights (expect lower throughput)")
+    return YOLO(str(weights_path))
 
 
 def initialize_regions(db: Session, cctv_id: int) -> list[dict]:
@@ -376,7 +408,7 @@ def process_detection(
     cctv_id: int,
     frame_w: int,
     frame_h: int,
-    dir_buffer: list,
+    dir_buffer: deque,
 ) -> None:
     x1, y1, x2, y2 = bounding_box
     cx = ((x1 + x2) / 2) / frame_w
@@ -414,7 +446,7 @@ def process_detection(
             if is_point_in_polygon(center, [(p["x"], p["y"]) for p in region["region_points"]]):
                 state.regions_entered.add(region["id"])
                 if len(dir_buffer) >= MAX_BUFFER_SIZE:
-                    dir_buffer.pop(0)
+                    dir_buffer.popleft()
                 dir_buffer.append({"region_id": region["id"], "detection_id": state.db_detection_id})
         return
 
@@ -424,12 +456,12 @@ def process_detection(
                 and region_id not in state.regions_entered):
             state.regions_entered.add(region_id)
             if len(dir_buffer) >= MAX_BUFFER_SIZE:
-                dir_buffer.pop(0)
+                dir_buffer.popleft()
             dir_buffer.append({"region_id": region_id, "detection_id": state.db_detection_id})
 
 
-def flush_detection_buffer(db: Session, dir_buffer: list) -> None:
-    items = dir_buffer.copy()
+def flush_detection_buffer(db: Session, dir_buffer: deque) -> None:
+    items = list(dir_buffer)
     dir_buffer.clear()
     try:
         if items:

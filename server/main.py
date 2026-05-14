@@ -34,6 +34,24 @@ logging.basicConfig(level=logging.INFO)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
+    with SessionLocal() as db:
+        try:
+            db.execute(text(
+                "ALTER TABLE worker_heartbeats ADD COLUMN IF NOT EXISTS last_error VARCHAR(500)"
+            ))
+            db.execute(text("""
+                ALTER TABLE recommendations
+                    ADD COLUMN IF NOT EXISTS recommended_confidence FLOAT,
+                    ADD COLUMN IF NOT EXISTS major_volume INTEGER,
+                    ADD COLUMN IF NOT EXISTS minor_volume INTEGER,
+                    ADD COLUMN IF NOT EXISTS peds INTEGER,
+                    ADD COLUMN IF NOT EXISTS vpm INTEGER,
+                    ADD COLUMN IF NOT EXISTS phf FLOAT,
+                    ADD COLUMN IF NOT EXISTS hour_start TIMESTAMPTZ
+            """))
+            db.commit()
+        except Exception:
+            db.rollback()
     from pathlib import Path
     from server.ml.inference import load_warrant_model
     ml_dir = Path(__file__).resolve().parent / "ml"

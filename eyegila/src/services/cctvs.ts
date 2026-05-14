@@ -25,4 +25,10 @@ export const cctvsApi = {
     import.meta.env.DEV
       ? `http://${window.location.hostname}:8000/cctvs/${id}/snapshot`
       : `/api/cctvs/${id}/snapshot`,
+
+  scanNvr: (data: { host: string; username: string; password: string; max_channels: number; subtype: number }) =>
+    request<{ reachable: boolean; channels: { channel: number; rtsp_url: string }[] }>('/cctvs/scan-nvr', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
 };

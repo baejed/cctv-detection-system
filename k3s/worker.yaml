@@ -37,9 +37,9 @@ spec:
                   name: eyegila-secret
                   key: FERNET_KEY
             - name: CAMERAS_PER_WORKER
-              value: "16"
+              value: "2"
             - name: INFERENCE_EVERY_N
-              value: "1"
+              value: "3"
             - name: TRT_CACHE_DIR
               value: /app/trt_cache
           volumeMounts:

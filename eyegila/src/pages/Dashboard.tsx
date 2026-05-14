@@ -207,14 +207,17 @@ function groupData(rows: AggregationRow[], streetMap: Map<number, string>): Map<
   return map;
 }
 
-function StatusDot({ status }: { status: string }) {
+function StatusDot({ status, lastError }: { status: string; lastError?: string | null }) {
   return (
-    <span className={cn(
-      'inline-flex items-center gap-1.5 text-xs font-medium',
-      status === 'online'       && 'text-emerald-600',
-      status === 'reconnecting' && 'text-amber-600',
-      status === 'offline'      && 'text-red-600',
-    )}>
+    <span
+      className={cn(
+        'inline-flex items-center gap-1.5 text-xs font-medium',
+        status === 'online'       && 'text-emerald-600',
+        status === 'reconnecting' && 'text-amber-600',
+        status === 'offline'      && 'text-red-600',
+      )}
+      title={lastError && status !== 'online' ? lastError : undefined}
+    >
       {status === 'online'       && <span className="size-1.5 rounded-full bg-emerald-500 inline-block" aria-hidden="true" />}
       {status === 'reconnecting' && <RefreshCw className="size-2.5 animate-spin" aria-hidden="true" />}
       {status === 'offline'      && <WifiOff className="size-2.5" aria-hidden="true" />}
@@ -892,7 +895,7 @@ export function DashboardPage() {
                     {focusedCameras.map(c => (
                       <TableRow key={c.id} className={cn(c.status === 'offline' && 'bg-red-50/30')}>
                         <TableCell className="font-medium py-2 px-5">{c.name}</TableCell>
-                        <TableCell className="py-2"><StatusDot status={c.status} /></TableCell>
+                        <TableCell className="py-2"><StatusDot status={c.status} lastError={c.last_error} /></TableCell>
                         <TableCell className="font-mono text-xs text-muted-foreground hidden md:table-cell py-2 max-w-[200px] truncate">
                           {c.rtsp_url}
                         </TableCell>
@@ -1002,7 +1005,7 @@ export function DashboardPage() {
                           </span>
                         )}
                       </TableCell>
-                      <TableCell className="py-2"><StatusDot status={c.status} /></TableCell>
+                      <TableCell className="py-2"><StatusDot status={c.status} lastError={c.last_error} /></TableCell>
                       <TableCell className="font-mono text-xs text-muted-foreground hidden md:table-cell py-2">{c.rtsp_url}</TableCell>
                       <TableCell className="py-2 pr-3">
                         <Link to={`/cameras/${c.id}`}>

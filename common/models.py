@@ -92,6 +92,7 @@ class WorkerHeartbeat(Base):
     claim_version     = Column(Integer, nullable=False, default=0)
     status            = Column(String(50), nullable=False, default="running")
     frames_per_second = Column(Float, nullable=True)
+    last_error        = Column(String(500), nullable=True)
     cctv = relationship("CCTV", back_populates="heartbeat")
 
 

@@ -25,6 +25,7 @@ export interface CCTV {
   name: string;
   rtsp_url: string;
   status: 'online' | 'offline' | 'reconnecting';
+  last_error: string | null;
   is_being_viewed: boolean;
   time: string;
 }

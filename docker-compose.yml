@@ -21,18 +21,6 @@ services:
       timeout: 5s
       retries: 5
 
-  pgadmin:
-    image: dpage/pgadmin4:latest
-    container_name: pgadmin
-    restart: unless-stopped
-    environment:
-      PGADMIN_DEFAULT_EMAIL: admin@admin.com
-      PGADMIN_DEFAULT_PASSWORD: admin
-    ports:
-      - "5050:80"
-    depends_on:
-      - timescaledb
-
   pgbouncer:
     image: edoburu/pgbouncer:latest
     container_name: pgbouncer
@@ -43,8 +31,8 @@ services:
       DB_PASSWORD: postgres
       DB_NAME: traffic
       POOL_MODE: transaction
-      MAX_CLIENT_CONN: 1000
-      DEFAULT_POOL_SIZE: 25
+      MAX_CLIENT_CONN: ${PGBOUNCER_MAX_CLIENT_CONN:-100}
+      DEFAULT_POOL_SIZE: ${PGBOUNCER_DEFAULT_POOL_SIZE:-10}
       AUTH_TYPE: md5
     ports:
       - "5432:5432"
@@ -69,25 +57,6 @@ services:
       timeout: 5s
       retries: 5
 
-  rq-worker:
-    build:
-      context: .
-      dockerfile: rq-worker/Dockerfile
-    container_name: rq-worker
-    restart: unless-stopped
-    environment:
-      REDIS_URL: redis://redis:6379
-      DATABASE_URL: postgresql://postgres:postgres@pgbouncer:5432/traffic
-      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
-      UPLOAD_DIR: /app/uploads
-    volumes:
-      - upload_data:/app/uploads
-    depends_on:
-      redis:
-        condition: service_healthy
-      pgbouncer:
-        condition: service_healthy
-
   server:
     build:
       context: .
@@ -95,8 +64,8 @@ services:
     container_name: server
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@pgbouncer:5432/traffic
-      REDIS_URL: redis://redis:6379
+      DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@pgbouncer:5432/traffic}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       UPLOAD_DIR: /app/uploads
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
@@ -107,49 +76,72 @@ services:
       SUPER_KEY: ${SUPER_KEY:-}
       FERNET_KEY: ${FERNET_KEY:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
-    volumes:
-      - upload_data:/app/uploads
+    command: uvicorn server.main:app --host 0.0.0.0 --port 8000 --reload
     ports:
       - "8000:8000"
+    volumes:
+      - upload_data:/app/uploads
+      - ./server:/app/server
+      - ./common:/app/common
     depends_on:
       pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy
 
-  worker:
+  rq-worker:
     build:
       context: .
-      dockerfile: worker/Dockerfile
+      dockerfile: ${RQ_WORKER_DOCKERFILE:-rq-worker/Dockerfile}
+    container_name: rq-worker
+    restart: unless-stopped
+    environment:
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://postgres:postgres@pgbouncer:5432/traffic
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      UPLOAD_DIR: /app/uploads
+    volumes:
+      - upload_data:/app/uploads
+      - ./rq-worker:/app/rq-worker
+      - ./common:/app/common
+    depends_on:
+      redis:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_healthy
+
+  # --- profiles: worker (mac/cpu dev) ---
+
+  worker:
+    profiles: [worker]
+    build:
+      context: .
+      dockerfile: worker/Dockerfile.mac
     container_name: worker
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://postgres:postgres@pgbouncer:5432/traffic
       REDIS_URL: redis://redis:6379
-      CAMERAS_PER_WORKER: ${CAMERAS_PER_WORKER:-16}
+      CAMERAS_PER_WORKER: ${CAMERAS_PER_WORKER:-1}
       INFERENCE_EVERY_N: ${INFERENCE_EVERY_N:-1}
-      TRT_CACHE_DIR: /app/trt_cache
       FERNET_KEY: ${FERNET_KEY:-}
     volumes:
-      - trt_cache:/app/trt_cache
+      - ./worker:/app/worker
+      - ./common:/app/common
     depends_on:
       pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
 
-  worker2:
+  # --- profiles: worker-gpu (production, NVIDIA) ---
+
+  worker-gpu:
+    profiles: [worker-gpu]
     build:
       context: .
       dockerfile: worker/Dockerfile
-    container_name: worker2
+    container_name: worker-gpu
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://postgres:postgres@pgbouncer:5432/traffic
@@ -160,6 +152,8 @@ services:
       FERNET_KEY: ${FERNET_KEY:-}
     volumes:
       - trt_cache:/app/trt_cache
+      - ./worker:/app/worker
+      - ./common:/app/common
     depends_on:
       pgbouncer:
         condition: service_healthy
@@ -173,7 +167,41 @@ services:
               count: all
               capabilities: [gpu]
 
+  worker-gpu-2:
+    profiles: [worker-gpu]
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    container_name: worker-gpu-2
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@pgbouncer:5432/traffic
+      REDIS_URL: redis://redis:6379
+      CAMERAS_PER_WORKER: ${CAMERAS_PER_WORKER:-16}
+      INFERENCE_EVERY_N: ${INFERENCE_EVERY_N:-1}
+      TRT_CACHE_DIR: /app/trt_cache
+      FERNET_KEY: ${FERNET_KEY:-}
+    volumes:
+      - trt_cache:/app/trt_cache
+      - ./worker:/app/worker
+      - ./common:/app/common
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # --- profiles: frontend ---
+
   frontend:
+    profiles: [frontend]
     build:
       context: ./eyegila
       dockerfile: Dockerfile
@@ -184,7 +212,10 @@ services:
     depends_on:
       - server
 
+  # --- profiles: monitoring ---
+
   prometheus:
+    profiles: [monitoring]
     image: prom/prometheus:latest
     container_name: prometheus
     restart: unless-stopped
@@ -200,6 +231,7 @@ services:
       - "--storage.tsdb.retention.time=30d"
 
   grafana:
+    profiles: [monitoring]
     image: grafana/grafana:latest
     container_name: grafana
     restart: unless-stopped
@@ -215,6 +247,43 @@ services:
       - "3000:3000"
     depends_on:
       - prometheus
+
+  # --- profiles: tools ---
+
+  pgadmin:
+    profiles: [tools]
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    depends_on:
+      - timescaledb
+
+  mediamtx:
+    profiles: [tools]
+    image: bluenviron/mediamtx
+    container_name: mediamtx
+    restart: unless-stopped
+    ports:
+      - "8554:8554"
+      - "1935:1935"
+
+  seeder:
+    profiles: [tools]
+    build:
+      context: .
+      dockerfile: seeder/Dockerfile
+    container_name: seeder
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@pgbouncer:5432/traffic
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+    restart: "no"
 
 networks:
   default:

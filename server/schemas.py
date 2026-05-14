@@ -83,6 +83,7 @@ class CCTVUpdate(BaseModel):
 class CCTVResponse(CCTVBase):
     id: int
     status: str
+    last_error: str | None = None
     is_being_viewed: bool
     time: datetime
     model_config = ConfigDict(from_attributes=True)

@@ -2,6 +2,7 @@ import socket
 import uuid
 import select
 import re
+from urllib.parse import quote
 from server.schemas import CCTVBase, CCTVCreate, CCTVUpdate, CCTVResponse
 from server.utils import log_and_commit, get_current_user
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -10,13 +11,28 @@ from common.database import get_db
 from server.rate_limit import limiter
 from sqlalchemy.orm import Session
 from typing import Annotated
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 router = APIRouter(
     prefix="/cctvs",
     tags=["CCTVs"]
 )
+
+def _camera_statuses(db: Session) -> dict[int, dict]:
+    """Returns {cctv_id: {status, last_error}} for cameras with a recent heartbeat."""
+    from sqlalchemy import text as _text
+    rows = db.execute(_text(
+        "SELECT cctv_id, status, last_error FROM worker_heartbeats "
+        "WHERE last_seen > NOW() - INTERVAL '15 seconds'"
+    )).fetchall()
+    return {
+        row[0]: {
+            "status": 'reconnecting' if row[1] == 'reconnecting' else 'online',
+            "last_error": row[2],
+        }
+        for row in rows
+    }
 
 # ---------------------------------------------------------------------------
 # ONVIF WS-Discovery
@@ -129,6 +145,71 @@ def _discover_onvif_cameras() -> list[DiscoveredCamera]:
 
 
 # ---------------------------------------------------------------------------
+# NVR channel scan
+# ---------------------------------------------------------------------------
+
+class NVRScanRequest(BaseModel):
+    host: str
+    username: str = "admin"
+    password: str = ""
+    max_channels: int = Field(default=16, ge=1, le=64)
+    subtype: int = Field(default=1, ge=0, le=1)
+
+
+class NVRChannel(BaseModel):
+    channel: int
+    rtsp_url: str
+
+
+class NVRScanResult(BaseModel):
+    reachable: bool
+    channels: list[NVRChannel]
+
+
+def _probe_rtsp(host: str, port: int = 554, timeout: float = 3.0) -> bool:
+    """TCP connect + RTSP OPTIONS to confirm the host is an RTSP server."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as sock:
+            req = (
+                f"OPTIONS rtsp://{host}:{port}/ RTSP/1.0\r\n"
+                f"CSeq: 1\r\n"
+                f"User-Agent: NVRScanner/1.0\r\n"
+                f"\r\n"
+            )
+            sock.sendall(req.encode())
+            resp = sock.recv(256).decode("utf-8", errors="replace")
+            return resp.startswith("RTSP/")
+    except OSError:
+        return False
+
+
+@router.post("/scan-nvr", response_model=NVRScanResult)
+@limiter.limit("10/minute")
+def scan_nvr(
+    request: Request,
+    body: NVRScanRequest,
+    user: Annotated[User, Depends(get_current_user)],
+) -> NVRScanResult:
+    """
+    Probe an NVR's RTSP port and return channel URLs for channels 1..max_channels.
+    Does not verify individual channels — the worker validates on connect.
+    """
+    if not _probe_rtsp(body.host):
+        return NVRScanResult(reachable=False, channels=[])
+
+    u = quote(body.username, safe="")
+    p = quote(body.password, safe="")
+    channels = [
+        NVRChannel(
+            channel=ch,
+            rtsp_url=f"rtsp://{u}:{p}@{body.host}:554/cam/realmonitor?channel={ch}&subtype={body.subtype}",
+        )
+        for ch in range(1, body.max_channels + 1)
+    ]
+    return NVRScanResult(reachable=True, channels=channels)
+
+
+# ---------------------------------------------------------------------------
 # CRUD endpoints
 # ---------------------------------------------------------------------------
 
@@ -149,17 +230,12 @@ def create_cctv(
 def get_cctvs(
     db: Annotated[Session, Depends(get_db)],
 ) -> list[CCTVResponse]:
-    from sqlalchemy import text as _text
     cctvs = db.query(CCTV).all()
-    fresh = {
-        row[0]
-        for row in db.execute(_text(
-            "SELECT cctv_id FROM worker_heartbeats "
-            "WHERE last_seen > NOW() - INTERVAL '15 seconds'"
-        )).fetchall()
-    }
+    statuses = _camera_statuses(db)
     for c in cctvs:
-        c.status = "online" if c.id in fresh else "offline"
+        info = statuses.get(c.id)
+        c.status = info["status"] if info else 'offline'
+        c.last_error = info["last_error"] if info else None
     return cctvs
 
 
@@ -188,10 +264,11 @@ def get_cctv(
         raise HTTPException(status_code=404, detail="CCTV not found")
 
     row = db.execute(_text(
-        "SELECT 1 FROM worker_heartbeats "
+        "SELECT status, last_error FROM worker_heartbeats "
         "WHERE cctv_id = :id AND last_seen > NOW() - INTERVAL '15 seconds'"
     ), {"id": cctv_id}).fetchone()
-    cctv.status = "online" if row else "offline"
+    cctv.status = ('reconnecting' if row[0] == 'reconnecting' else 'online') if row else 'offline'
+    cctv.last_error = row[1] if row else None
     return cctv
 
 

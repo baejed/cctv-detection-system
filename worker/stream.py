@@ -64,7 +64,7 @@ def reconnect_stream(
             "UPDATE cctvs SET status = 'reconnecting' WHERE id = :id"
         ), {"id": cctv_id})
         db.execute(text(
-            "UPDATE worker_heartbeats SET status = 'reconnecting' WHERE cctv_id = :id"
+            "UPDATE worker_heartbeats SET status = 'reconnecting', last_seen = NOW() WHERE cctv_id = :id"
         ), {"id": cctv_id})
         db.commit()
     except Exception as e:
@@ -79,18 +79,29 @@ def reconnect_stream(
         time.sleep(delay)
         cap = open_stream(rtsp_url, debug)
         if _stream_is_live(cap):
-            print(f"[worker cctv={cctv_id}] reconnected")
+            print(f"[worker cctv={cctv_id}] reconnected after {attempt} attempt(s)")
             try:
                 db.execute(text(
-                    "UPDATE cctvs SET status = 'active' WHERE id = :id"
+                    "UPDATE cctvs SET status = 'online' WHERE id = :id"
                 ), {"id": cctv_id})
                 db.execute(text(
-                    "UPDATE worker_heartbeats SET status = 'running' WHERE cctv_id = :id"
+                    "UPDATE worker_heartbeats SET status = 'running', last_error = NULL WHERE cctv_id = :id"
                 ), {"id": cctv_id})
                 db.commit()
             except Exception as e:
-                print(f"[worker cctv={cctv_id}] failed to update active status: {e}")
+                print(f"[worker cctv={cctv_id}] failed to update online status: {e}")
                 db.rollback()
             return cap
+
+        error_msg = f"RTSP connection failed (attempt {attempt}): {rtsp_url}"
+        print(f"[worker cctv={cctv_id}] {error_msg}")
+        try:
+            db.execute(text(
+                "UPDATE worker_heartbeats SET last_error = :err, last_seen = NOW() WHERE cctv_id = :id"
+            ), {"err": error_msg[:500], "id": cctv_id})
+            db.commit()
+        except Exception:
+            db.rollback()
+
         cap.release()
         delay = min(delay * 2, 60)

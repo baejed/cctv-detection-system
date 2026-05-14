@@ -21,7 +21,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import {
   Camera, Plus, Pencil, Trash2, Wifi, WifiOff, RefreshCw,
   Loader2, ScanSearch, ExternalLink, Download, Upload, FileText,
-  CheckCircle2, XCircle,
+  CheckCircle2, XCircle, Server,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -41,19 +41,26 @@ function downloadTemplate() {
   URL.revokeObjectURL(url);
 }
 
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({ status, lastError }: { status: string; lastError?: string | null }) {
   return (
-    <Badge variant="outline" className={cn(
-      'text-xs',
-      status === 'online'       && 'border-emerald-500/40 text-emerald-400 bg-emerald-500/10',
-      status === 'reconnecting' && 'border-amber-500/40 text-amber-400 bg-amber-500/10',
-      status === 'offline'      && 'border-destructive/40 text-destructive bg-destructive/10',
-    )}>
-      {status === 'online'       && <Wifi className="size-2.5 mr-1" aria-hidden="true" />}
-      {status === 'reconnecting' && <RefreshCw className="size-2.5 mr-1 animate-spin" aria-hidden="true" />}
-      {status === 'offline'      && <WifiOff className="size-2.5 mr-1" aria-hidden="true" />}
-      {status}
-    </Badge>
+    <div className="flex flex-col gap-0.5">
+      <Badge variant="outline" className={cn(
+        'text-xs w-fit',
+        status === 'online'       && 'border-emerald-500/40 text-emerald-400 bg-emerald-500/10',
+        status === 'reconnecting' && 'border-amber-500/40 text-amber-400 bg-amber-500/10',
+        status === 'offline'      && 'border-destructive/40 text-destructive bg-destructive/10',
+      )}>
+        {status === 'online'       && <Wifi className="size-2.5 mr-1" aria-hidden="true" />}
+        {status === 'reconnecting' && <RefreshCw className="size-2.5 mr-1 animate-spin" aria-hidden="true" />}
+        {status === 'offline'      && <WifiOff className="size-2.5 mr-1" aria-hidden="true" />}
+        {status}
+      </Badge>
+      {lastError && status !== 'online' && (
+        <span className="text-[10px] text-muted-foreground max-w-[220px] truncate" title={lastError}>
+          {lastError}
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -65,6 +72,18 @@ interface DiscoveredCamera {
   rtsp_url: string | null;
   xaddrs: string[];
 }
+
+interface NvrChannel {
+  channel: number;
+  rtsp_url: string;
+}
+
+interface NvrScanResult {
+  reachable: boolean;
+  channels: NvrChannel[];
+}
+
+const NVR_FORM_DEFAULT = { host: '', username: 'admin', password: '', maxChannels: 16, subtype: 1 };
 
 export function CamerasPage() {
   const [cctvs, setCctvs] = useState<CCTV[]>([]);
@@ -81,6 +100,15 @@ export function CamerasPage() {
   const [showDiscovery, setShowDiscovery] = useState(false);
   const [importing, setImporting] = useState<string | null>(null);
   const [importIntersectionId, setImportIntersectionId] = useState('');
+
+  // NVR scan
+  const [showNvrModal, setShowNvrModal] = useState(false);
+  const [nvrForm, setNvrForm] = useState(NVR_FORM_DEFAULT);
+  const [nvrIntersectionId, setNvrIntersectionId] = useState('');
+  const [nvrScanning, setNvrScanning] = useState(false);
+  const [nvrResult, setNvrResult] = useState<NvrScanResult | null>(null);
+  const [nvrSelected, setNvrSelected] = useState<Set<number>>(new Set());
+  const [nvrImporting, setNvrImporting] = useState(false);
 
   // CSV import
   const [showCsvModal, setShowCsvModal] = useState(false);
@@ -101,7 +129,11 @@ export function CamerasPage() {
     }
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    const id = setInterval(load, 15_000);
+    return () => clearInterval(id);
+  }, []);
 
   function openCreate() { setEditing(null); setForm(EMPTY); setShowModal(true); }
   function openEdit(c: CCTV) {
@@ -137,6 +169,74 @@ export function CamerasPage() {
       load();
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Delete failed');
+    }
+  }
+
+  async function handleNvrScan() {
+    if (!nvrForm.host) return;
+    setNvrScanning(true);
+    setNvrResult(null);
+    setNvrSelected(new Set());
+    try {
+      const result = await cctvsApi.scanNvr({
+        host: nvrForm.host,
+        username: nvrForm.username,
+        password: nvrForm.password,
+        max_channels: nvrForm.maxChannels,
+        subtype: nvrForm.subtype,
+      });
+      setNvrResult(result);
+      if (!result.reachable) {
+        toast.error(`Cannot reach RTSP on ${nvrForm.host}:554`);
+      } else {
+        setNvrSelected(new Set(result.channels.map(c => c.channel)));
+        toast.success(`Found ${result.channels.length} channels — select which to import`);
+      }
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Scan failed');
+    } finally {
+      setNvrScanning(false);
+    }
+  }
+
+  function toggleNvrChannel(ch: number) {
+    setNvrSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(ch)) next.delete(ch); else next.add(ch);
+      return next;
+    });
+  }
+
+  function toggleAllNvr() {
+    if (!nvrResult) return;
+    setNvrSelected(prev =>
+      prev.size === nvrResult.channels.length
+        ? new Set()
+        : new Set(nvrResult.channels.map(c => c.channel))
+    );
+  }
+
+  async function handleNvrImport() {
+    if (!nvrIntersectionId || !nvrResult) return;
+    setNvrImporting(true);
+    const toImport = nvrResult.channels.filter(c => nvrSelected.has(c.channel));
+    try {
+      await Promise.all(
+        toImport.map(c =>
+          cctvsApi.create({
+            name: `Ch${c.channel} (${nvrForm.host})`,
+            rtsp_url: c.rtsp_url,
+            intersection_id: Number(nvrIntersectionId),
+          })
+        )
+      );
+      toast.success(`Imported ${toImport.length} camera${toImport.length !== 1 ? 's' : ''}`);
+      setShowNvrModal(false);
+      load();
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Import failed');
+    } finally {
+      setNvrImporting(false);
     }
   }
 
@@ -230,6 +330,10 @@ export function CamerasPage() {
             }
             Discover (ONVIF)
           </Button>
+          <Button variant="outline" size="sm" onClick={() => { setNvrForm(NVR_FORM_DEFAULT); setNvrResult(null); setNvrSelected(new Set()); setShowNvrModal(true); }}>
+            <Server className="size-3.5 mr-1.5" />
+            Scan NVR
+          </Button>
           <Button variant="outline" size="sm" onClick={openCsvModal}>
             <Upload className="size-3.5 mr-1.5" />
             Import CSV
@@ -283,7 +387,7 @@ export function CamerasPage() {
                   return (
                     <TableRow key={c.id}>
                       <TableCell className="font-medium">{c.name}</TableCell>
-                      <TableCell><StatusBadge status={c.status} /></TableCell>
+                      <TableCell><StatusBadge status={c.status} lastError={c.last_error} /></TableCell>
                       <TableCell className="text-muted-foreground text-sm">{intersectionMap.get(c.intersection_id)?.name ?? '-'}</TableCell>
                       <TableCell className="font-mono text-xs text-muted-foreground">{c.rtsp_url}</TableCell>
                       <TableCell>
@@ -440,6 +544,148 @@ export function CamerasPage() {
               {saving && <Loader2 className="size-3.5 mr-1.5 animate-spin" />}
               Save
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* NVR scan modal */}
+      <Dialog open={showNvrModal} onOpenChange={open => { setShowNvrModal(open); if (!open) setNvrResult(null); }}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Scan NVR Channels</DialogTitle>
+          </DialogHeader>
+          <Separator />
+
+          <div className="flex flex-col gap-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="col-span-2 flex flex-col gap-1.5">
+                <Label>NVR IP Address</Label>
+                <Input
+                  value={nvrForm.host}
+                  onChange={e => setNvrForm({ ...nvrForm, host: e.target.value })}
+                  placeholder="172.16.57.4"
+                  autoComplete="off"
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label>Username</Label>
+                <Input
+                  value={nvrForm.username}
+                  onChange={e => setNvrForm({ ...nvrForm, username: e.target.value })}
+                  autoComplete="off"
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label>Password</Label>
+                <Input
+                  type="password"
+                  value={nvrForm.password}
+                  onChange={e => setNvrForm({ ...nvrForm, password: e.target.value })}
+                  autoComplete="off"
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label>Max Channels</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  max={64}
+                  value={nvrForm.maxChannels}
+                  onChange={e => setNvrForm({ ...nvrForm, maxChannels: Math.min(64, Math.max(1, Number(e.target.value))) })}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label>Stream quality</Label>
+                <Select value={String(nvrForm.subtype)} onValueChange={v => setNvrForm({ ...nvrForm, subtype: Number(v) })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="1">Sub-stream (low-res, recommended)</SelectItem>
+                    <SelectItem value="0">Main stream (high-res)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <Button onClick={handleNvrScan} disabled={nvrScanning || !nvrForm.host}>
+              {nvrScanning
+                ? <Loader2 className="size-3.5 mr-1.5 animate-spin" />
+                : <Server className="size-3.5 mr-1.5" />
+              }
+              {nvrScanning ? 'Scanning…' : 'Scan'}
+            </Button>
+          </div>
+
+          {nvrResult?.reachable && nvrResult.channels.length > 0 && (
+            <>
+              <Separator />
+              <div className="flex flex-col gap-3">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="font-medium">{nvrResult.channels.length} channels · {nvrSelected.size} selected</span>
+                  <Button variant="ghost" size="sm" onClick={toggleAllNvr} className="h-7 text-xs">
+                    {nvrSelected.size === nvrResult.channels.length ? 'Deselect all' : 'Select all'}
+                  </Button>
+                </div>
+
+                <ScrollArea className="h-44 rounded-md border border-border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-10" />
+                        <TableHead>Channel</TableHead>
+                        <TableHead>RTSP URL</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {nvrResult.channels.map(c => (
+                        <TableRow
+                          key={c.channel}
+                          className="cursor-pointer"
+                          onClick={() => toggleNvrChannel(c.channel)}
+                        >
+                          <TableCell>
+                            <input
+                              type="checkbox"
+                              checked={nvrSelected.has(c.channel)}
+                              onChange={() => toggleNvrChannel(c.channel)}
+                              onClick={e => e.stopPropagation()}
+                              className="size-3.5 accent-primary"
+                            />
+                          </TableCell>
+                          <TableCell className="font-medium">Ch {c.channel}</TableCell>
+                          <TableCell className="font-mono text-xs text-muted-foreground max-w-[240px] truncate">
+                            {c.rtsp_url}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </ScrollArea>
+
+                <div className="flex items-center gap-3">
+                  <Label className="text-xs shrink-0">Import to:</Label>
+                  <Select value={nvrIntersectionId} onValueChange={setNvrIntersectionId}>
+                    <SelectTrigger className="h-8 text-xs">
+                      <SelectValue placeholder="Select intersection…" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {intersections.map(i => (
+                        <SelectItem key={i.id} value={String(i.id)}>{i.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            </>
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowNvrModal(false)}>Cancel</Button>
+            {nvrResult?.reachable && nvrSelected.size > 0 && (
+              <Button onClick={handleNvrImport} disabled={nvrImporting || !nvrIntersectionId}>
+                {nvrImporting && <Loader2 className="size-3.5 mr-1.5 animate-spin" />}
+                Import {nvrSelected.size} camera{nvrSelected.size !== 1 ? 's' : ''}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
