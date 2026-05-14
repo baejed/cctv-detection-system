@@ -198,7 +198,7 @@ def test_generate_recommendation_endpoint(auth):
     assert r.status_code == 200, r.text
     body = r.json()
 
-    # Schema check
+    # Schema check — use subset so new fields don't break this test
     expected_keys = {
         "id", "intersection_id", "intersection_name",
         "warrant_1_met", "warrant_1_confidence",
@@ -206,7 +206,7 @@ def test_generate_recommendation_endpoint(auth):
         "warrant_4_met", "warrant_4_confidence",
         "recommended", "notes", "generated_at",
     }
-    assert set(body.keys()) == expected_keys
+    assert expected_keys.issubset(body.keys())
 
     # Bool/float types
     for k in ("warrant_1_met", "warrant_2_met", "warrant_4_met", "recommended"):
@@ -215,8 +215,8 @@ def test_generate_recommendation_endpoint(auth):
         assert isinstance(body[k], (int, float))
         assert 0.0 <= body[k] <= 1.0
 
-    # Notes is present and references the hour
-    assert body["notes"]
+    # notes field is present (no longer auto-populated — may be null on a fresh row)
+    assert "notes" in body
 
 
 def test_generate_all_endpoint(auth):
@@ -226,3 +226,28 @@ def test_generate_all_endpoint(auth):
     body = r.json()
     assert isinstance(body, list)
     assert len(body) >= 1
+
+
+def test_generate_returns_structured_fields(auth):
+    """POST /recommendations/generate/{id} returns the new metric fields."""
+    iid = _first_intersection_id(auth)
+    r = auth.post(f"{API_URL}/recommendations/generate/{iid}")
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    new_keys = {
+        "major_volume", "minor_volume", "peds", "vpm", "phf",
+        "recommended_confidence", "hour_start",
+    }
+    assert new_keys.issubset(body.keys())
+
+    # hour_start is ISO 8601 or null; if data exists, it must be present.
+    if body["major_volume"] is not None and body["major_volume"] > 0:
+        assert body["hour_start"] is not None
+        # roughly parseable
+        from datetime import datetime
+        datetime.fromisoformat(body["hour_start"].replace("Z", "+00:00"))
+
+    # notes is no longer auto-populated by the analysis itself
+    # (engineer-only after this change — may be null on a fresh row)
+    assert "notes" in body

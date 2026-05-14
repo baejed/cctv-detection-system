@@ -27,6 +27,13 @@ class RecommendationResponse(BaseModel):
     warrant_4_met: bool
     warrant_4_confidence: float
     recommended: bool
+    recommended_confidence: Optional[float] = None
+    major_volume: Optional[int] = None
+    minor_volume: Optional[int] = None
+    peds: Optional[int] = None
+    vpm: Optional[int] = None
+    phf: Optional[float] = None
+    hour_start: Optional[str] = None
     notes: Optional[str]
     generated_at: str
 
@@ -123,9 +130,8 @@ def _analyze(
     artifacts,
     db: Session,
 ) -> dict:
-    """Compute features for the most recent hour, run the model, format result.
-
-    Returns a dict with all the columns of the Recommendation model.
+    """Compute features for the most recent hour, run the model, return a flat dict
+    suitable for kwargs into `models.Recommendation(...)`.
     """
     from server.ml.inference import predict_warrants  # local import keeps top of file clean
 
@@ -136,32 +142,56 @@ def _analyze(
             "warrant_1_met": False, "warrant_1_confidence": 0.0,
             "warrant_2_met": False, "warrant_2_confidence": 0.0,
             "warrant_4_met": False, "warrant_4_confidence": 0.0,
-            "recommended":   False,
-            "notes": f"No data for hour starting {hour_start.isoformat()}.",
+            "recommended":            False,
+            "recommended_confidence": 0.0,
+            "major_volume": 0, "minor_volume": 0, "peds": 0, "vpm": 0, "phf": 1.0,
+            "hour_start": hour_start,
+            "notes": None,
         }
 
     probs = predict_warrants(artifacts, features)
     w1, w2, w4, rec = probs["w1"], probs["w2"], probs["w4"], probs["recommended"]
 
-    notes = (
-        f"Hour starting {hour_start.isoformat()}. "
-        f"Major: {features['major_volume']} veh/hr, "
-        f"Minor: {features['minor_volume']} veh/hr, "
-        f"Peds: {features['peds']}/hr, "
-        f"VPM: {features['vpm']}, "
-        f"PHF: {features['phf']:.2f}. "
-        f"Probabilities — W1: {w1:.2f}, W2: {w2:.2f}, W4: {w4:.2f}."
-    )
-
     return {
-        "warrant_1_met":        w1 >= 0.5,
-        "warrant_1_confidence": round(float(w1), 4),
-        "warrant_2_met":        w2 >= 0.5,
-        "warrant_2_confidence": round(float(w2), 4),
-        "warrant_4_met":        w4 >= 0.5,
-        "warrant_4_confidence": round(float(w4), 4),
-        "recommended":          rec >= 0.5,
-        "notes":                notes,
+        "warrant_1_met":          w1 >= 0.5,
+        "warrant_1_confidence":   round(float(w1), 4),
+        "warrant_2_met":          w2 >= 0.5,
+        "warrant_2_confidence":   round(float(w2), 4),
+        "warrant_4_met":          w4 >= 0.5,
+        "warrant_4_confidence":   round(float(w4), 4),
+        "recommended":            rec >= 0.5,
+        "recommended_confidence": round(float(rec), 4),
+        "major_volume":           int(features["major_volume"]),
+        "minor_volume":           int(features["minor_volume"]),
+        "peds":                   int(features["peds"]),
+        "vpm":                    int(features["vpm"]),
+        "phf":                    float(features["phf"]),
+        "hour_start":             hour_start,
+        "notes":                  None,
+    }
+
+
+def _rec_to_response(rec: models.Recommendation, intersection_name: str) -> dict:
+    return {
+        "id": rec.id,
+        "intersection_id": rec.intersection_id,
+        "intersection_name": intersection_name,
+        "warrant_1_met": rec.warrant_1_met,
+        "warrant_1_confidence": rec.warrant_1_confidence,
+        "warrant_2_met": rec.warrant_2_met,
+        "warrant_2_confidence": rec.warrant_2_confidence,
+        "warrant_4_met": rec.warrant_4_met,
+        "warrant_4_confidence": rec.warrant_4_confidence,
+        "recommended": rec.recommended,
+        "recommended_confidence": rec.recommended_confidence,
+        "major_volume": rec.major_volume,
+        "minor_volume": rec.minor_volume,
+        "peds": rec.peds,
+        "vpm": rec.vpm,
+        "phf": rec.phf,
+        "hour_start": rec.hour_start.isoformat() if rec.hour_start else None,
+        "notes": rec.notes,
+        "generated_at": rec.generated_at.isoformat(),
     }
 
 
@@ -230,20 +260,7 @@ def generate_recommendation(
     db.commit()
     db.refresh(rec)
 
-    return {
-        "id": rec.id,
-        "intersection_id": rec.intersection_id,
-        "intersection_name": intersection.name,
-        "warrant_1_met": rec.warrant_1_met,
-        "warrant_1_confidence": rec.warrant_1_confidence,
-        "warrant_2_met": rec.warrant_2_met,
-        "warrant_2_confidence": rec.warrant_2_confidence,
-        "warrant_4_met": rec.warrant_4_met,
-        "warrant_4_confidence": rec.warrant_4_confidence,
-        "recommended": rec.recommended,
-        "notes": rec.notes,
-        "generated_at": rec.generated_at.isoformat(),
-    }
+    return _rec_to_response(rec, intersection.name)
 
 
 @router.post("/generate-all", response_model=list[RecommendationResponse])
@@ -275,20 +292,7 @@ def generate_all_recommendations(
         db.flush()
         db.refresh(rec)
 
-        results.append({
-            "id": rec.id,
-            "intersection_id": rec.intersection_id,
-            "intersection_name": intersection.name,
-            "warrant_1_met": rec.warrant_1_met,
-            "warrant_1_confidence": rec.warrant_1_confidence,
-            "warrant_2_met": rec.warrant_2_met,
-            "warrant_2_confidence": rec.warrant_2_confidence,
-            "warrant_4_met": rec.warrant_4_met,
-            "warrant_4_confidence": rec.warrant_4_confidence,
-            "recommended": rec.recommended,
-            "notes": rec.notes,
-            "generated_at": rec.generated_at.isoformat(),
-        })
+        results.append(_rec_to_response(rec, intersection.name))
 
     db.commit()
     return results
@@ -315,17 +319,4 @@ def update_notes(
     db.commit()
     db.refresh(rec)
 
-    return {
-        "id": rec.id,
-        "intersection_id": rec.intersection_id,
-        "intersection_name": intersection.name if intersection else "",
-        "warrant_1_met": rec.warrant_1_met,
-        "warrant_1_confidence": rec.warrant_1_confidence,
-        "warrant_2_met": rec.warrant_2_met,
-        "warrant_2_confidence": rec.warrant_2_confidence,
-        "warrant_4_met": rec.warrant_4_met,
-        "warrant_4_confidence": rec.warrant_4_confidence,
-        "recommended": rec.recommended,
-        "notes": rec.notes,
-        "generated_at": rec.generated_at.isoformat(),
-    }
+    return _rec_to_response(rec, intersection.name if intersection else "")
