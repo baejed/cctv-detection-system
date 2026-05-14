@@ -15,10 +15,12 @@ export const recommendationsApi = {
   generateAll(): Promise<RecommendationResponse[]> {
     return request('/recommendations/generate-all', { method: 'POST' });
   },
+  history(intersectionId: number, limit = 50): Promise<RecommendationResponse[]> {
+    return request(`/recommendations/history/${intersectionId}?limit=${limit}`);
+  },
   updateNotes(id: number, notes: string | null): Promise<RecommendationResponse> {
     return request(`/recommendations/${id}/notes`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ notes }),
     });
   },

@@ -89,6 +89,13 @@ export interface Recommendation {
   warrant_4_met: boolean;
   warrant_4_confidence: number;
   recommended: boolean;
+  recommended_confidence: number | null;
+  major_volume: number | null;
+  minor_volume: number | null;
+  peds: number | null;
+  vpm: number | null;
+  phf: number | null;
+  hour_start: string | null;
   notes: string | null;
   generated_at: string;
 }
