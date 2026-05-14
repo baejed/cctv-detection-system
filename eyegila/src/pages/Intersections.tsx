@@ -5,6 +5,7 @@ import 'leaflet/dist/leaflet.css';
 import { toast } from 'sonner';
 import { intersectionsApi } from '@/services/intersections';
 import { streetsApi } from '@/services/streets';
+import { recommendationsApi, type RecommendationResponse } from '@/services/recommendations';
 import type { Intersection, Street } from '@/types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -17,6 +18,8 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Separator } from '@/components/ui/separator';
 import { MapPin, Plus, Pencil, Trash2, ChevronRight, Loader2 } from 'lucide-react';
+import { statusBucket, BUCKET_LABEL, BUCKET_BADGE_CLASS } from '@/components/recommendations/statusBucket';
+import { cn } from '@/lib/utils';
 
 // Fix leaflet marker icons in Vite
 delete (L.Icon.Default.prototype as unknown as Record<string, unknown>)._getIconUrl;
@@ -53,6 +56,8 @@ export function IntersectionsPage() {
   const [streetName, setStreetName] = useState('');
   const [savingStreet, setSavingStreet] = useState(false);
 
+  const [recsById, setRecsById] = useState<Map<number, RecommendationResponse>>(new Map());
+
   async function load() {
     try {
       const [ints, strs] = await Promise.all([intersectionsApi.list(), streetsApi.list()]);
@@ -66,6 +71,17 @@ export function IntersectionsPage() {
   }
 
   useEffect(() => { load(); }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    recommendationsApi.list()
+      .then(recs => {
+        if (cancelled) return;
+        setRecsById(new Map(recs.map(r => [r.intersection_id, r])));
+      })
+      .catch(() => { /* silent — page works without recs */ });
+    return () => { cancelled = true; };
+  }, []);
 
   function toggle(id: number) {
     setExpanded(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
@@ -180,7 +196,19 @@ export function IntersectionsPage() {
                         {inter.latitude?.toFixed(4)}, {inter.longitude?.toFixed(4)}
                       </TableCell>
                       <TableCell>
-                        <Badge variant="secondary">{interStreets.length}</Badge>
+                        <div className="flex items-center gap-1.5">
+                          <Badge variant="secondary">{interStreets.length}</Badge>
+                          {(() => {
+                            const rec = recsById.get(inter.id);
+                            if (!rec) return null;
+                            const b = statusBucket(rec);
+                            return (
+                              <Badge variant="outline" className={cn('text-[10px]', BUCKET_BADGE_CLASS[b])}>
+                                {BUCKET_LABEL[b]}
+                              </Badge>
+                            );
+                          })()}
+                        </div>
                       </TableCell>
                       <TableCell>
                         <div className="flex gap-1 justify-end">
