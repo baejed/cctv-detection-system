@@ -49,6 +49,9 @@ async def lifespan(app: FastAPI):
                     ADD COLUMN IF NOT EXISTS phf FLOAT,
                     ADD COLUMN IF NOT EXISTS hour_start TIMESTAMPTZ
             """))
+            db.execute(text(
+                "ALTER TABLE detections ALTER COLUMN cctv_id DROP NOT NULL"
+            ))
             db.commit()
         except Exception:
             db.rollback()

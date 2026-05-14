@@ -54,20 +54,27 @@ export function DetailSheet({ rec, onClose, onRegenerate, regenerating, onNotesS
 
   return (
     <Sheet open={rec !== null} onOpenChange={open => !open && onClose()}>
-      <SheetContent side="right" className="w-[480px] sm:max-w-[520px] overflow-y-auto">
+      <SheetContent side="right" className="w-[480px] sm:max-w-[520px] flex flex-col gap-0 p-0">
         {rec && (
           <>
-            <SheetHeader>
-              <SheetTitle>{rec.intersection_name}</SheetTitle>
-              <SheetDescription>Warrant analysis details</SheetDescription>
+            <SheetHeader className="px-6 pt-6 pb-4 border-b border-border shrink-0">
+              <SheetTitle className="text-base">{rec.intersection_name}</SheetTitle>
+              <SheetDescription className="text-xs">
+                Last analyzed: {new Date(rec.generated_at).toLocaleString()}
+              </SheetDescription>
             </SheetHeader>
 
-            <Tabs value={tab} onValueChange={v => setTab(v as 'latest' | 'history')} className="mt-4">
-              <TabsList className="grid grid-cols-2">
+            <Tabs
+              value={tab}
+              onValueChange={v => setTab(v as 'latest' | 'history')}
+              className="flex flex-col flex-1 min-h-0"
+            >
+              <TabsList className="grid grid-cols-2 mx-6 mt-4 shrink-0">
                 <TabsTrigger value="latest">Latest</TabsTrigger>
                 <TabsTrigger value="history">History</TabsTrigger>
               </TabsList>
-              <TabsContent value="latest" className="mt-4">
+
+              <TabsContent value="latest" className="flex-1 overflow-y-auto px-6 pt-4 pb-8 mt-0">
                 <LatestTab
                   rec={rec}
                   onRegenerate={handleRegenerate}
@@ -75,7 +82,7 @@ export function DetailSheet({ rec, onClose, onRegenerate, regenerating, onNotesS
                   onNotesSaved={onNotesSaved}
                 />
               </TabsContent>
-              <TabsContent value="history" className="mt-4">
+              <TabsContent value="history" className="flex-1 overflow-y-auto px-6 pt-4 pb-8 mt-0">
                 <HistoryTab
                   rows={historyRows}
                   loading={historyLoading}

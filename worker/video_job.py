@@ -203,19 +203,17 @@ def process_video(video_id: int) -> None:
                 cy = ((y1 + y2) / 2) / frame_h
                 center = (cx, cy)
 
-                # Skip entirely if there is no valid CCTV to attach the detection to
-                if cctv_id is None:
-                    continue
+                # Region matching only applies when we have a CCTV with regions
+                matching_regions: list[dict] = []
+                if cctv_id is not None:
+                    matching_regions = [
+                        r for r in regions
+                        if is_point_in_polygon(center, [(p["x"], p["y"]) for p in r["region_points"]])
+                    ] if regions else []
 
-                # Only write detection if center falls in at least one region
-                matching_regions = [
-                    r for r in regions
-                    if is_point_in_polygon(center, [(p["x"], p["y"]) for p in r["region_points"]])
-                ] if regions else []
-
-                # If regions are configured but the object is outside all of them, skip
-                if regions and not matching_regions:
-                    continue
+                    # If regions are configured but the object is outside all of them, skip
+                    if regions and not matching_regions:
+                        continue
 
                 detection = models.Detection(  # type: ignore[call-arg]
                     cctv_id=cctv_id,

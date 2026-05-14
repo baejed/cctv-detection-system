@@ -125,7 +125,7 @@ class Detection(Base):
     __tablename__ = "detections"
 
     id          = Column(BigInteger, primary_key=True, autoincrement=True)
-    cctv_id     = Column(Integer, ForeignKey("cctvs.id",  ondelete="CASCADE"),  nullable=False)
+    cctv_id     = Column(Integer, ForeignKey("cctvs.id",  ondelete="CASCADE"),  nullable=True)
     video_id    = Column(Integer, ForeignKey("videos.id", ondelete="SET NULL"), nullable=True)
     track_id    = Column(Integer,    nullable=True)
     object_type = Column(String(50), nullable=False)
