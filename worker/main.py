@@ -29,6 +29,7 @@ _redis = redis_lib.from_url(REDIS_URL)
 
 CAMERAS_PER_WORKER    = int(os.getenv("CAMERAS_PER_WORKER", "16"))
 INFERENCE_EVERY_N     = int(os.getenv("INFERENCE_EVERY_N", "1"))   # process 1-in-N frames for DB writes
+READER_MAX_FPS        = float(os.getenv("READER_MAX_FPS", "0"))    # 0 = unlimited (cap reader thread rate)
 PRUNE_INTERVAL_SEC    = 10
 TRACK_MAX_AGE_SEC     = 30
 FPS_SAMPLE_INTERVAL   = 30
@@ -87,6 +88,10 @@ def _camera_reader(
     if not _stream_is_live(cap):
         cap.release()
         cap = reconnect_stream(rtsp_url, args.debug, db, cctv_id)
+
+    min_frame_interval = (1.0 / READER_MAX_FPS) if READER_MAX_FPS > 0 else 0.0
+    last_frame_ts = 0.0
+
     try:
         while not stop_event.is_set():
             ret, frame = cap.read()
@@ -102,6 +107,14 @@ def _camera_reader(
                     break
                 cap = reconnect_stream(rtsp_url, args.debug, db, cctv_id)
                 continue
+
+            # rate cap: drop frames that arrive faster than READER_MAX_FPS
+            if min_frame_interval > 0:
+                now = time.time()
+                elapsed = now - last_frame_ts
+                if elapsed < min_frame_interval:
+                    continue
+                last_frame_ts = now
 
             # replace stale frame in queue with latest
             try:
@@ -165,6 +178,7 @@ def main() -> None:
     print(f"[worker]   REDIS_URL          = {os.getenv('REDIS_URL', '(default)')}")
     print(f"[worker]   CAMERAS_PER_WORKER = {CAMERAS_PER_WORKER}")
     print(f"[worker]   INFERENCE_EVERY_N  = {INFERENCE_EVERY_N}")
+    print(f"[worker]   READER_MAX_FPS     = {READER_MAX_FPS if READER_MAX_FPS > 0 else 'unlimited'}")
     print(f"[worker]   FERNET_KEY         = {'set' if os.getenv('FERNET_KEY') else 'NOT SET'}")
     print(f"[worker] ────────────────────────────────────────")
 

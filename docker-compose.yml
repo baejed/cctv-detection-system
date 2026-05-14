@@ -124,6 +124,7 @@ services:
       REDIS_URL: redis://redis:6379
       CAMERAS_PER_WORKER: ${CAMERAS_PER_WORKER:-1}
       INFERENCE_EVERY_N: ${INFERENCE_EVERY_N:-1}
+      READER_MAX_FPS: ${READER_MAX_FPS:-0}
       FERNET_KEY: ${FERNET_KEY:-}
     volumes:
       - ./worker:/app/worker
@@ -148,6 +149,7 @@ services:
       REDIS_URL: redis://redis:6379
       CAMERAS_PER_WORKER: ${CAMERAS_PER_WORKER:-16}
       INFERENCE_EVERY_N: ${INFERENCE_EVERY_N:-1}
+      READER_MAX_FPS: ${READER_MAX_FPS:-0}
       TRT_CACHE_DIR: /app/trt_cache
       FERNET_KEY: ${FERNET_KEY:-}
     volumes:
@@ -179,6 +181,7 @@ services:
       REDIS_URL: redis://redis:6379
       CAMERAS_PER_WORKER: ${CAMERAS_PER_WORKER:-16}
       INFERENCE_EVERY_N: ${INFERENCE_EVERY_N:-1}
+      READER_MAX_FPS: ${READER_MAX_FPS:-0}
       TRT_CACHE_DIR: /app/trt_cache
       FERNET_KEY: ${FERNET_KEY:-}
     volumes:
