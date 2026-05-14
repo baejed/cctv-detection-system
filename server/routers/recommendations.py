@@ -1,4 +1,6 @@
 # server/routers/recommendations.py
+import logging
+import time
 from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -10,6 +12,8 @@ from sqlalchemy import text
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Optional
 from pydantic import BaseModel
+
+log = logging.getLogger("recommendations")
 
 router = APIRouter(prefix="/recommendations", tags=["Recommendations"])
 
@@ -135,9 +139,15 @@ def _analyze(
     """
     from server.ml.inference import predict_warrants  # local import keeps top of file clean
 
+    t0 = time.perf_counter()
     features, hour_start = _compute_features(intersection_id, db)
+    elapsed_feat = (time.perf_counter() - t0) * 1000
 
     if features["major_volume"] == 0 and features["minor_volume"] == 0 and features["peds"] == 0:
+        log.info(
+            "analyze intersection=%d hour=%s EMPTY_DATA (feat_ms=%.1f)",
+            intersection_id, hour_start.isoformat(), elapsed_feat,
+        )
         return {
             "warrant_1_met": False, "warrant_1_confidence": 0.0,
             "warrant_2_met": False, "warrant_2_confidence": 0.0,
@@ -149,8 +159,22 @@ def _analyze(
             "notes": None,
         }
 
+    t1 = time.perf_counter()
     probs = predict_warrants(artifacts, features)
+    elapsed_pred = (time.perf_counter() - t1) * 1000
     w1, w2, w4, rec = probs["w1"], probs["w2"], probs["w4"], probs["recommended"]
+
+    log.info(
+        "analyze intersection=%d hour=%s "
+        "feat=(maj=%d min=%d ped=%d vpm=%d phf=%.2f) "
+        "prob=(w1=%.2f w2=%.2f w4=%.2f rec=%.2f) "
+        "(feat_ms=%.1f pred_ms=%.1f)",
+        intersection_id, hour_start.isoformat(),
+        features["major_volume"], features["minor_volume"], features["peds"],
+        features["vpm"], features["phf"],
+        w1, w2, w4, rec,
+        elapsed_feat, elapsed_pred,
+    )
 
     return {
         "warrant_1_met":          w1 >= 0.5,
@@ -331,4 +355,5 @@ def list_history(
         .limit(limit)
         .all()
     )
+    log.info("history intersection=%d limit=%d → %d rows", intersection_id, limit, len(rows))
     return [_rec_to_response(rec, intersection.name) for rec in rows]

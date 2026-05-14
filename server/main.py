@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 import asyncio
 import json
+import logging
 import os
 
 from fastapi import FastAPI, Request, Response
@@ -26,6 +27,8 @@ from server.routers.camera_ws import router as camera_ws_router
 from server.routers import user, login, intersection, street, cctv, detection, region
 
 load_dotenv()
+
+logging.basicConfig(level=logging.INFO)
 
 
 @asynccontextmanager
