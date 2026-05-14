@@ -82,22 +82,42 @@ The Docker Compose file reads these variables and injects them into the appropri
 
 ## 4. Start all services
 
+Services are split into Docker Compose profiles. Start what you need:
+
 ```bash
+# Core (DB + API) — always needed
 docker compose up --build -d
+
+# Frontend (Nginx serving the React app)
+docker compose --profile frontend up -d frontend
+
+# Worker — CPU/Mac (no GPU required)
+docker compose --profile worker up -d worker
+
+# Worker — NVIDIA GPU (production)
+docker compose --profile worker-gpu up -d worker-gpu worker-gpu-2
+
+# Optional tooling
+docker compose --profile tools up -d pgadmin mediamtx
+
+# Monitoring (Prometheus + Grafana)
+docker compose --profile monitoring up -d prometheus grafana
 ```
 
-This builds and starts every service in one command:
-
-| Container | Port (host) | Purpose |
-|-----------|------------|---------|
-| `timescaledb` | 5433 | TimescaleDB (PostgreSQL 16) |
-| `pgbouncer` | 5432 | Connection pool |
-| `pgadmin` | 5050 | DB admin UI (admin@admin.com / admin) |
-| `redis` | 6379 | Job queue + rate-limit store |
-| `rq-worker` | — | Processes uploaded video files |
-| `server` | 8000 | FastAPI backend |
-| `worker` | — | Live RTSP inference (GPU required) |
-| `frontend` | **80** | React dashboard (Nginx) |
+| Container | Profile | Port (host) | Purpose |
+|-----------|---------|------------|---------|
+| `timescaledb` | _(default)_ | 5433 | TimescaleDB (PostgreSQL 16) |
+| `pgbouncer` | _(default)_ | 5432 | Connection pool |
+| `redis` | _(default)_ | 6379 | Job queue + rate-limit store |
+| `rq-worker` | _(default)_ | — | Processes uploaded video files |
+| `server` | _(default)_ | 8000 | FastAPI backend |
+| `frontend` | `frontend` | **80** | React dashboard (Nginx) |
+| `worker` | `worker` | — | Live RTSP inference (CPU/Mac) |
+| `worker-gpu` | `worker-gpu` | — | Live RTSP inference (NVIDIA GPU) |
+| `pgadmin` | `tools` | 5050 | DB admin UI (admin@admin.com / admin) |
+| `mediamtx` | `tools` | 8554/1935 | Test RTSP server |
+| `prometheus` | `monitoring` | 9090 | Metrics scraper |
+| `grafana` | `monitoring` | 3000 | Dashboards |
 
 The database is initialized automatically from `init.sql` the first time `timescaledb` starts with a fresh volume — tables, hypertable, continuous aggregate, indexes, and a default admin user are all created.
 
@@ -219,11 +239,22 @@ Intersections are matched by name — existing ones are reused, not duplicated.
 
 ## 10. Run the test suite
 
-The integration tests run against the live stack (requires `docker compose up`):
+The integration tests run against the live stack (requires `docker compose up` and `docker compose --profile frontend up -d frontend`):
 
 ```bash
+# First time — create a venv and install deps
+python3 -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements-test.txt
+
+# Run all tests
 pytest
+
+# Run a specific file
+pytest tests/test_cameras.py
+
+# Stop on first failure
+pytest -x
 ```
 
 To target a remote server:
@@ -234,7 +265,7 @@ DATABASE_URL=postgresql://postgres:postgres@192.168.1.50:5433/traffic \
 pytest
 ```
 
-Tests cover: auth + rate limiting, intersection/camera CRUD, CSV import, aggregation history, SSE stream delivery, and health endpoints.
+Tests cover: auth + rate limiting, intersection/camera CRUD, CSV import, aggregation history, SSE stream delivery, worker heartbeat claiming, warrant model inference, and health endpoints.
 
 ---
 
@@ -306,8 +337,23 @@ This checks: namespace exists, all pods Running, `/health` → 200, login works,
 | `TZ` | No | `Asia/Manila` | Timezone for day-boundary calculations in aggregation |
 | `FERNET_KEY` | No | _(disabled)_ | Base64 Fernet key — encrypts RTSP URLs at rest. Generate: `python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `CORS_ORIGINS` | No | `http://localhost:5173` | Comma-separated allowed CORS origins for the API |
-| `CAMERAS_PER_WORKER` | No | `16` | Max cameras each worker process claims |
+| `CAMERAS_PER_WORKER` | No | `1` (mac) / `16` (gpu) | Max cameras each worker process claims |
 | `INFERENCE_EVERY_N` | No | `1` | Run inference on every Nth frame (raise to reduce GPU load) |
+
+---
+
+## Development workflow
+
+Source directories are bind-mounted into containers, so most changes take effect without rebuilding:
+
+| Service | After editing code | After changing `requirements.txt` |
+|---------|-------------------|----------------------------------|
+| `server` | Automatic (uvicorn `--reload` watches the bind mount) | `docker compose build server && docker compose up -d server` |
+| `rq-worker` | `docker compose restart rq-worker` | `docker compose build rq-worker && docker compose up -d rq-worker` |
+| `worker` | `docker compose --profile worker restart worker` | `docker compose --profile worker build worker && docker compose --profile worker up -d worker` |
+| `frontend` | Use `npm run dev` (Vite HMR) or rebuild: `docker compose --profile frontend build frontend && docker compose --profile frontend up -d frontend` | Same as rebuild |
+
+> **Tip:** Run `docker compose logs server -f` to confirm the server reloaded after a file change.
 
 ---
 
@@ -325,6 +371,21 @@ docker compose up --build -d
 ### Workers show "no camera to claim"
 
 No CCTVs are registered, or all cameras already have active worker heartbeats. Run `--seed` to add test cameras, or add cameras via **Cameras → Add Camera** in the UI.
+
+If cameras exist but the worker claims fewer than expected, check `CAMERAS_PER_WORKER`:
+
+```bash
+docker exec worker env | grep CAMERAS_PER_WORKER
+docker compose logs worker | grep "claiming up to"
+```
+
+Set it in `.env`:
+
+```env
+CAMERAS_PER_WORKER=4
+```
+
+Then `docker compose --profile worker up -d worker` to apply.
 
 ### PgBouncer connection refused
 
