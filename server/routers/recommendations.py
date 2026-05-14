@@ -308,3 +308,27 @@ def update_notes(
     db.refresh(rec)
 
     return _rec_to_response(rec, intersection.name if intersection else "")
+
+
+@router.get("/history/{intersection_id}", response_model=list[RecommendationResponse])
+def list_history(
+    intersection_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[models.User, Depends(get_current_user)],
+    limit: int = 50,
+):
+    """Return all recommendation runs for an intersection, newest first."""
+    intersection = db.get(models.Intersection, intersection_id)
+    if not intersection:
+        raise HTTPException(status_code=404, detail="Intersection not found")
+
+    limit = max(1, min(limit, 200))
+
+    rows = (
+        db.query(models.Recommendation)
+        .filter(models.Recommendation.intersection_id == intersection_id)
+        .order_by(models.Recommendation.generated_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [_rec_to_response(rec, intersection.name) for rec in rows]

@@ -291,3 +291,32 @@ def test_list_returns_one_row_per_intersection(auth):
     rows_for_iid = [r for r in rows if r["intersection_id"] == iid]
     assert len(rows_for_iid) == 1, f"Expected 1 row for intersection {iid}, got {len(rows_for_iid)}"
     assert rows_for_iid[0]["id"] == latest_id
+
+
+def test_history_endpoint_returns_descending_with_limit(auth):
+    """GET /recommendations/history/{id} returns rows newest-first, capped by limit."""
+    iid = _first_intersection_id(auth)
+    # Make sure there are at least 3 rows
+    for _ in range(3):
+        auth.post(f"{API_URL}/recommendations/generate/{iid}")
+
+    r = auth.get(f"{API_URL}/recommendations/history/{iid}?limit=2")
+    assert r.status_code == 200, r.text
+    rows = r.json()
+    assert isinstance(rows, list)
+    assert len(rows) == 2
+    # Descending by generated_at
+    from datetime import datetime
+    ts = [datetime.fromisoformat(row["generated_at"].replace("Z", "+00:00")) for row in rows]
+    assert ts[0] >= ts[1]
+    # Required structured fields present
+    assert "major_volume" in rows[0]
+    assert "recommended_confidence" in rows[0]
+
+
+def test_history_limit_clamped(auth):
+    """limit above 200 is clamped to 200."""
+    iid = _first_intersection_id(auth)
+    r = auth.get(f"{API_URL}/recommendations/history/{iid}?limit=9999")
+    assert r.status_code == 200
+    assert len(r.json()) <= 200
