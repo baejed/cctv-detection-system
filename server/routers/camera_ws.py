@@ -309,11 +309,13 @@ async def camera_ws(websocket: WebSocket, cctv_id: int, token: str = "", overlay
     thread.start()
 
     try:
+        timeout = 30.0
         while True:
             try:
-                frame_bytes = await asyncio.to_thread(frame_q.get, True, 5.0)
+                frame_bytes = await asyncio.to_thread(frame_q.get, True, timeout)
             except Exception:
                 break
+            timeout = 10.0
             try:
                 await websocket.send_bytes(frame_bytes)
             except (WebSocketDisconnect, RuntimeError):

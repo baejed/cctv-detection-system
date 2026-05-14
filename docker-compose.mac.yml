@@ -108,7 +108,7 @@ services:
     environment:
       DATABASE_URL: postgresql://postgres:postgres@pgbouncer:5432/traffic
       REDIS_URL: redis://redis:6379
-      CAMERAS_PER_WORKER: ${CAMERAS_PER_WORKER:-4}
+      CAMERAS_PER_WORKER: ${CAMERAS_PER_WORKER:-1}
       INFERENCE_EVERY_N: ${INFERENCE_EVERY_N:-1}
     depends_on:
       pgbouncer:
@@ -138,6 +138,14 @@ services:
       - "80:80"
     depends_on:
       - server
+
+  mediamtx:
+    image: bluenviron/mediamtx
+    container_name: mediamtx
+    restart: unless-stopped
+    ports:
+      - "8554:8554"   # RTSP
+      - "1935:1935"   # RTMP (OBS input)
 
 networks:
   default:
