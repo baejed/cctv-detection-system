@@ -12,6 +12,10 @@ import { RecommendationsTable, sortRows, type SortState } from '@/components/rec
 import { DetailSheet } from '@/components/recommendations/DetailSheet';
 import { statusBucket, type StatusBucket } from '@/components/recommendations/statusBucket';
 
+const DEBUG = import.meta.env.DEV || import.meta.env.VITE_DEBUG_RECOMMENDATIONS === '1';
+function dlog(...args: unknown[]) { if (DEBUG) console.log('[recommendations]', ...args); }
+function derr(...args: unknown[]) { console.error('[recommendations]', ...args); }
+
 export function RecommendationsPage() {
   const [intersections, setIntersections] = useState<Intersection[]>([]);
   const [recs, setRecs] = useState<RecommendationResponse[]>([]);
@@ -32,6 +36,8 @@ export function RecommendationsPage() {
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
+    dlog('load: fetching intersections + recommendations');
+    const t0 = performance.now();
     try {
       const [ints, r] = await Promise.all([
         intersectionsApi.list(),
@@ -39,7 +45,9 @@ export function RecommendationsPage() {
       ]);
       setIntersections(ints);
       setRecs(r);
+      dlog(`load: done in ${(performance.now() - t0).toFixed(0)}ms — ${ints.length} intersections, ${r.length} recs`);
     } catch (err: unknown) {
+      derr('load failed', err);
       setError(err instanceof Error ? err.message : 'Failed to load');
     } finally {
       setLoading(false);
@@ -49,15 +57,19 @@ export function RecommendationsPage() {
 
   async function regenerateOne(intersectionId: number): Promise<RecommendationResponse | null> {
     setRegeneratingIds(prev => new Set(prev).add(intersectionId));
+    dlog(`regenerateOne: intersection=${intersectionId}`);
+    const t0 = performance.now();
     try {
       const fresh = await recommendationsApi.generate(intersectionId);
       setRecs(prev => {
         const without = prev.filter(r => r.intersection_id !== intersectionId);
         return [...without, fresh];
       });
+      dlog(`regenerateOne: done in ${(performance.now() - t0).toFixed(0)}ms`, fresh);
       toast.success('Analysis complete');
       return fresh;
     } catch (err: unknown) {
+      derr(`regenerateOne intersection=${intersectionId} failed`, err);
       toast.error(err instanceof Error ? err.message : 'Analysis failed');
       return null;
     } finally {
@@ -71,12 +83,16 @@ export function RecommendationsPage() {
 
   async function regenerateAll() {
     setGeneratingAll(true);
+    dlog('regenerateAll: starting');
+    const t0 = performance.now();
     try {
       const results = await recommendationsApi.generateAll();
       setRecs(results);
       const warranted = results.filter(r => r.recommended).length;
+      dlog(`regenerateAll: done in ${(performance.now() - t0).toFixed(0)}ms — ${results.length} recs, ${warranted} warranted`);
       toast.success(`Analysis complete — ${warranted} warranted`);
     } catch (err: unknown) {
+      derr('regenerateAll failed', err);
       toast.error(err instanceof Error ? err.message : 'Analysis failed');
     } finally {
       setGeneratingAll(false);
@@ -84,6 +100,7 @@ export function RecommendationsPage() {
   }
 
   function onNotesSaved(updated: RecommendationResponse) {
+    dlog(`onNotesSaved: id=${updated.id} intersection=${updated.intersection_id}`);
     setRecs(prev => prev.map(r => (r.id === updated.id ? updated : r)));
   }
 
