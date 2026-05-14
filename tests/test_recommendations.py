@@ -274,3 +274,20 @@ def test_generate_inserts_does_not_replace(auth, db):
 
     # The two responses are different rows
     assert r1.json()["id"] != r2.json()["id"]
+
+
+def test_list_returns_one_row_per_intersection(auth):
+    """After regenerating, GET / returns exactly one row per intersection (the latest)."""
+    iid = _first_intersection_id(auth)
+    # Generate twice so there are at least two rows for this intersection
+    auth.post(f"{API_URL}/recommendations/generate/{iid}")
+    r2 = auth.post(f"{API_URL}/recommendations/generate/{iid}")
+    latest_id = r2.json()["id"]
+
+    listing = auth.get(f"{API_URL}/recommendations/")
+    assert listing.status_code == 200
+    rows = listing.json()
+
+    rows_for_iid = [r for r in rows if r["intersection_id"] == iid]
+    assert len(rows_for_iid) == 1, f"Expected 1 row for intersection {iid}, got {len(rows_for_iid)}"
+    assert rows_for_iid[0]["id"] == latest_id

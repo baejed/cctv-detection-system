@@ -200,17 +200,19 @@ def list_recommendations(
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[models.User, Depends(get_current_user)],
 ):
-    """List all recommendations joined with intersection name."""
+    """Return the latest recommendation per intersection."""
     rows = db.execute(text("""
-        SELECT
+        SELECT DISTINCT ON (r.intersection_id)
             r.id, r.intersection_id, i.name AS intersection_name,
             r.warrant_1_met, r.warrant_1_confidence,
             r.warrant_2_met, r.warrant_2_confidence,
             r.warrant_4_met, r.warrant_4_confidence,
-            r.recommended, r.notes, r.generated_at
+            r.recommended, r.recommended_confidence,
+            r.major_volume, r.minor_volume, r.peds, r.vpm, r.phf,
+            r.hour_start, r.notes, r.generated_at
         FROM recommendations r
         JOIN intersections i ON i.id = r.intersection_id
-        ORDER BY r.generated_at DESC
+        ORDER BY r.intersection_id, r.generated_at DESC
     """)).fetchall()
 
     return [
@@ -225,6 +227,13 @@ def list_recommendations(
             "warrant_4_met": r.warrant_4_met,
             "warrant_4_confidence": r.warrant_4_confidence,
             "recommended": r.recommended,
+            "recommended_confidence": r.recommended_confidence,
+            "major_volume": r.major_volume,
+            "minor_volume": r.minor_volume,
+            "peds": r.peds,
+            "vpm": r.vpm,
+            "phf": r.phf,
+            "hour_start": r.hour_start.isoformat() if r.hour_start else None,
             "notes": r.notes,
             "generated_at": r.generated_at.isoformat(),
         }
