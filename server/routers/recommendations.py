@@ -137,6 +137,8 @@ def _analyze(
     """Compute features for the most recent hour, run the model, return a flat dict
     suitable for kwargs into `models.Recommendation(...)`.
     """
+    if artifacts is None:
+        raise HTTPException(status_code=503, detail="Warrant model not available")
     from server.ml.inference import predict_warrants  # local import keeps top of file clean
 
     t0 = time.perf_counter()

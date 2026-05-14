@@ -56,12 +56,16 @@ async def lifespan(app: FastAPI):
         except Exception:
             db.rollback()
     from pathlib import Path
-    from server.ml.inference import load_warrant_model
-    ml_dir = Path(__file__).resolve().parent / "ml"
-    app.state.warrant_artifacts = load_warrant_model(
-        ml_dir / "warrant_model.pt",
-        ml_dir / "warrant_scaler.pkl",
-    )
+    try:
+        from server.ml.inference import load_warrant_model
+        ml_dir = Path(__file__).resolve().parent / "ml"
+        app.state.warrant_artifacts = load_warrant_model(
+            ml_dir / "warrant_model.pt",
+            ml_dir / "warrant_scaler.pkl",
+        )
+    except Exception as exc:
+        logging.warning("Warrant model unavailable, predictions disabled: %s", exc)
+        app.state.warrant_artifacts = None
     task = asyncio.create_task(aggregation_pusher())
     yield
     task.cancel()
