@@ -61,7 +61,7 @@ export function RecommendationsTable({
             const isRegenerating = regeneratingIds.has(rec.intersection_id);
             return (
               <TableRow
-                key={rec.id}
+                key={rec.intersection_id}
                 onClick={() => onRowClick(rec)}
                 className="cursor-pointer hover:bg-muted/40"
               >
@@ -159,7 +159,11 @@ export function sortRows(rows: RecommendationResponse[], sort: SortState): Recom
       case 'status': {
         const cmp = STATUS_ORDER[statusBucket(a)] - STATUS_ORDER[statusBucket(b)];
         if (cmp !== 0) return sign * cmp;
-        // Spec tiebreaker: recommended_confidence descending within a status bucket
+        // Tiebreaker is fixed descending by design — within any bucket, the strongest
+        // recommended_confidence sorts first regardless of the user's chosen status sort
+        // direction. The spec calls for "Warranted first, then recommended_confidence
+        // descending" and inverting the inner sort on a desc click would scatter weak
+        // recommendations to the top of the warranted bucket.
         return (b.recommended_confidence ?? 0) - (a.recommended_confidence ?? 0);
       }
       case 'w1':        return sign * (a.warrant_1_confidence - b.warrant_1_confidence);

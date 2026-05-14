@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { type RecommendationResponse, recommendationsApi } from '@/services/recommendations';
 import { Progress } from '@/components/ui/progress';
@@ -26,6 +26,12 @@ export function LatestTab({ rec, onRegenerate, regenerating, onNotesSaved }: Pro
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(rec.notes ?? '');
   const [saving, setSaving] = useState(false);
+
+  // Reset the notes editor when the underlying record changes (e.g. after regenerate)
+  useEffect(() => {
+    setEditing(false);
+    setDraft(rec.notes ?? '');
+  }, [rec.id]);
 
   async function save() {
     setSaving(true);
@@ -137,7 +143,7 @@ function Stat({ label, value, suffix, digits = 0 }: { label: string; value: numb
     <div className="rounded-md border border-border bg-card px-2 py-2">
       <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
       <div className="text-sm font-semibold tabular-nums mt-0.5">
-        {value === null ? '—' : digits ? value.toFixed(digits) : value}
+        {value === null ? '—' : digits > 0 ? value.toFixed(digits) : value}
       </div>
       {suffix && <div className="text-[9px] text-muted-foreground">{suffix}</div>}
     </div>

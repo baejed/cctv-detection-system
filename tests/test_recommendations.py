@@ -179,6 +179,11 @@ def test_feature_extraction_phf_single_minute_spike():
     assert feats["phf"] == pytest.approx(0.25)
 
 
+# NOTE: Integration tests below mutate shared state on the live stack —
+# `_first_intersection_id` returns whichever intersection the seed script
+# happened to insert first, and several tests POST to it. They run reliably
+# in the default pytest order because each adds rows without removing any.
+# If you reorder tests or run in parallel, expect potential flakiness.
 # ─── Integration tests (require docker compose stack + seed data) ────────────
 
 

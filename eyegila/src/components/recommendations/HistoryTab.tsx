@@ -1,38 +1,24 @@
-import { useEffect, useState } from 'react';
-import { type RecommendationResponse, recommendationsApi } from '@/services/recommendations';
+import { useState } from 'react';
+import { type RecommendationResponse } from '@/services/recommendations';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 
 interface Props {
-  intersectionId: number;
-  /** Optionally seed with rows pushed in from the parent (e.g. after regenerate). */
-  seed?: RecommendationResponse[];
+  rows: RecommendationResponse[] | undefined;
+  loading: boolean;
+  error: boolean;
+  onRetry: () => void;
 }
 
-export function HistoryTab({ intersectionId, seed }: Props) {
-  const [rows, setRows] = useState<RecommendationResponse[] | null>(seed ?? null);
-  const [loading, setLoading] = useState(seed === undefined);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (rows !== null) return;
-    let cancelled = false;
-    setLoading(true);
-    recommendationsApi.history(intersectionId, 50)
-      .then(r => { if (!cancelled) { setRows(r); setError(null); } })
-      .catch((e: unknown) => { if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load history'); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [intersectionId, rows]);
-
+export function HistoryTab({ rows, loading, error, onRetry }: Props) {
   if (loading) return <div className="flex flex-col gap-2"><Skeleton className="h-40" /><Skeleton className="h-20" /></div>;
   if (error) {
     return (
       <div className="flex flex-col items-start gap-2 text-xs">
-        <p className="text-rose-600">{error}</p>
-        <Button size="sm" variant="outline" onClick={() => { setRows(null); setError(null); }}>Retry</Button>
+        <p className="text-rose-600">Failed to load history</p>
+        <Button size="sm" variant="outline" onClick={onRetry}>Retry</Button>
       </div>
     );
   }

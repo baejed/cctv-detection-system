@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { type RecommendationResponse } from '@/services/recommendations';
+import { type RecommendationResponse, recommendationsApi } from '@/services/recommendations';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { LatestTab } from './LatestTab';
@@ -15,20 +15,41 @@ interface Props {
 
 export function DetailSheet({ rec, onClose, onRegenerate, regenerating, onNotesSaved }: Props) {
   const [tab, setTab] = useState<'latest' | 'history'>('latest');
-  const [historySeed, setHistorySeed] = useState<RecommendationResponse[] | undefined>(undefined);
+  const [historyRows, setHistoryRows] = useState<RecommendationResponse[] | undefined>(undefined);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState(false);
 
-  // Reset tab + seed whenever the user opens a different intersection
+  // Reset tab + history rows whenever the user opens a different intersection
   useEffect(() => {
     if (rec) {
       setTab('latest');
-      setHistorySeed(undefined);
+      setHistoryRows(undefined);
+      setHistoryError(false);
     }
   }, [rec?.intersection_id]);
+
+  // Fetch history when the History tab becomes active and rows are not yet loaded
+  useEffect(() => {
+    if (tab !== 'history' || !rec || historyRows !== undefined || historyLoading) return;
+    let cancelled = false;
+    setHistoryLoading(true);
+    setHistoryError(false);
+    recommendationsApi.history(rec.intersection_id, 50)
+      .then(rows => { if (!cancelled) setHistoryRows(rows); })
+      .catch(() => { if (!cancelled) setHistoryError(true); })
+      .finally(() => { if (!cancelled) setHistoryLoading(false); });
+    return () => { cancelled = true; };
+  }, [tab, rec?.intersection_id, historyRows, historyLoading]);
+
+  function retryHistory() {
+    setHistoryRows(undefined);
+    setHistoryError(false);
+  }
 
   async function handleRegenerate() {
     if (!rec) return;
     const fresh = await onRegenerate(rec.intersection_id);
-    if (fresh) setHistorySeed(prev => (prev ? [fresh, ...prev] : undefined));
+    if (fresh) setHistoryRows(prev => (prev ? [fresh, ...prev] : undefined));
   }
 
   return (
@@ -55,7 +76,12 @@ export function DetailSheet({ rec, onClose, onRegenerate, regenerating, onNotesS
                 />
               </TabsContent>
               <TabsContent value="history" className="mt-4">
-                <HistoryTab intersectionId={rec.intersection_id} seed={historySeed} />
+                <HistoryTab
+                  rows={historyRows}
+                  loading={historyLoading}
+                  error={historyError}
+                  onRetry={retryHistory}
+                />
               </TabsContent>
             </Tabs>
           </>
