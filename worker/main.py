@@ -35,6 +35,7 @@ FPS_SAMPLE_INTERVAL   = 30
 FLUSH_INTERVAL_SEC    = 0.3
 MAX_BUFFER_SIZE       = 1000
 CLAIM_CHECK_FRAMES    = 100
+CLAIM_CHECK_INTERVAL  = 15.0  # time-based verify_claim — catches reconnecting slots
 RECLAIM_INTERVAL      = 5.0   # seconds between slot-fill attempts
 REGION_REFRESH_SEC    = 60.0  # re-read regions from DB in case polygons changed
 
@@ -70,6 +71,7 @@ class CameraSlot:
     claim_lost: bool = False
     last_frame: Optional[np.ndarray] = None
     last_region_refresh_ts: float = field(default_factory=time.time)
+    last_claim_check_ts: float = field(default_factory=time.time)
 
 
 def _camera_reader(
@@ -344,6 +346,14 @@ def main() -> None:
 
             if args.show and cv2.waitKey(1) & 0xFF == ord("q"):
                 break
+
+            # time-based claim check — runs even when no frames arrive (reconnecting cameras)
+            for slot in slots:
+                if not slot.claim_lost and now - slot.last_claim_check_ts >= CLAIM_CHECK_INTERVAL:
+                    if not verify_claim(db, slot.cctv_id, slot.claim_version):
+                        print(f"[worker] time-based verify_claim lost cctv={slot.cctv_id}, evicting")
+                        slot.claim_lost = True
+                    slot.last_claim_check_ts = now
 
             # evict slots that lost their claim
             lost = [s for s in slots if s.claim_lost]
