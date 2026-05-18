@@ -74,8 +74,25 @@ Commit: 700123f
   sortable, with tooltip description of each warrant)
 - Tests: 11 unit tests (pure function logic, edge cases) + 6 integration tests
 
-### Issue 6 — Analytical delay simulation + Signal Timing page [ ] TODO
-Blocked by: Issue 4
+### Issue 6 — Analytical delay simulation + Signal Timing page ✅ DONE (2026-05-18)
+Commit: bcc121b
+
+- server/simulation.py: compute_uniform_delay (Webster's uniform delay d=C(1-λ)²/(2(1-x))),
+  compute_hcm_gap_delay (HCM 6th ed. TWSC gap-acceptance potential capacity + control delay),
+  _queue_series_signalized/_unsignalized (per-minute queue, 60-minute window),
+  generate_simulation() (before/after per TOD chunk)
+- common/models.py: SimulationResult model (delay_before/after, volume_pcu_hr,
+  vehicle_hours_saved, queue_series_before/after JSON) + relationships
+- Alembic migration 0010: simulation_results table with indexes
+- server/routers/simulation.py: GET /simulation/{intersection_id} → per-chunk + daily summary
+- recommendations.py: generate_simulation() called in both generate/{id} and generate-all
+- eyegila/src/services/simulation.ts: simulationApi.get()
+- eyegila/src/pages/SignalTiming.tsx: per-chunk delay table (before/after/improvement/vehicle-hours),
+  daily summary strip, 60-min queue-length time-series chart with before/after toggle + chunk
+  selector (Recharts LineChart, dashed=before, solid=after, one color per approach)
+- eyegila/src/App.tsx: /timing/:id route
+- RecommendationsTable.tsx: BarChart2 icon button linking to /timing/:id when timing exists
+- tests/test_simulation.py: 11 unit tests (delay formulas, capping, queue series) + 6 integration tests
 
 ### Issue 7 — Top-down 2D canvas simulation [ ] TODO
 Blocked by: Issue 6
