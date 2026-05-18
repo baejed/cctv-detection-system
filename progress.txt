@@ -41,8 +41,20 @@ Commit: 355f74c
 - Frontend: Clock "TOD" button + inline-edit modal on Intersections page
 - Tests: 8 unit tests (conversion, validation, active lookup) + 6 integration tests
 
-### Issue 4 — Webster's formula engine + timing recommendations [ ] TODO
-Blocked by: Issues 1, 2, 3
+### Issue 4 — Webster's formula engine + timing recommendations ✅ DONE (2026-05-18)
+Commit: 77d3fea
+
+- TimingRecommendation model + migration 0008 (timing_recommendations table)
+- Intersection gains 4 DPWH-default timing config columns (lost_time_per_phase=4,
+  all_red_clearance=3, min_cycle_length=40, max_cycle_length=120)
+- server/webster.py: compute_timing() (Webster's formula, Y≥0.9 clamp, proportional
+  green splits), _pcu_flow_per_street() (7-day rolling PCU/hr per TOD chunk),
+  generate_timing_for_recommendation() (per-chunk + overall rows)
+- server/routers/timing.py: GET /timing-recommendations/{intersection_id}
+- recommendations.py: timing generation triggered in POST generate/{id} and
+  generate-all; list endpoint LEFT JOINs for timing_cycle/timing_chunk fields
+- Frontend: Timing column in RecommendationsTable ("90s (PM Peak)")
+- tests/test_timing.py: 10 unit + 6 integration tests
 
 ### Issue 5 — Local warrant layer (W-Local 1/2/3) [ ] TODO
 Blocked by: Issues 3, 4
