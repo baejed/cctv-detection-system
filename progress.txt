@@ -94,5 +94,18 @@ Commit: bcc121b
 - RecommendationsTable.tsx: BarChart2 icon button linking to /timing/:id when timing exists
 - tests/test_simulation.py: 11 unit tests (delay formulas, capping, queue series) + 6 integration tests
 
-### Issue 7 — Top-down 2D canvas simulation [ ] TODO
-Blocked by: Issue 6
+### Issue 7 — Top-down 2D canvas simulation ✅ DONE (2026-05-18)
+Commit: d3c8aa4
+
+- eyegila/src/services/timing.ts: timingApi.list() — wraps GET /timing-recommendations/{id}
+- eyegila/src/components/IntersectionCanvas.tsx: HTML Canvas API component (no external deps)
+  - Top-down 4-leg intersection (N/E/S/W arms), dark road theme with dashed center lines + stop lines
+  - Per-approach colored queue bars grow from stop line outward during red, clear during green
+  - Signal dots cycle green/red through 4-phase rotation using Webster's splits (After mode);
+    show amber/yellow for Before mode or signal_off chunks
+  - Play/pause + reset controls; speed multiplier 1×/5×/10× (60/300/600 sim-sec per real-sec)
+  - Before/After toggle — switches queue series; After shows signal cycling, Before shows static amber
+  - RAF loop permanent (empty deps); all animation state in refs (no stale closure risk)
+  - Responsive via ResizeObserver (5:3 aspect ratio); resets on chunk change
+- eyegila/src/pages/SignalTiming.tsx: co-fetches timingApi.list() alongside simulationApi.get();
+  adds canvas section below queue chart for the active TOD chunk
