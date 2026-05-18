@@ -1,3 +1,11 @@
+export interface TodChunk {
+  id: number;
+  intersection_id: number;
+  name: string;
+  start_time: string;  // "HH:MM"
+  end_time: string;    // "HH:MM"
+}
+
 export interface User {
   id: number;
   username: string;

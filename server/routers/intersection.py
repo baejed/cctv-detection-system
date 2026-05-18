@@ -1,5 +1,6 @@
 from server.schemas import IntersectionCreate, IntersectionUpdate, IntersectionResponse, SignalTimingUpdate
 from server.utils import log_and_commit, get_current_user
+from server.tod import seed_tod_chunks
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from common.models import User, Intersection, CCTV
 from common.database import get_db
@@ -23,6 +24,8 @@ def create_intersection(
 ) -> IntersectionResponse:
     db_intersection = Intersection(name=intersection.name, latitude=intersection.latitude, longitude=intersection.longitude)
     db.add(db_intersection)
+    db.flush()
+    seed_tod_chunks(db, db_intersection.id)
     log_and_commit(f"User {user.username} created intersection {db_intersection.name}", db)
     db.refresh(db_intersection)
     return db_intersection

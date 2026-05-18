@@ -7,7 +7,8 @@ import { intersectionsApi } from '@/services/intersections';
 import { streetsApi } from '@/services/streets';
 import { recommendationsApi, type RecommendationResponse } from '@/services/recommendations';
 import { pceApi, type PceValue } from '@/services/pce';
-import type { Intersection, SignalStatus, Street } from '@/types';
+import { todApi } from '@/services/tod';
+import type { Intersection, SignalStatus, Street, TodChunk } from '@/types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -18,7 +19,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Separator } from '@/components/ui/separator';
-import { MapPin, Plus, Pencil, Trash2, ChevronRight, Loader2, TrafficCone } from 'lucide-react';
+import { MapPin, Plus, Pencil, Trash2, ChevronRight, Loader2, TrafficCone, Clock } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { statusBucket, BUCKET_LABEL, BUCKET_BADGE_CLASS } from '@/components/recommendations/statusBucket';
 import { cn } from '@/lib/utils';
@@ -87,6 +88,14 @@ export function IntersectionsPage() {
   const [pceEditType, setPceEditType] = useState('');
   const [pceEditValue, setPceEditValue] = useState('');
   const [savingPce, setSavingPce] = useState(false);
+
+  const [showTodModal, setShowTodModal] = useState(false);
+  const [todTarget, setTodTarget] = useState<Intersection | null>(null);
+  const [todChunks, setTodChunks] = useState<TodChunk[]>([]);
+  const [todLoading, setTodLoading] = useState(false);
+  const [todEditId, setTodEditId] = useState<number | null>(null);
+  const [todEditForm, setTodEditForm] = useState({ name: '', start_time: '', end_time: '' });
+  const [savingTod, setSavingTod] = useState(false);
 
   const [recsById, setRecsById] = useState<Map<number, RecommendationResponse>>(new Map());
 
@@ -242,6 +251,41 @@ export function IntersectionsPage() {
     }
   }
 
+  async function openTodModal(inter: Intersection) {
+    setTodTarget(inter);
+    setTodEditId(null);
+    setShowTodModal(true);
+    setTodLoading(true);
+    try {
+      const chunks = await todApi.list(inter.id);
+      setTodChunks(chunks);
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Failed to load TOD chunks');
+    } finally {
+      setTodLoading(false);
+    }
+  }
+
+  function startTodEdit(chunk: TodChunk) {
+    setTodEditId(chunk.id);
+    setTodEditForm({ name: chunk.name, start_time: chunk.start_time, end_time: chunk.end_time });
+  }
+
+  async function saveTodChunk() {
+    if (!todTarget || todEditId === null) return;
+    setSavingTod(true);
+    try {
+      const updated = await todApi.update(todTarget.id, todEditId, todEditForm);
+      setTodChunks(updated);
+      setTodEditId(null);
+      toast.success('TOD chunk saved');
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Save failed');
+    } finally {
+      setSavingTod(false);
+    }
+  }
+
   const mapMarkers = intersections.filter(i => i.latitude && i.longitude);
 
   return (
@@ -344,6 +388,12 @@ export function IntersectionsPage() {
                             aria-label={`Signal timing for ${inter.name}`}>
                             <TrafficCone className="size-3 mr-1" aria-hidden="true" />
                             Timing
+                          </Button>
+                          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs"
+                            onClick={() => openTodModal(inter)}
+                            aria-label={`Time-of-day plans for ${inter.name}`}>
+                            <Clock className="size-3 mr-1" aria-hidden="true" />
+                            TOD
                           </Button>
                           <Button variant="ghost" size="sm" className="h-7 px-2 text-xs"
                             onClick={() => { setStreetParent(inter); setEditingStreet(null); setStreetName(''); setShowStreetModal(true); }}>
@@ -654,6 +704,94 @@ export function IntersectionsPage() {
               Recalibrate (7-day data)
             </Button>
             <Button variant="outline" onClick={() => setShowPceModal(false)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* TOD modal */}
+      <Dialog open={showTodModal} onOpenChange={setShowTodModal}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Time-of-Day Plans — {todTarget?.name}</DialogTitle>
+          </DialogHeader>
+          <Separator />
+          <div className="flex flex-col gap-3 py-1">
+            {todLoading ? (
+              <div className="flex flex-col gap-2">
+                {[1, 2, 3, 4, 5].map(i => <div key={i} className="h-8 rounded bg-muted animate-pulse" />)}
+              </div>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-xs text-muted-foreground border-b">
+                    <th className="text-left pb-1 font-medium">Name</th>
+                    <th className="text-center pb-1 font-medium">Start</th>
+                    <th className="text-center pb-1 font-medium">End</th>
+                    <th className="w-8" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {todChunks.map(chunk => (
+                    <tr key={chunk.id} className="border-b last:border-0">
+                      {todEditId === chunk.id ? (
+                        <>
+                          <td className="py-1.5 pr-1">
+                            <Input
+                              className="h-7 text-xs"
+                              value={todEditForm.name}
+                              onChange={e => setTodEditForm({ ...todEditForm, name: e.target.value })}
+                            />
+                          </td>
+                          <td className="py-1.5 px-1">
+                            <Input
+                              className="h-7 text-xs font-mono text-center"
+                              placeholder="HH:MM"
+                              value={todEditForm.start_time}
+                              onChange={e => setTodEditForm({ ...todEditForm, start_time: e.target.value })}
+                            />
+                          </td>
+                          <td className="py-1.5 px-1">
+                            <Input
+                              className="h-7 text-xs font-mono text-center"
+                              placeholder="HH:MM"
+                              value={todEditForm.end_time}
+                              onChange={e => setTodEditForm({ ...todEditForm, end_time: e.target.value })}
+                            />
+                          </td>
+                          <td className="py-1.5 pl-1">
+                            <div className="flex gap-1">
+                              <Button size="sm" className="h-7 px-2 text-xs" disabled={savingTod} onClick={saveTodChunk}>
+                                {savingTod ? <Loader2 className="size-3 animate-spin" /> : 'Save'}
+                              </Button>
+                              <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => setTodEditId(null)}>
+                                ✕
+                              </Button>
+                            </div>
+                          </td>
+                        </>
+                      ) : (
+                        <>
+                          <td className="py-1.5">{chunk.name}</td>
+                          <td className="py-1.5 text-center font-mono text-xs">{chunk.start_time}</td>
+                          <td className="py-1.5 text-center font-mono text-xs">{chunk.end_time}</td>
+                          <td className="py-1.5">
+                            <Button variant="ghost" size="icon" className="size-6" onClick={() => startTodEdit(chunk)}>
+                              <Pencil className="size-3" aria-hidden="true" />
+                            </Button>
+                          </td>
+                        </>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            <p className="text-xs text-muted-foreground">
+              Chunks must be contiguous and cover all 24 hours. Editing one boundary does not automatically adjust adjacent chunks.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowTodModal(false)}>Close</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

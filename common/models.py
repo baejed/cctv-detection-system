@@ -56,6 +56,7 @@ class Intersection(Base):
     videos                = relationship("Video",              back_populates="intersection")
     pce_overrides         = relationship("PceOverride",        back_populates="intersection", cascade="all, delete")
     pce_calibrated_values = relationship("PceCalibratedValue", back_populates="intersection", cascade="all, delete")
+    tod_chunks            = relationship("TodChunk",           back_populates="intersection", cascade="all, delete")
 
 
 class Street(Base):
@@ -224,6 +225,19 @@ class PushSubscription(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     user = relationship("User", back_populates="push_subscriptions")
+
+
+class TodChunk(Base):
+    __tablename__ = "tod_chunks"
+
+    id              = Column(Integer, primary_key=True, autoincrement=True)
+    intersection_id = Column(Integer, ForeignKey("intersections.id", ondelete="CASCADE"), nullable=False)
+    name            = Column(String(50), nullable=False)
+    start_minutes   = Column(Integer, nullable=False)
+    end_minutes     = Column(Integer, nullable=False)
+    created_at      = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    intersection = relationship("Intersection", back_populates="tod_chunks")
 
 
 class PceOverride(Base):
