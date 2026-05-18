@@ -23,7 +23,7 @@ from server.pce import resolve_pce
 SATURATION_FLOW = 1800  # PCU/hr per approach (single lane)
 
 
-def _pcu_flow_per_street(
+def pcu_flow_per_street(
     db: Session,
     intersection_id: int,
     chunk: TodChunk,
@@ -144,7 +144,7 @@ def generate_timing_for_recommendation(
     peak_total_flow   = -1.0
 
     for chunk in chunks:
-        flows = _pcu_flow_per_street(db, intersection.id, chunk, pce_map)
+        flows = pcu_flow_per_street(db, intersection.id, chunk, pce_map)
 
         if flows:
             cycle, splits = compute_timing(flows, lost_time, all_red, min_c, max_c)

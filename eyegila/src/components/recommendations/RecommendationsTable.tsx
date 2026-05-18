@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import { type RecommendationResponse } from '@/services/recommendations';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -5,7 +6,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
-import { CheckCircle2, RefreshCw, Loader2, ArrowUp, ArrowDown } from 'lucide-react';
+import { CheckCircle2, RefreshCw, Loader2, ArrowUp, ArrowDown, BarChart2 } from 'lucide-react';
 import { statusBucket, BUCKET_LABEL, BUCKET_BADGE_CLASS } from './statusBucket';
 
 export type SortKey =
@@ -92,7 +93,14 @@ export function RecommendationsTable({
                 <TableCell className="text-xs text-muted-foreground" title={new Date(rec.generated_at).toLocaleString()}>
                   {relativeTime(rec.generated_at)}
                 </TableCell>
-                <TableCell onClick={e => e.stopPropagation()}>
+                <TableCell onClick={e => e.stopPropagation()} className="flex gap-1">
+                  {rec.timing_cycle != null && (
+                    <Link to={`/timing/${rec.intersection_id}`} tabIndex={-1}>
+                      <Button size="icon" variant="ghost" className="size-7" aria-label="View timing">
+                        <BarChart2 className="size-3.5" />
+                      </Button>
+                    </Link>
+                  )}
                   <Button
                     size="icon"
                     variant="ghost"

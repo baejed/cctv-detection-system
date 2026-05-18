@@ -12,6 +12,7 @@ import { VideosPage } from './pages/Videos';
 import { RecommendationsPage } from './pages/Recommendations';
 import { UsersPage } from './pages/Users';
 import { ManualPage } from './pages/Manual';
+import { SignalTimingPage } from './pages/SignalTiming';
 
 export default function App() {
   return (
@@ -37,6 +38,7 @@ export default function App() {
             <Route path="recommendations" element={<RecommendationsPage />} />
             <Route path="users" element={<UsersPage />} />
             <Route path="manual" element={<ManualPage />} />
+            <Route path="timing/:id" element={<SignalTimingPage />} />
           </Route>
 
           <Route path="*" element={<Navigate to="/" replace />} />

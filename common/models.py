@@ -65,6 +65,7 @@ class Intersection(Base):
     pce_calibrated_values  = relationship("PceCalibratedValue", back_populates="intersection", cascade="all, delete")
     tod_chunks             = relationship("TodChunk",           back_populates="intersection", cascade="all, delete")
     timing_recommendations = relationship("TimingRecommendation", back_populates="intersection", cascade="all, delete")
+    simulation_results     = relationship("SimulationResult",     back_populates="intersection", cascade="all, delete")
 
 
 class Street(Base):
@@ -227,6 +228,7 @@ class Recommendation(Base):
 
     intersection           = relationship("Intersection",         back_populates="recommendations")
     timing_recommendations = relationship("TimingRecommendation", back_populates="recommendation", cascade="all, delete")
+    simulation_results     = relationship("SimulationResult",     back_populates="recommendation", cascade="all, delete")
 
 
 class PushSubscription(Base):
@@ -295,6 +297,25 @@ class TimingRecommendation(Base):
 
     intersection   = relationship("Intersection",  back_populates="timing_recommendations")
     recommendation = relationship("Recommendation", back_populates="timing_recommendations")
+
+
+class SimulationResult(Base):
+    __tablename__ = "simulation_results"
+
+    id                  = Column(Integer, primary_key=True, autoincrement=True)
+    intersection_id     = Column(Integer, ForeignKey("intersections.id",  ondelete="CASCADE"), nullable=False)
+    recommendation_id   = Column(Integer, ForeignKey("recommendations.id", ondelete="CASCADE"), nullable=False)
+    chunk_name          = Column(String(50), nullable=False)
+    delay_before        = Column(Float, nullable=False)
+    delay_after         = Column(Float, nullable=False)
+    volume_pcu_hr       = Column(Float, nullable=False, server_default="0")
+    vehicle_hours_saved = Column(Float, nullable=False, server_default="0")
+    queue_series_before = Column(JSON, nullable=True)
+    queue_series_after  = Column(JSON, nullable=True)
+    generated_at        = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    intersection  = relationship("Intersection",  back_populates="simulation_results")
+    recommendation = relationship("Recommendation", back_populates="simulation_results")
 
 
 class AggregationSummary(Base):

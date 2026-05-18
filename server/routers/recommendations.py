@@ -339,6 +339,12 @@ def generate_recommendation(
     )
     for tr in timing_rows:
         db.add(tr)
+    db.flush()
+
+    from server.simulation import generate_simulation
+    sim_rows = generate_simulation(db, intersection, rec.id, timing_rows)
+    for sr in sim_rows:
+        db.add(sr)
 
     db.commit()
     db.refresh(rec)
@@ -387,6 +393,12 @@ def generate_all_recommendations(
         )
         for tr in timing_rows:
             db.add(tr)
+        db.flush()
+
+        from server.simulation import generate_simulation
+        sim_rows = generate_simulation(db, intersection, rec.id, timing_rows)
+        for sr in sim_rows:
+            db.add(sr)
         db.flush()
         db.refresh(rec)
 
