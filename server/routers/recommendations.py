@@ -40,6 +40,8 @@ class RecommendationResponse(BaseModel):
     hour_start: Optional[str] = None
     notes: Optional[str]
     generated_at: str
+    timing_cycle: Optional[int] = None
+    timing_chunk: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -197,7 +199,12 @@ def _analyze(
     }
 
 
-def _rec_to_response(rec: models.Recommendation, intersection_name: str) -> dict:
+def _rec_to_response(
+    rec: models.Recommendation,
+    intersection_name: str,
+    timing_cycle: int | None = None,
+    timing_chunk: str | None = None,
+) -> dict:
     return {
         "id": rec.id,
         "intersection_id": rec.intersection_id,
@@ -218,6 +225,8 @@ def _rec_to_response(rec: models.Recommendation, intersection_name: str) -> dict
         "hour_start": rec.hour_start.isoformat() if rec.hour_start else None,
         "notes": rec.notes,
         "generated_at": rec.generated_at.isoformat(),
+        "timing_cycle": timing_cycle,
+        "timing_chunk": timing_chunk,
     }
 
 
@@ -226,7 +235,7 @@ def list_recommendations(
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[models.User, Depends(get_current_user)],
 ):
-    """Return the latest recommendation per intersection."""
+    """Return the latest recommendation per intersection, with timing summary."""
     rows = db.execute(text("""
         SELECT DISTINCT ON (r.intersection_id)
             r.id, r.intersection_id, i.name AS intersection_name,
@@ -235,9 +244,14 @@ def list_recommendations(
             r.warrant_4_met, r.warrant_4_confidence,
             r.recommended, r.recommended_confidence,
             r.major_volume, r.minor_volume, r.peds, r.vpm, r.phf,
-            r.hour_start, r.notes, r.generated_at
+            r.hour_start, r.notes, r.generated_at,
+            tr.cycle_length AS timing_cycle,
+            tr.chunk_name   AS timing_chunk
         FROM recommendations r
         JOIN intersections i ON i.id = r.intersection_id
+        LEFT JOIN timing_recommendations tr
+               ON tr.recommendation_id = r.id
+              AND tr.chunk_name = 'overall'
         ORDER BY r.intersection_id, r.generated_at DESC
     """)).fetchall()
 
@@ -262,6 +276,8 @@ def list_recommendations(
             "hour_start": r.hour_start.isoformat() if r.hour_start else None,
             "notes": r.notes,
             "generated_at": r.generated_at.isoformat(),
+            "timing_cycle": r.timing_cycle,
+            "timing_chunk": r.timing_chunk,
         }
         for r in rows
     ]
@@ -274,7 +290,9 @@ def generate_recommendation(
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[models.User, Depends(get_current_user)],
 ):
-    """Run warrant analysis for one intersection and insert a new row."""
+    """Run warrant analysis + timing for one intersection and insert new rows."""
+    from server.webster import generate_timing_for_recommendation
+
     intersection = db.get(models.Intersection, intersection_id)
     if not intersection:
         raise HTTPException(status_code=404, detail="Intersection not found")
@@ -283,10 +301,22 @@ def generate_recommendation(
 
     rec = models.Recommendation(intersection_id=intersection_id, **analysis)
     db.add(rec)
+    db.flush()  # populate rec.id before using it
+
+    timing_rows, peak_chunk = generate_timing_for_recommendation(db, intersection, rec.id)
+    for tr in timing_rows:
+        db.add(tr)
+
     db.commit()
     db.refresh(rec)
 
-    return _rec_to_response(rec, intersection.name)
+    overall = next((t for t in timing_rows if t.chunk_name == "overall"), None)
+    return _rec_to_response(
+        rec,
+        intersection.name,
+        timing_cycle=overall.cycle_length if overall else None,
+        timing_chunk=peak_chunk,
+    )
 
 
 @router.post("/generate-all", response_model=list[RecommendationResponse])
@@ -295,7 +325,9 @@ def generate_all_recommendations(
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[models.User, Depends(get_current_user)],
 ):
-    """Run warrant analysis for every intersection — inserts a new row per intersection."""
+    """Run warrant analysis + timing for every intersection."""
+    from server.webster import generate_timing_for_recommendation
+
     intersections = db.query(models.Intersection).all()
     results = []
 
@@ -305,8 +337,20 @@ def generate_all_recommendations(
         rec = models.Recommendation(intersection_id=intersection.id, **analysis)
         db.add(rec)
         db.flush()
+
+        timing_rows, peak_chunk = generate_timing_for_recommendation(db, intersection, rec.id)
+        for tr in timing_rows:
+            db.add(tr)
+        db.flush()
         db.refresh(rec)
-        results.append(_rec_to_response(rec, intersection.name))
+
+        overall = next((t for t in timing_rows if t.chunk_name == "overall"), None)
+        results.append(_rec_to_response(
+            rec,
+            intersection.name,
+            timing_cycle=overall.cycle_length if overall else None,
+            timing_chunk=peak_chunk,
+        ))
 
     db.commit()
     return results

@@ -11,7 +11,7 @@ import { statusBucket, BUCKET_LABEL, BUCKET_BADGE_CLASS } from './statusBucket';
 export type SortKey =
   | 'name' | 'status'
   | 'w1' | 'w2' | 'w4'
-  | 'major' | 'peds' | 'generated';
+  | 'major' | 'peds' | 'timing' | 'generated';
 
 export interface SortState {
   key: SortKey;
@@ -51,6 +51,7 @@ export function RecommendationsTable({
             <Th label="W4"            k="w4"        sort={sort} onClick={toggleSort} numeric />
             <Th label="Major /hr"     k="major"     sort={sort} onClick={toggleSort} numeric />
             <Th label="Peds /hr"      k="peds"      sort={sort} onClick={toggleSort} numeric />
+            <Th label="Timing"        k="timing"    sort={sort} onClick={toggleSort} />
             <Th label="Generated"     k="generated" sort={sort} onClick={toggleSort} />
             <TableHead className="w-10" />
           </TableRow>
@@ -76,6 +77,11 @@ export function RecommendationsTable({
                 <ProbCell met={rec.warrant_4_met} value={rec.warrant_4_confidence} />
                 <NumCell value={rec.major_volume} />
                 <NumCell value={rec.peds} />
+                <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                  {rec.timing_cycle != null
+                    ? `${rec.timing_cycle}s${rec.timing_chunk ? ` (${rec.timing_chunk})` : ''}`
+                    : '—'}
+                </TableCell>
                 <TableCell className="text-xs text-muted-foreground" title={new Date(rec.generated_at).toLocaleString()}>
                   {relativeTime(rec.generated_at)}
                 </TableCell>
@@ -171,6 +177,7 @@ export function sortRows(rows: RecommendationResponse[], sort: SortState): Recom
       case 'w4':        return sign * (a.warrant_4_confidence - b.warrant_4_confidence);
       case 'major':     return sign * ((a.major_volume ?? -1) - (b.major_volume ?? -1));
       case 'peds':      return sign * ((a.peds ?? -1) - (b.peds ?? -1));
+      case 'timing':    return sign * ((a.timing_cycle ?? -1) - (b.timing_cycle ?? -1));
       case 'generated': return sign * (new Date(a.generated_at).getTime() - new Date(b.generated_at).getTime());
     }
   });

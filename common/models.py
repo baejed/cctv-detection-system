@@ -48,15 +48,20 @@ class Intersection(Base):
     signal_status          = Column(String(20), nullable=False, server_default="unsignalized")
     existing_cycle_length  = Column(Integer, nullable=True)
     existing_green_splits  = Column(JSON, nullable=True)
+    lost_time_per_phase    = Column(Integer, nullable=False, server_default="4")
+    all_red_clearance      = Column(Integer, nullable=False, server_default="3")
+    min_cycle_length       = Column(Integer, nullable=False, server_default="40")
+    max_cycle_length       = Column(Integer, nullable=False, server_default="120")
     time                   = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    streets               = relationship("Street",              back_populates="intersection", cascade="all, delete")
-    cctvs                 = relationship("CCTV",               back_populates="intersection", cascade="all, delete")
-    recommendations       = relationship("Recommendation",     back_populates="intersection", cascade="all, delete")
-    videos                = relationship("Video",              back_populates="intersection")
-    pce_overrides         = relationship("PceOverride",        back_populates="intersection", cascade="all, delete")
-    pce_calibrated_values = relationship("PceCalibratedValue", back_populates="intersection", cascade="all, delete")
-    tod_chunks            = relationship("TodChunk",           back_populates="intersection", cascade="all, delete")
+    streets                = relationship("Street",              back_populates="intersection", cascade="all, delete")
+    cctvs                  = relationship("CCTV",               back_populates="intersection", cascade="all, delete")
+    recommendations        = relationship("Recommendation",     back_populates="intersection", cascade="all, delete")
+    videos                 = relationship("Video",              back_populates="intersection")
+    pce_overrides          = relationship("PceOverride",        back_populates="intersection", cascade="all, delete")
+    pce_calibrated_values  = relationship("PceCalibratedValue", back_populates="intersection", cascade="all, delete")
+    tod_chunks             = relationship("TodChunk",           back_populates="intersection", cascade="all, delete")
+    timing_recommendations = relationship("TimingRecommendation", back_populates="intersection", cascade="all, delete")
 
 
 class Street(Base):
@@ -211,7 +216,8 @@ class Recommendation(Base):
     notes                  = Column(Text,    nullable=True)
     generated_at           = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    intersection = relationship("Intersection", back_populates="recommendations")
+    intersection           = relationship("Intersection",         back_populates="recommendations")
+    timing_recommendations = relationship("TimingRecommendation", back_populates="recommendation", cascade="all, delete")
 
 
 class PushSubscription(Base):
@@ -262,6 +268,23 @@ class PceCalibratedValue(Base):
     calibrated_at   = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     intersection = relationship("Intersection", back_populates="pce_calibrated_values")
+
+
+class TimingRecommendation(Base):
+    __tablename__ = "timing_recommendations"
+
+    id               = Column(Integer, primary_key=True, autoincrement=True)
+    intersection_id  = Column(Integer, ForeignKey("intersections.id",  ondelete="CASCADE"), nullable=False)
+    recommendation_id = Column(Integer, ForeignKey("recommendations.id", ondelete="CASCADE"), nullable=False)
+    chunk_name       = Column(String(50), nullable=False)
+    cycle_length     = Column(Integer, nullable=False)
+    green_splits     = Column(JSON, nullable=False)
+    effective_date   = Column(DateTime(timezone=True), nullable=False)
+    pce_tier_used    = Column(String(20), nullable=False)
+    generated_at     = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    intersection   = relationship("Intersection",  back_populates="timing_recommendations")
+    recommendation = relationship("Recommendation", back_populates="timing_recommendations")
 
 
 class AggregationSummary(Base):

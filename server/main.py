@@ -27,6 +27,7 @@ from server.routers.camera_ws import router as camera_ws_router
 from server.routers import user, login, intersection, street, cctv, detection, region
 from server.routers.pce import router as pce_router
 from server.routers.tod import router as tod_router
+from server.routers.timing import router as timing_router
 
 load_dotenv()
 
@@ -150,3 +151,4 @@ app.include_router(detection.router)
 app.include_router(region.router)
 app.include_router(pce_router)
 app.include_router(tod_router)
+app.include_router(timing_router)

@@ -113,4 +113,6 @@ export interface Recommendation {
   hour_start: string | null;
   notes: string | null;
   generated_at: string;
+  timing_cycle: number | null;
+  timing_chunk: string | null;
 }
