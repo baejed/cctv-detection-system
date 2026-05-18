@@ -56,8 +56,23 @@ Commit: 77d3fea
 - Frontend: Timing column in RecommendationsTable ("90s (PM Peak)")
 - tests/test_timing.py: 10 unit + 6 integration tests
 
-### Issue 5 — Local warrant layer (W-Local 1/2/3) [ ] TODO
-Blocked by: Issues 3, 4
+### Issue 5 — Local warrant layer (W-Local 1/2/3) ✅ DONE (2026-05-18)
+Commit: 700123f
+
+- server/local_warrants.py: pure helpers (_compute_w_local_1/2/3) + DB-backed
+  evaluate_w_local_1/2/3/evaluate_all; configurable thresholds with DPWH defaults
+  (W-Local 1: 60% moto/pedicab ratio, W-Local 2: 70% peak concentration,
+  W-Local 3: 30 PCU/hr min per approach → signal_off)
+- Alembic migration 0009: w_local_1/2/3 threshold columns on intersections,
+  w_local_* result columns on recommendations, signal_off on timing_recommendations
+- PATCH /intersections/{id}/local-warrant-config for per-intersection threshold config
+- evaluate_all() called in generate/generate-all; signal_off_chunks forwarded to
+  generate_timing_for_recommendation to mark affected timing rows
+- RecommendationResponse + list endpoint expose all 6 W-Local fields
+- TimingChunkResponse exposes signal_off flag
+- Frontend: WL1/WL2/WL3 pill columns in RecommendationsTable (met/not-met styling,
+  sortable, with tooltip description of each warrant)
+- Tests: 11 unit tests (pure function logic, edge cases) + 6 integration tests
 
 ### Issue 6 — Analytical delay simulation + Signal Timing page [ ] TODO
 Blocked by: Issue 4
