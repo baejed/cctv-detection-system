@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { intersectionsApi } from '@/services/intersections';
 import { streetsApi } from '@/services/streets';
 import { recommendationsApi, type RecommendationResponse } from '@/services/recommendations';
+import { pceApi, type PceValue } from '@/services/pce';
 import type { Intersection, SignalStatus, Street } from '@/types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -78,6 +79,14 @@ export function IntersectionsPage() {
   const [timingTarget, setTimingTarget] = useState<Intersection | null>(null);
   const [timingForm, setTimingForm] = useState<TimingForm>(EMPTY_TIMING);
   const [savingTiming, setSavingTiming] = useState(false);
+
+  const [showPceModal, setShowPceModal] = useState(false);
+  const [pceTarget, setPceTarget] = useState<Intersection | null>(null);
+  const [pceValues, setPceValues] = useState<PceValue[]>([]);
+  const [pceLoading, setPceLoading] = useState(false);
+  const [pceEditType, setPceEditType] = useState('');
+  const [pceEditValue, setPceEditValue] = useState('');
+  const [savingPce, setSavingPce] = useState(false);
 
   const [recsById, setRecsById] = useState<Map<number, RecommendationResponse>>(new Map());
 
@@ -176,6 +185,63 @@ export function IntersectionsPage() {
     }
   }
 
+  async function openPceModal(inter: Intersection) {
+    setPceTarget(inter);
+    setPceEditType('');
+    setPceEditValue('');
+    setShowPceModal(true);
+    setPceLoading(true);
+    try {
+      const data = await pceApi.get(inter.id);
+      setPceValues(data.values);
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Failed to load PCE');
+    } finally {
+      setPceLoading(false);
+    }
+  }
+
+  async function savePceOverride() {
+    if (!pceTarget || !pceEditType || !pceEditValue) return;
+    setSavingPce(true);
+    try {
+      const data = await pceApi.setOverride(pceTarget.id, pceEditType, parseFloat(pceEditValue));
+      setPceValues(data.values);
+      setPceEditType('');
+      setPceEditValue('');
+      toast.success('PCE override saved');
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Save failed');
+    } finally {
+      setSavingPce(false);
+    }
+  }
+
+  async function deletePceOverride(vehicleType: string) {
+    if (!pceTarget) return;
+    try {
+      const data = await pceApi.deleteOverride(pceTarget.id, vehicleType);
+      setPceValues(data.values);
+      toast.success('Override removed');
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Delete failed');
+    }
+  }
+
+  async function runCalibration() {
+    if (!pceTarget) return;
+    setSavingPce(true);
+    try {
+      const data = await pceApi.calibrate(pceTarget.id);
+      setPceValues(data.values);
+      toast.success('Calibration complete');
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Calibration failed');
+    } finally {
+      setSavingPce(false);
+    }
+  }
+
   const mapMarkers = intersections.filter(i => i.latitude && i.longitude);
 
   return (
@@ -268,6 +334,11 @@ export function IntersectionsPage() {
                       </TableCell>
                       <TableCell>
                         <div className="flex gap-1 justify-end">
+                          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs"
+                            onClick={() => openPceModal(inter)}
+                            aria-label={`PCE settings for ${inter.name}`}>
+                            PCE
+                          </Button>
                           <Button variant="ghost" size="sm" className="h-7 px-2 text-xs"
                             onClick={() => openTimingModal(inter)}
                             aria-label={`Signal timing for ${inter.name}`}>
@@ -485,6 +556,104 @@ export function IntersectionsPage() {
               {savingTiming && <Loader2 data-icon="inline-start" className="animate-spin" />}
               Save Timing
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* PCE settings modal */}
+      <Dialog open={showPceModal} onOpenChange={setShowPceModal}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>PCE Settings — {pceTarget?.name}</DialogTitle>
+          </DialogHeader>
+          <Separator />
+          <div className="flex flex-col gap-4 py-1">
+            {pceLoading ? (
+              <div className="flex flex-col gap-2">
+                {[1, 2, 3].map(i => <div key={i} className="h-8 rounded bg-muted animate-pulse" />)}
+              </div>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-xs text-muted-foreground border-b">
+                    <th className="text-left pb-1 font-medium">Vehicle Type</th>
+                    <th className="text-right pb-1 font-medium">PCE</th>
+                    <th className="text-center pb-1 font-medium">Tier</th>
+                    <th className="w-8" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {pceValues.map(v => (
+                    <tr key={v.vehicle_type} className="border-b last:border-0">
+                      <td className="py-1.5 font-mono">{v.vehicle_type}</td>
+                      <td className="py-1.5 text-right font-mono">{v.pce.toFixed(2)}</td>
+                      <td className="py-1.5 text-center">
+                        <Badge
+                          variant="outline"
+                          className={
+                            v.tier === 'override'   ? 'text-amber-700 border-amber-400 bg-amber-50 text-[10px]' :
+                            v.tier === 'calibrated' ? 'text-blue-700 border-blue-400 bg-blue-50 text-[10px]' :
+                                                      'text-[10px]'
+                          }
+                        >
+                          {v.tier}
+                        </Badge>
+                      </td>
+                      <td className="py-1.5">
+                        {v.tier === 'override' && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="size-6 text-destructive hover:text-destructive"
+                            onClick={() => deletePceOverride(v.vehicle_type)}
+                          >
+                            <Trash2 className="size-3" aria-hidden="true" />
+                          </Button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+
+            <Separator />
+
+            <div className="flex flex-col gap-2">
+              <p className="text-xs font-medium text-muted-foreground">Set Override</p>
+              <div className="flex gap-2">
+                <Input
+                  placeholder="vehicle_type"
+                  className="font-mono text-sm"
+                  value={pceEditType}
+                  onChange={e => setPceEditType(e.target.value)}
+                />
+                <Input
+                  placeholder="PCE value"
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  className="w-28 font-mono text-sm"
+                  value={pceEditValue}
+                  onChange={e => setPceEditValue(e.target.value)}
+                />
+                <Button
+                  size="sm"
+                  disabled={savingPce || !pceEditType || !pceEditValue}
+                  onClick={savePceOverride}
+                >
+                  {savingPce && <Loader2 data-icon="inline-start" className="animate-spin" />}
+                  Set
+                </Button>
+              </div>
+            </div>
+          </div>
+          <DialogFooter className="justify-between">
+            <Button variant="outline" size="sm" disabled={savingPce} onClick={runCalibration}>
+              {savingPce && <Loader2 data-icon="inline-start" className="animate-spin" />}
+              Recalibrate (7-day data)
+            </Button>
+            <Button variant="outline" onClick={() => setShowPceModal(false)}>Close</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

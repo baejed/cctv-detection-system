@@ -50,10 +50,12 @@ class Intersection(Base):
     existing_green_splits  = Column(JSON, nullable=True)
     time                   = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    streets         = relationship("Street",         back_populates="intersection", cascade="all, delete")
-    cctvs           = relationship("CCTV",           back_populates="intersection", cascade="all, delete")
-    recommendations = relationship("Recommendation", back_populates="intersection", cascade="all, delete")
-    videos          = relationship("Video",          back_populates="intersection")
+    streets               = relationship("Street",              back_populates="intersection", cascade="all, delete")
+    cctvs                 = relationship("CCTV",               back_populates="intersection", cascade="all, delete")
+    recommendations       = relationship("Recommendation",     back_populates="intersection", cascade="all, delete")
+    videos                = relationship("Video",              back_populates="intersection")
+    pce_overrides         = relationship("PceOverride",        back_populates="intersection", cascade="all, delete")
+    pce_calibrated_values = relationship("PceCalibratedValue", back_populates="intersection", cascade="all, delete")
 
 
 class Street(Base):
@@ -222,6 +224,30 @@ class PushSubscription(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     user = relationship("User", back_populates="push_subscriptions")
+
+
+class PceOverride(Base):
+    __tablename__ = "pce_overrides"
+
+    id              = Column(Integer, primary_key=True, autoincrement=True)
+    intersection_id = Column(Integer, ForeignKey("intersections.id", ondelete="CASCADE"), nullable=False)
+    vehicle_type    = Column(String(50), nullable=False)
+    pce_value       = Column(Float, nullable=False)
+    created_at      = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    intersection = relationship("Intersection", back_populates="pce_overrides")
+
+
+class PceCalibratedValue(Base):
+    __tablename__ = "pce_calibrated_values"
+
+    id              = Column(Integer, primary_key=True, autoincrement=True)
+    intersection_id = Column(Integer, ForeignKey("intersections.id", ondelete="CASCADE"), nullable=False)
+    vehicle_type    = Column(String(50), nullable=False)
+    pce_value       = Column(Float, nullable=False)
+    calibrated_at   = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    intersection = relationship("Intersection", back_populates="pce_calibrated_values")
 
 
 class AggregationSummary(Base):
