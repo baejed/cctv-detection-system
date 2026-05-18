@@ -1,3 +1,45 @@
+## Warrant Model Integration — Progress
+
+Source: docs/superpowers/plans/2026-05-13-warrant-model-integration.md
+        docs/superpowers/plans/2026-05-14-recommendations-page-revamp.md
+        docs/superpowers/plans/2026-05-14-recommendations-ui-surfacing.md
+
+### Warrant MLP Integration ✅ DONE (prior to 2026-05-18)
+
+- server/ml/: WarrantMLP nn.Module, load_warrant_model(), predict_warrants(), WarrantArtifacts
+- warrant_model.pt + warrant_scaler.pkl shipped in server/ml/
+- server/main.py: lifespan loads artifacts into app.state.warrant_artifacts once at startup
+- server/routers/recommendations.py: replaced rule-based MUTCD thresholds with model-driven
+  _compute_features_from_rows() / _compute_features() / _analyze() pipeline
+- Features: major_volume, minor_volume, peds, vpm, phf from most-recent-complete-hour
+- Alembic migration 0004: adds major_volume, minor_volume, peds, vpm, phf,
+  recommended_confidence, hour_start to recommendations + ix_recommendations_intersection_generated
+- Insert-not-replace on regenerate; GET / returns DISTINCT ON latest per intersection
+- GET /recommendations/history/{id}?limit= endpoint (clamped to 200)
+- _rec_to_response() helper; all endpoints return structured metric fields
+- tests/test_recommendations.py: 8 unit (predict_warrants + feature extraction) + 6 integration
+
+### Recommendations Page Revamp ✅ DONE (prior to 2026-05-18)
+
+- eyegila/src/components/recommendations/: SummaryStrip, FilterBar, RecommendationsTable,
+  LatestTab, HistoryTab, DetailSheet, statusBucket.ts
+- eyegila/src/pages/Recommendations.tsx: rewritten around sortable table + right-side drawer
+- Table: status badge, W1/W2/W4 prob cells, WL1/WL2/WL3 pills, Major, Peds, Timing, Generated
+- DetailSheet: Latest tab (probability bars, feature grid, notes editor) +
+  History tab (recharts trend chart + collapsible run list)
+- FilterBar: status chips, warrant chips + min-prob slider, name search
+- SummaryStrip: warranted/borderline/not-warranted/no-data counts
+
+### UI Surfacing + Diagnostic Logging ✅ DONE (prior to 2026-05-18)
+
+- eyegila/src/pages/Intersections.tsx: warrant status badge per intersection row
+- eyegila/src/pages/Dashboard.tsx: warrant badge on intersection cards; warrant card hydrated
+  with W1/W2/W4 met/confidence and "View details" vs "Run warrant analysis" link
+- server/routers/recommendations.py: structured logging (analyze + history endpoints)
+- eyegila/src/pages/Recommendations.tsx: DEBUG-gated console logging on load/regenerate
+
+---
+
 ## Signal Timing & Simulation — Progress
 
 Source: docs/issues-signal-timing.md
