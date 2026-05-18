@@ -5,8 +5,9 @@ import {
   Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
 import { simulationApi, type SimulationChunk, type SimulationResponse } from '@/services/simulation';
+import { timingApi, type TimingChunk } from '@/services/timing';
+import { IntersectionCanvas } from '@/components/IntersectionCanvas';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -115,6 +116,7 @@ export function SignalTimingPage() {
   const intersectionId = Number(id);
 
   const [data, setData] = useState<SimulationResponse | null>(null);
+  const [timingData, setTimingData] = useState<TimingChunk[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedChunk, setSelectedChunk] = useState<string | null>(null);
@@ -124,16 +126,21 @@ export function SignalTimingPage() {
   useEffect(() => {
     if (!intersectionId) return;
     setLoading(true);
-    simulationApi.get(intersectionId)
-      .then(d => {
-        setData(d);
-        if (d.chunks.length > 0) setSelectedChunk(d.chunks[0].chunk_name);
+    Promise.all([
+      simulationApi.get(intersectionId),
+      timingApi.list(intersectionId).catch(() => [] as TimingChunk[]),
+    ])
+      .then(([sim, tim]) => {
+        setData(sim);
+        setTimingData(tim);
+        if (sim.chunks.length > 0) setSelectedChunk(sim.chunks[0].chunk_name);
       })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false));
   }, [intersectionId]);
 
-  const activeChunk = data?.chunks.find(c => c.chunk_name === selectedChunk) ?? null;
+  const activeChunk   = data?.chunks.find(c => c.chunk_name === selectedChunk) ?? null;
+  const activeTiming  = timingData.find(t => t.chunk_name === selectedChunk) ?? null;
 
   return (
     <div className="flex flex-col gap-5">
@@ -298,6 +305,25 @@ export function SignalTimingPage() {
               <p className="text-xs text-muted-foreground mt-2">
                 Dashed lines = before timing · Solid lines = proposed timing · Each color = one approach
               </p>
+            </div>
+          )}
+
+          {/* 2D canvas intersection simulation */}
+          {activeChunk && (
+            <div className="rounded-lg border border-border bg-card p-5">
+              <div className="mb-4">
+                <h2 className="text-sm font-semibold">
+                  Intersection simulation — {activeChunk.chunk_name}
+                </h2>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Top-down canvas · queue bars grow during red, clear on green · 60-minute window
+                </p>
+              </div>
+              <IntersectionCanvas
+                chunk={activeChunk}
+                timing={activeTiming}
+                signalStatus={data.signal_status}
+              />
             </div>
           )}
 
