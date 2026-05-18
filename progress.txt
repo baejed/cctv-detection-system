@@ -28,8 +28,18 @@ Commit: 681e54f
 - Frontend: PCE modal with tier badges (default/calibrated/override), override form, recalibrate button
 - Tests: unit (priority order, calibration clamp), integration (CRUD, override precedence)
 
-### Issue 3 — Time-of-day plan configuration [ ] TODO
-Blocked by: none
+### Issue 3 — Time-of-day plan configuration ✅ DONE (2026-05-18)
+Commit: 355f74c
+
+- TodChunk model: tod_chunks table, start_minutes/end_minutes (Integer, 0–1440)
+- Alembic migration 0007: creates table, seeds 5 default chunks for existing intersections
+- server/tod.py: TOD_DEFAULTS, seed_tod_chunks(), get_active_chunk(), validate_chunks(), minutes↔HH:MM helpers
+- POST /intersections/ seeds 5 default chunks on creation
+- GET /intersections/{id}/tod-chunks, PUT /intersections/{id}/tod-chunks/{chunk_id}
+- GET /intersections/{id}/tod-chunks/active?ts= returns active chunk for a given timestamp
+- Validation: chunks must be contiguous, cover 00:00–24:00, start < end
+- Frontend: Clock "TOD" button + inline-edit modal on Intersections page
+- Tests: 8 unit tests (conversion, validation, active lookup) + 6 integration tests
 
 ### Issue 4 — Webster's formula engine + timing recommendations [ ] TODO
 Blocked by: Issues 1, 2, 3
