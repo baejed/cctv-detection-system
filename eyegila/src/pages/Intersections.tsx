@@ -6,7 +6,7 @@ import { toast } from 'sonner';
 import { intersectionsApi } from '@/services/intersections';
 import { streetsApi } from '@/services/streets';
 import { recommendationsApi, type RecommendationResponse } from '@/services/recommendations';
-import type { Intersection, Street } from '@/types';
+import type { Intersection, SignalStatus, Street } from '@/types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -17,7 +17,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Separator } from '@/components/ui/separator';
-import { MapPin, Plus, Pencil, Trash2, ChevronRight, Loader2 } from 'lucide-react';
+import { MapPin, Plus, Pencil, Trash2, ChevronRight, Loader2, TrafficCone } from 'lucide-react';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { statusBucket, BUCKET_LABEL, BUCKET_BADGE_CLASS } from '@/components/recommendations/statusBucket';
 import { cn } from '@/lib/utils';
 
@@ -39,6 +40,23 @@ function MapClickPicker({ onPick }: { onPick: (lat: number, lng: number) => void
 interface InterForm { name: string; latitude: string; longitude: string }
 const EMPTY_INTER: InterForm = { name: '', latitude: '', longitude: '' };
 
+interface TimingForm {
+  signal_status: SignalStatus;
+  existing_cycle_length: string;
+  existing_green_splits: string;
+}
+const EMPTY_TIMING: TimingForm = {
+  signal_status: 'unsignalized',
+  existing_cycle_length: '',
+  existing_green_splits: '',
+};
+
+const SIGNAL_STATUS_LABEL: Record<SignalStatus, string> = {
+  unsignalized: 'Unsignalized',
+  fixed_time:   'Fixed-time',
+  actuated:     'Actuated',
+};
+
 export function IntersectionsPage() {
   const [intersections, setIntersections] = useState<Intersection[]>([]);
   const [streets, setStreets] = useState<Street[]>([]);
@@ -55,6 +73,11 @@ export function IntersectionsPage() {
   const [editingStreet, setEditingStreet] = useState<Street | null>(null);
   const [streetName, setStreetName] = useState('');
   const [savingStreet, setSavingStreet] = useState(false);
+
+  const [showTimingModal, setShowTimingModal] = useState(false);
+  const [timingTarget, setTimingTarget] = useState<Intersection | null>(null);
+  const [timingForm, setTimingForm] = useState<TimingForm>(EMPTY_TIMING);
+  const [savingTiming, setSavingTiming] = useState(false);
 
   const [recsById, setRecsById] = useState<Map<number, RecommendationResponse>>(new Map());
 
@@ -118,6 +141,39 @@ export function IntersectionsPage() {
   async function deleteStreet(s: Street) {
     try { await streetsApi.delete(s.id); toast.success('Deleted'); load(); }
     catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Delete failed'); }
+  }
+
+  function openTimingModal(inter: Intersection) {
+    setTimingTarget(inter);
+    setTimingForm({
+      signal_status: inter.signal_status ?? 'unsignalized',
+      existing_cycle_length: inter.existing_cycle_length != null ? String(inter.existing_cycle_length) : '',
+      existing_green_splits: inter.existing_green_splits ? JSON.stringify(inter.existing_green_splits, null, 2) : '',
+    });
+    setShowTimingModal(true);
+  }
+
+  async function saveTiming() {
+    if (!timingTarget) return;
+    setSavingTiming(true);
+    try {
+      let splits: Record<string, number> | null = null;
+      if (timingForm.existing_green_splits.trim()) {
+        splits = JSON.parse(timingForm.existing_green_splits);
+      }
+      await intersectionsApi.patchTiming(timingTarget.id, {
+        signal_status: timingForm.signal_status,
+        existing_cycle_length: timingForm.existing_cycle_length ? parseInt(timingForm.existing_cycle_length) : null,
+        existing_green_splits: splits,
+      });
+      toast.success('Signal timing saved');
+      setShowTimingModal(false);
+      load();
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Save failed');
+    } finally {
+      setSavingTiming(false);
+    }
   }
 
   const mapMarkers = intersections.filter(i => i.latitude && i.longitude);
@@ -212,6 +268,12 @@ export function IntersectionsPage() {
                       </TableCell>
                       <TableCell>
                         <div className="flex gap-1 justify-end">
+                          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs"
+                            onClick={() => openTimingModal(inter)}
+                            aria-label={`Signal timing for ${inter.name}`}>
+                            <TrafficCone className="size-3 mr-1" aria-hidden="true" />
+                            Timing
+                          </Button>
                           <Button variant="ghost" size="sm" className="h-7 px-2 text-xs"
                             onClick={() => { setStreetParent(inter); setEditingStreet(null); setStreetName(''); setShowStreetModal(true); }}>
                             + Street
@@ -362,6 +424,66 @@ export function IntersectionsPage() {
             <Button onClick={saveInter} disabled={savingInter || !interForm.name}>
               {savingInter && <Loader2 data-icon="inline-start" className="animate-spin" />}
               {editingInter ? 'Save Changes' : 'Add Intersection'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Signal timing modal */}
+      <Dialog open={showTimingModal} onOpenChange={setShowTimingModal}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Signal Timing — {timingTarget?.name}</DialogTitle>
+          </DialogHeader>
+          <Separator />
+          <div className="flex flex-col gap-4 py-1">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="signal-status">Signal Status</Label>
+              <Select
+                value={timingForm.signal_status}
+                onValueChange={v => setTimingForm({ ...timingForm, signal_status: v as SignalStatus })}
+              >
+                <SelectTrigger id="signal-status">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {(Object.keys(SIGNAL_STATUS_LABEL) as SignalStatus[]).map(s => (
+                    <SelectItem key={s} value={s}>{SIGNAL_STATUS_LABEL[s]}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="cycle-length">Existing Cycle Length (seconds)</Label>
+              <Input
+                id="cycle-length"
+                type="number"
+                min={0}
+                placeholder="e.g. 90"
+                value={timingForm.existing_cycle_length}
+                onChange={e => setTimingForm({ ...timingForm, existing_cycle_length: e.target.value })}
+              />
+              <p className="text-xs text-muted-foreground">Leave blank if unknown — equal-split default will be used.</p>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="green-splits">Existing Green Splits (JSON)</Label>
+              <textarea
+                id="green-splits"
+                className="min-h-[90px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                placeholder={'{"northbound": 20, "southbound": 20, "eastbound": 20, "westbound": 20}'}
+                value={timingForm.existing_green_splits}
+                onChange={e => setTimingForm({ ...timingForm, existing_green_splits: e.target.value })}
+              />
+              <p className="text-xs text-muted-foreground">Keyed by approach/street name, values in seconds. Leave blank to use equal-split.</p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowTimingModal(false)}>Cancel</Button>
+            <Button onClick={saveTiming} disabled={savingTiming}>
+              {savingTiming && <Loader2 data-icon="inline-start" className="animate-spin" />}
+              Save Timing
             </Button>
           </DialogFooter>
         </DialogContent>

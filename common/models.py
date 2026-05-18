@@ -1,4 +1,4 @@
-from sqlalchemy import BigInteger, Column, Integer, String, ForeignKey, DateTime, Float, Boolean, Text
+from sqlalchemy import BigInteger, Column, Integer, String, ForeignKey, DateTime, Float, Boolean, Text, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from common.database import Base
@@ -41,11 +41,14 @@ class Log(Base):
 class Intersection(Base):
     __tablename__ = "intersections"
 
-    id        = Column(Integer, primary_key=True, autoincrement=True)
-    name      = Column(String(255), nullable=False)
-    latitude  = Column(Float, nullable=True)
-    longitude = Column(Float, nullable=True)
-    time      = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    id                     = Column(Integer, primary_key=True, autoincrement=True)
+    name                   = Column(String(255), nullable=False)
+    latitude               = Column(Float, nullable=True)
+    longitude              = Column(Float, nullable=True)
+    signal_status          = Column(String(20), nullable=False, server_default="unsignalized")
+    existing_cycle_length  = Column(Integer, nullable=True)
+    existing_green_splits  = Column(JSON, nullable=True)
+    time                   = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     streets         = relationship("Street",         back_populates="intersection", cascade="all, delete")
     cctvs           = relationship("CCTV",           back_populates="intersection", cascade="all, delete")

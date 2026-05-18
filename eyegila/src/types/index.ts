@@ -4,11 +4,17 @@ export interface User {
   time: string;
 }
 
+export type SignalStatus = 'unsignalized' | 'fixed_time' | 'actuated';
+
 export interface Intersection {
   id: number;
   name: string;
   latitude: number;
   longitude: number;
+  signal_status: SignalStatus;
+  existing_cycle_length: number | null;
+  existing_green_splits: Record<string, number> | null;
+  effective_green_splits: Record<string, number> | null;
   time: string;
 }
 

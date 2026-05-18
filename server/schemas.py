@@ -1,6 +1,6 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 from datetime import datetime
-from typing import Optional
+from typing import Any, Literal, Optional
 
 
 class UserBase(BaseModel):
@@ -39,10 +39,29 @@ class IntersectionUpdate(BaseModel):
     longitude: Optional[float] = None
 
 
+class SignalTimingUpdate(BaseModel):
+    signal_status: Literal["unsignalized", "fixed_time", "actuated"]
+    existing_cycle_length: Optional[int] = None
+    existing_green_splits: Optional[dict[str, Any]] = None
+
+
 class IntersectionResponse(IntersectionBase):
     id: int
+    signal_status: str = "unsignalized"
+    existing_cycle_length: Optional[int] = None
+    existing_green_splits: Optional[dict[str, Any]] = None
+    effective_green_splits: Optional[dict[str, Any]] = None
     time: datetime
     model_config = ConfigDict(from_attributes=True)
+
+    @model_validator(mode="after")
+    def compute_effective_green_splits(self) -> "IntersectionResponse":
+        if self.existing_green_splits:
+            self.effective_green_splits = self.existing_green_splits
+        elif self.existing_cycle_length:
+            split = round(self.existing_cycle_length / 4)
+            self.effective_green_splits = {str(i): split for i in range(1, 5)}
+        return self
 
 
 class StreetBase(BaseModel):

@@ -1,5 +1,11 @@
 import { request } from './api';
-import type { Intersection } from '../types';
+import type { Intersection, SignalStatus } from '../types';
+
+export interface SignalTimingPayload {
+  signal_status: SignalStatus;
+  existing_cycle_length?: number | null;
+  existing_green_splits?: Record<string, number> | null;
+}
 
 export interface ImportResult {
   created_intersections: string[];
@@ -32,4 +38,10 @@ export const intersectionsApi = {
     form.append('file', file);
     return request<ImportResult>('/intersections/import', { method: 'POST', body: form });
   },
+
+  patchTiming: (id: number, data: SignalTimingPayload) =>
+    request<Intersection>(`/intersections/${id}/timing`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
 };

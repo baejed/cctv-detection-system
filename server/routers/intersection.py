@@ -1,4 +1,4 @@
-from server.schemas import IntersectionCreate, IntersectionUpdate, IntersectionResponse
+from server.schemas import IntersectionCreate, IntersectionUpdate, IntersectionResponse, SignalTimingUpdate
 from server.utils import log_and_commit, get_current_user
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from common.models import User, Intersection, CCTV
@@ -165,6 +165,31 @@ async def import_csv(
         "created_cameras": created_cameras,
         "errors": errors,
     }
+
+
+@router.patch("/{intersection_id}/timing", response_model=IntersectionResponse)
+def update_signal_timing(
+    intersection_id: int,
+    timing: SignalTimingUpdate,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> IntersectionResponse:
+    db_intersection = db.get(Intersection, intersection_id)
+
+    if not db_intersection:
+        raise HTTPException(status_code=404, detail="Intersection not found")
+
+    db_intersection.signal_status = timing.signal_status
+    db_intersection.existing_cycle_length = timing.existing_cycle_length
+    db_intersection.existing_green_splits = timing.existing_green_splits
+
+    log_and_commit(
+        f"User {user.username} updated signal timing for {db_intersection.name} "
+        f"(status={timing.signal_status}, cycle={timing.existing_cycle_length}s)",
+        db,
+    )
+    db.refresh(db_intersection)
+    return db_intersection
 
 
 @router.delete("/{intersection_id}")

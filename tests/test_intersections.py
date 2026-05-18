@@ -115,3 +115,56 @@ def test_import_csv_missing_columns(auth):
     r = auth.post(f"{API_URL}/intersections/import",
                   files={"file": ("bad.csv", bad_csv.encode(), "text/csv")})
     assert r.status_code == 400
+
+
+def test_signal_timing_round_trip(auth, intersection):
+    iid = intersection["id"]
+
+    # PATCH signal timing
+    r = auth.patch(f"{API_URL}/intersections/{iid}/timing", json={
+        "signal_status": "fixed_time",
+        "existing_cycle_length": 80,
+        "existing_green_splits": {"northbound": 20, "southbound": 20, "eastbound": 20, "westbound": 20},
+    })
+    assert r.status_code == 200
+    data = r.json()
+    assert data["signal_status"] == "fixed_time"
+    assert data["existing_cycle_length"] == 80
+    assert data["existing_green_splits"] == {"northbound": 20, "southbound": 20, "eastbound": 20, "westbound": 20}
+    assert data["effective_green_splits"] == {"northbound": 20, "southbound": 20, "eastbound": 20, "westbound": 20}
+
+    # GET and verify persisted
+    r = auth.get(f"{API_URL}/intersections/{iid}")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["signal_status"] == "fixed_time"
+    assert data["existing_cycle_length"] == 80
+
+
+def test_signal_timing_equal_split_default(auth, intersection):
+    iid = intersection["id"]
+
+    # PATCH with cycle length but no explicit splits
+    r = auth.patch(f"{API_URL}/intersections/{iid}/timing", json={
+        "signal_status": "fixed_time",
+        "existing_cycle_length": 80,
+    })
+    assert r.status_code == 200
+    data = r.json()
+    assert data["existing_green_splits"] is None
+    # effective_green_splits should be equal-split: 80 / 4 = 20 per approach
+    assert data["effective_green_splits"] == {"1": 20, "2": 20, "3": 20, "4": 20}
+
+
+def test_signal_timing_invalid_status(auth, intersection):
+    r = auth.patch(f"{API_URL}/intersections/{intersection['id']}/timing", json={
+        "signal_status": "bad_value",
+    })
+    assert r.status_code == 422
+
+
+def test_signal_timing_404(auth):
+    r = auth.patch(f"{API_URL}/intersections/999999/timing", json={
+        "signal_status": "unsignalized",
+    })
+    assert r.status_code == 404
