@@ -18,8 +18,15 @@ Commit: 31ebe5f
 
 ---
 
-### Issue 2 — PCE configuration layer [ ] TODO
-Blocked by: none
+### Issue 2 — PCE configuration layer ✅ DONE (2026-05-18)
+Commit: 681e54f
+
+- DPWH_DEFAULTS: motorcycle=0.33, pedicab/tricycle=1.5, car=1.0, jeepney=1.5, bicycle=0.5, bus/truck=2.5
+- pce_overrides + pce_calibrated_values tables (migration 0006)
+- server/pce.py: resolve_pce() (3-tier), calibrate_pce() (7-day ±25% scale, clamped)
+- server/routers/pce.py: GET/POST/DELETE overrides + POST calibrate endpoints
+- Frontend: PCE modal with tier badges (default/calibrated/override), override form, recalibrate button
+- Tests: unit (priority order, calibration clamp), integration (CRUD, override precedence)
 
 ### Issue 3 — Time-of-day plan configuration [ ] TODO
 Blocked by: none
