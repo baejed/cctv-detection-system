@@ -52,6 +52,9 @@ class Intersection(Base):
     all_red_clearance      = Column(Integer, nullable=False, server_default="3")
     min_cycle_length       = Column(Integer, nullable=False, server_default="40")
     max_cycle_length       = Column(Integer, nullable=False, server_default="120")
+    w_local_1_threshold    = Column(Float, nullable=False, server_default="0.6")
+    w_local_2_threshold    = Column(Float, nullable=False, server_default="0.7")
+    w_local_3_min_pcu      = Column(Float, nullable=False, server_default="30.0")
     time                   = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     streets                = relationship("Street",              back_populates="intersection", cascade="all, delete")
@@ -215,6 +218,12 @@ class Recommendation(Base):
     hour_start             = Column(DateTime(timezone=True), nullable=True)
     notes                  = Column(Text,    nullable=True)
     generated_at           = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    w_local_1_met          = Column(Boolean, nullable=True)
+    w_local_1_confidence   = Column(Float,   nullable=True)
+    w_local_2_met          = Column(Boolean, nullable=True)
+    w_local_2_confidence   = Column(Float,   nullable=True)
+    w_local_3_met          = Column(Boolean, nullable=True)
+    w_local_3_confidence   = Column(Float,   nullable=True)
 
     intersection           = relationship("Intersection",         back_populates="recommendations")
     timing_recommendations = relationship("TimingRecommendation", back_populates="recommendation", cascade="all, delete")
@@ -281,6 +290,7 @@ class TimingRecommendation(Base):
     green_splits     = Column(JSON, nullable=False)
     effective_date   = Column(DateTime(timezone=True), nullable=False)
     pce_tier_used    = Column(String(20), nullable=False)
+    signal_off       = Column(Boolean, nullable=False, server_default="false")
     generated_at     = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     intersection   = relationship("Intersection",  back_populates="timing_recommendations")

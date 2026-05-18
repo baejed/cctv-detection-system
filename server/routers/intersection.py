@@ -1,4 +1,4 @@
-from server.schemas import IntersectionCreate, IntersectionUpdate, IntersectionResponse, SignalTimingUpdate
+from server.schemas import IntersectionCreate, IntersectionUpdate, IntersectionResponse, SignalTimingUpdate, LocalWarrantConfigUpdate
 from server.utils import log_and_commit, get_current_user
 from server.tod import seed_tod_chunks
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
@@ -189,6 +189,32 @@ def update_signal_timing(
     log_and_commit(
         f"User {user.username} updated signal timing for {db_intersection.name} "
         f"(status={timing.signal_status}, cycle={timing.existing_cycle_length}s)",
+        db,
+    )
+    db.refresh(db_intersection)
+    return db_intersection
+
+
+@router.patch("/{intersection_id}/local-warrant-config", response_model=IntersectionResponse)
+def update_local_warrant_config(
+    intersection_id: int,
+    config: LocalWarrantConfigUpdate,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> IntersectionResponse:
+    db_intersection = db.get(Intersection, intersection_id)
+    if not db_intersection:
+        raise HTTPException(status_code=404, detail="Intersection not found")
+
+    if config.w_local_1_threshold is not None:
+        db_intersection.w_local_1_threshold = config.w_local_1_threshold
+    if config.w_local_2_threshold is not None:
+        db_intersection.w_local_2_threshold = config.w_local_2_threshold
+    if config.w_local_3_min_pcu is not None:
+        db_intersection.w_local_3_min_pcu = config.w_local_3_min_pcu
+
+    log_and_commit(
+        f"User {user.username} updated local warrant config for {db_intersection.name}",
         db,
     )
     db.refresh(db_intersection)

@@ -11,6 +11,7 @@ import { statusBucket, BUCKET_LABEL, BUCKET_BADGE_CLASS } from './statusBucket';
 export type SortKey =
   | 'name' | 'status'
   | 'w1' | 'w2' | 'w4'
+  | 'wl1' | 'wl2' | 'wl3'
   | 'major' | 'peds' | 'timing' | 'generated';
 
 export interface SortState {
@@ -49,6 +50,9 @@ export function RecommendationsTable({
             <Th label="W1"            k="w1"        sort={sort} onClick={toggleSort} numeric />
             <Th label="W2"            k="w2"        sort={sort} onClick={toggleSort} numeric />
             <Th label="W4"            k="w4"        sort={sort} onClick={toggleSort} numeric />
+            <Th label="WL1"           k="wl1"       sort={sort} onClick={toggleSort} />
+            <Th label="WL2"           k="wl2"       sort={sort} onClick={toggleSort} />
+            <Th label="WL3"           k="wl3"       sort={sort} onClick={toggleSort} />
             <Th label="Major /hr"     k="major"     sort={sort} onClick={toggleSort} numeric />
             <Th label="Peds /hr"      k="peds"      sort={sort} onClick={toggleSort} numeric />
             <Th label="Timing"        k="timing"    sort={sort} onClick={toggleSort} />
@@ -75,6 +79,9 @@ export function RecommendationsTable({
                 <ProbCell met={rec.warrant_1_met} value={rec.warrant_1_confidence} />
                 <ProbCell met={rec.warrant_2_met} value={rec.warrant_2_confidence} />
                 <ProbCell met={rec.warrant_4_met} value={rec.warrant_4_confidence} />
+                <LocalWarrantCell met={rec.w_local_1_met} label="WL1" title="High motorcycle/pedicab ratio" />
+                <LocalWarrantCell met={rec.w_local_2_met} label="WL2" title="Peak volume concentration" />
+                <LocalWarrantCell met={rec.w_local_3_met} label="WL3" title="Low PCU / lights off" />
                 <NumCell value={rec.major_volume} />
                 <NumCell value={rec.peds} />
                 <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
@@ -146,6 +153,28 @@ function NumCell({ value }: { value: number | null }) {
   );
 }
 
+function LocalWarrantCell({ met, label, title }: { met: boolean | null; label: string; title: string }) {
+  if (met === null || met === undefined) {
+    return <TableCell className="text-center"><span className="text-muted-foreground text-[10px]">—</span></TableCell>;
+  }
+  return (
+    <TableCell className="text-center">
+      <Badge
+        variant="outline"
+        title={title}
+        className={cn(
+          'text-[10px] px-1.5 py-0',
+          met
+            ? 'border-emerald-500 text-emerald-600 bg-emerald-50 dark:bg-emerald-950/30'
+            : 'border-border text-muted-foreground',
+        )}
+      >
+        {label}
+      </Badge>
+    </TableCell>
+  );
+}
+
 function relativeTime(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
   const m = Math.floor(diff / 60_000);
@@ -175,6 +204,9 @@ export function sortRows(rows: RecommendationResponse[], sort: SortState): Recom
       case 'w1':        return sign * (a.warrant_1_confidence - b.warrant_1_confidence);
       case 'w2':        return sign * (a.warrant_2_confidence - b.warrant_2_confidence);
       case 'w4':        return sign * (a.warrant_4_confidence - b.warrant_4_confidence);
+      case 'wl1':       return sign * ((a.w_local_1_confidence ?? -1) - (b.w_local_1_confidence ?? -1));
+      case 'wl2':       return sign * ((a.w_local_2_confidence ?? -1) - (b.w_local_2_confidence ?? -1));
+      case 'wl3':       return sign * ((a.w_local_3_confidence ?? -1) - (b.w_local_3_confidence ?? -1));
       case 'major':     return sign * ((a.major_volume ?? -1) - (b.major_volume ?? -1));
       case 'peds':      return sign * ((a.peds ?? -1) - (b.peds ?? -1));
       case 'timing':    return sign * ((a.timing_cycle ?? -1) - (b.timing_cycle ?? -1));

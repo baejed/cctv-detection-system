@@ -115,4 +115,10 @@ export interface Recommendation {
   generated_at: string;
   timing_cycle: number | null;
   timing_chunk: string | null;
+  w_local_1_met: boolean | null;
+  w_local_1_confidence: number | null;
+  w_local_2_met: boolean | null;
+  w_local_2_confidence: number | null;
+  w_local_3_met: boolean | null;
+  w_local_3_confidence: number | null;
 }

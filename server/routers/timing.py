@@ -20,6 +20,7 @@ class TimingChunkResponse(BaseModel):
     green_splits: dict
     effective_date: str
     pce_tier_used: str
+    signal_off: bool = False
     generated_at: str
 
     class Config:
@@ -36,6 +37,7 @@ def _row_to_response(row: models.TimingRecommendation) -> dict:
         "green_splits":     row.green_splits,
         "effective_date":   row.effective_date.isoformat(),
         "pce_tier_used":    row.pce_tier_used,
+        "signal_off":       bool(row.signal_off),
         "generated_at":     row.generated_at.isoformat(),
     }
 

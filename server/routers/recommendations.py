@@ -42,6 +42,12 @@ class RecommendationResponse(BaseModel):
     generated_at: str
     timing_cycle: Optional[int] = None
     timing_chunk: Optional[str] = None
+    w_local_1_met: Optional[bool] = None
+    w_local_1_confidence: Optional[float] = None
+    w_local_2_met: Optional[bool] = None
+    w_local_2_confidence: Optional[float] = None
+    w_local_3_met: Optional[bool] = None
+    w_local_3_confidence: Optional[float] = None
 
     class Config:
         from_attributes = True
@@ -227,6 +233,12 @@ def _rec_to_response(
         "generated_at": rec.generated_at.isoformat(),
         "timing_cycle": timing_cycle,
         "timing_chunk": timing_chunk,
+        "w_local_1_met": rec.w_local_1_met,
+        "w_local_1_confidence": rec.w_local_1_confidence,
+        "w_local_2_met": rec.w_local_2_met,
+        "w_local_2_confidence": rec.w_local_2_confidence,
+        "w_local_3_met": rec.w_local_3_met,
+        "w_local_3_confidence": rec.w_local_3_confidence,
     }
 
 
@@ -246,7 +258,10 @@ def list_recommendations(
             r.major_volume, r.minor_volume, r.peds, r.vpm, r.phf,
             r.hour_start, r.notes, r.generated_at,
             tr.cycle_length AS timing_cycle,
-            tr.chunk_name   AS timing_chunk
+            tr.chunk_name   AS timing_chunk,
+            r.w_local_1_met, r.w_local_1_confidence,
+            r.w_local_2_met, r.w_local_2_confidence,
+            r.w_local_3_met, r.w_local_3_confidence
         FROM recommendations r
         JOIN intersections i ON i.id = r.intersection_id
         LEFT JOIN timing_recommendations tr
@@ -278,6 +293,12 @@ def list_recommendations(
             "generated_at": r.generated_at.isoformat(),
             "timing_cycle": r.timing_cycle,
             "timing_chunk": r.timing_chunk,
+            "w_local_1_met": r.w_local_1_met,
+            "w_local_1_confidence": r.w_local_1_confidence,
+            "w_local_2_met": r.w_local_2_met,
+            "w_local_2_confidence": r.w_local_2_confidence,
+            "w_local_3_met": r.w_local_3_met,
+            "w_local_3_confidence": r.w_local_3_confidence,
         }
         for r in rows
     ]
@@ -292,6 +313,7 @@ def generate_recommendation(
 ):
     """Run warrant analysis + timing for one intersection and insert new rows."""
     from server.webster import generate_timing_for_recommendation
+    from server.local_warrants import evaluate_all as evaluate_local_warrants
 
     intersection = db.get(models.Intersection, intersection_id)
     if not intersection:
@@ -299,11 +321,22 @@ def generate_recommendation(
 
     analysis = _analyze(intersection_id, request.app.state.warrant_artifacts, db)
 
+    chunks = (
+        db.query(models.TodChunk)
+        .filter_by(intersection_id=intersection_id)
+        .order_by(models.TodChunk.start_minutes)
+        .all()
+    )
+    local_fields, signal_off = evaluate_local_warrants(db, intersection, chunks)
+    analysis.update(local_fields)
+
     rec = models.Recommendation(intersection_id=intersection_id, **analysis)
     db.add(rec)
     db.flush()  # populate rec.id before using it
 
-    timing_rows, peak_chunk = generate_timing_for_recommendation(db, intersection, rec.id)
+    timing_rows, peak_chunk = generate_timing_for_recommendation(
+        db, intersection, rec.id, signal_off_chunks=set(signal_off)
+    )
     for tr in timing_rows:
         db.add(tr)
 
@@ -327,6 +360,7 @@ def generate_all_recommendations(
 ):
     """Run warrant analysis + timing for every intersection."""
     from server.webster import generate_timing_for_recommendation
+    from server.local_warrants import evaluate_all as evaluate_local_warrants
 
     intersections = db.query(models.Intersection).all()
     results = []
@@ -334,11 +368,23 @@ def generate_all_recommendations(
     artifacts = request.app.state.warrant_artifacts
     for intersection in intersections:
         analysis = _analyze(intersection.id, artifacts, db)
+
+        chunks = (
+            db.query(models.TodChunk)
+            .filter_by(intersection_id=intersection.id)
+            .order_by(models.TodChunk.start_minutes)
+            .all()
+        )
+        local_fields, signal_off = evaluate_local_warrants(db, intersection, chunks)
+        analysis.update(local_fields)
+
         rec = models.Recommendation(intersection_id=intersection.id, **analysis)
         db.add(rec)
         db.flush()
 
-        timing_rows, peak_chunk = generate_timing_for_recommendation(db, intersection, rec.id)
+        timing_rows, peak_chunk = generate_timing_for_recommendation(
+            db, intersection, rec.id, signal_off_chunks=set(signal_off)
+        )
         for tr in timing_rows:
             db.add(tr)
         db.flush()

@@ -45,12 +45,21 @@ class SignalTimingUpdate(BaseModel):
     existing_green_splits: Optional[dict[str, Any]] = None
 
 
+class LocalWarrantConfigUpdate(BaseModel):
+    w_local_1_threshold: Optional[float] = None
+    w_local_2_threshold: Optional[float] = None
+    w_local_3_min_pcu: Optional[float] = None
+
+
 class IntersectionResponse(IntersectionBase):
     id: int
     signal_status: str = "unsignalized"
     existing_cycle_length: Optional[int] = None
     existing_green_splits: Optional[dict[str, Any]] = None
     effective_green_splits: Optional[dict[str, Any]] = None
+    w_local_1_threshold: float = 0.6
+    w_local_2_threshold: float = 0.7
+    w_local_3_min_pcu: float = 30.0
     time: datetime
     model_config = ConfigDict(from_attributes=True)
 

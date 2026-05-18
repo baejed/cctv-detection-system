@@ -119,6 +119,7 @@ def generate_timing_for_recommendation(
     db: Session,
     intersection: Intersection,
     recommendation_id: int,
+    signal_off_chunks: set[str] | None = None,
 ) -> tuple[list[TimingRecommendation], str | None]:
     """Compute per-chunk + overall timing; return (unsaved rows, peak_chunk_name)."""
     pce_map   = resolve_pce(db, intersection.id)
@@ -137,6 +138,7 @@ def generate_timing_for_recommendation(
     )
 
     effective_date    = datetime.now(tz=timezone.utc)
+    off_chunks        = signal_off_chunks or set()
     chunk_results: list[TimingRecommendation] = []
     peak_chunk_name   = None
     peak_total_flow   = -1.0
@@ -162,6 +164,7 @@ def generate_timing_for_recommendation(
             green_splits={str(k): v for k, v in splits.items()},
             effective_date=effective_date,
             pce_tier_used=pce_tier,
+            signal_off=chunk.name in off_chunks,
         ))
 
     # Overall row mirrors the peak-flow chunk (or falls back to min_cycle)
@@ -181,6 +184,7 @@ def generate_timing_for_recommendation(
         green_splits=overall_splits,
         effective_date=effective_date,
         pce_tier_used=pce_tier,
+        signal_off=False,
     ))
 
     return chunk_results, peak_chunk_name
