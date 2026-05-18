@@ -1,0 +1,37 @@
+## Signal Timing & Simulation — Progress
+
+Source: docs/issues-signal-timing.md
+Execution order: Issues 1, 2, 3 (parallel) → Issue 4 → Issues 5, 6 (parallel) → Issue 7
+
+---
+
+### Issue 1 — Signal status + existing timing baseline ✅ DONE (2026-05-18)
+Commit: 31ebe5f
+
+- Added signal_status (unsignalized/fixed_time/actuated), existing_cycle_length,
+  existing_green_splits columns to Intersection model
+- Alembic migration 0005_signal_status_baseline
+- PATCH /intersections/{id}/timing endpoint
+- IntersectionResponse computes effective_green_splits (stored or equal-split default)
+- Frontend: Signal Timing modal on Intersections page (status + cycle + JSON splits form)
+- Integration tests: round-trip, equal-split default, invalid status, 404
+
+---
+
+### Issue 2 — PCE configuration layer [ ] TODO
+Blocked by: none
+
+### Issue 3 — Time-of-day plan configuration [ ] TODO
+Blocked by: none
+
+### Issue 4 — Webster's formula engine + timing recommendations [ ] TODO
+Blocked by: Issues 1, 2, 3
+
+### Issue 5 — Local warrant layer (W-Local 1/2/3) [ ] TODO
+Blocked by: Issues 3, 4
+
+### Issue 6 — Analytical delay simulation + Signal Timing page [ ] TODO
+Blocked by: Issue 4
+
+### Issue 7 — Top-down 2D canvas simulation [ ] TODO
+Blocked by: Issue 6
