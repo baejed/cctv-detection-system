@@ -11,7 +11,33 @@ const SPEEDS = [
   { label: '5×', sps: 300 },
   { label: '10×', sps: 600 },
 ];
-const SIM_DURATION = 3600; // 60 simulated minutes in seconds
+const SIM_DURATION = 3600;
+
+type VehicleType = 'MC' | 'CAR' | 'JEP' | 'BUS' | 'TRUCK';
+
+interface Vehicle {
+  id: number;
+  type: VehicleType;
+  approach: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  speed: number;
+  gap: number;
+}
+
+// Dimensions in canvas units (length × width along/across direction of travel)
+const VEHICLE_PARAMS: Record<VehicleType, { length: number; width: number; speed: number; minGap: number }> = {
+  MC:    { length: 14, width: 8,  speed: 90, minGap: 8  },
+  CAR:   { length: 18, width: 10, speed: 70, minGap: 12 },
+  JEP:   { length: 22, width: 12, speed: 55, minGap: 16 },
+  BUS:   { length: 28, width: 14, speed: 45, minGap: 20 },
+  TRUCK: { length: 28, width: 14, speed: 45, minGap: 20 },
+};
+
+// Deterministic type sequence: ~50% MC, ~30% CAR, ~10% JEP, ~5% BUS, ~5% TRUCK
+const TYPE_SEQUENCE: VehicleType[] = ['MC', 'CAR', 'MC', 'CAR', 'MC', 'JEP', 'MC', 'CAR', 'BUS', 'TRUCK'];
 
 function computeGreenState(
   ids: string[],
@@ -34,6 +60,73 @@ function computeGreenState(
   return out;
 }
 
+function placeVehicles(
+  ids: string[],
+  series: Record<string, number[]>,
+  minute: number,
+  cx: number,
+  cy: number,
+  box: number,
+  arm: number,
+  sc: number,
+): Vehicle[] {
+  const armUnits = arm / sc; // arm length in unscaled canvas units (= 118)
+  const vehicles: Vehicle[] = [];
+  let globalId = 0;
+
+  ids.slice(0, 4).forEach((id, i) => {
+    const seriesData = series[id] ?? [];
+    // Arms with all-zero queue_series are not rendered (T-intersection support)
+    if (!seriesData.some(v => v > 0)) return;
+
+    const rawQ = seriesData[minute] ?? 0;
+    const count = Math.min(Math.round(rawQ), 15);
+    let dist = 0; // distance from stop line in canvas units
+
+    for (let k = 0; k < count; k++) {
+      const type = TYPE_SEQUENCE[(i * 13 + k) % TYPE_SEQUENCE.length];
+      const { length, width, speed, minGap } = VEHICLE_PARAMS[type];
+      if (dist + length > armUnits * 0.92) break;
+
+      let x: number, y: number, w: number, h: number;
+      switch (i) {
+        case 0: // N — queue from stop line going north (y decreases)
+          x = cx - (width * sc) / 2;
+          y = cy - box - (dist + length) * sc;
+          w = width * sc;
+          h = length * sc;
+          break;
+        case 1: // E — queue from stop line going east (x increases)
+          x = cx + box + dist * sc;
+          y = cy - (width * sc) / 2;
+          w = length * sc;
+          h = width * sc;
+          break;
+        case 2: // S — queue from stop line going south (y increases)
+          x = cx - (width * sc) / 2;
+          y = cy + box + dist * sc;
+          w = width * sc;
+          h = length * sc;
+          break;
+        case 3: // W — queue from stop line going west (x decreases)
+          x = cx - box - (dist + length) * sc;
+          y = cy - (width * sc) / 2;
+          w = length * sc;
+          h = width * sc;
+          break;
+        default:
+          dist += length + minGap;
+          return;
+      }
+
+      vehicles.push({ id: globalId++, type, approach: i, x, y, width: w, height: h, speed, gap: minGap });
+      dist += length + minGap;
+    }
+  });
+
+  return vehicles;
+}
+
 function paint(
   canvas: HTMLCanvasElement,
   chunk: SimulationChunk,
@@ -41,7 +134,6 @@ function paint(
   mode: 'before' | 'after',
   simTime: number,
   ids: string[],
-  maxQ: number,
 ) {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
@@ -52,11 +144,9 @@ function paint(
   const cy = H / 2;
   const sc = Math.min(W / 460, H / 340);
 
-  // Intersection geometry
-  const box = 52 * sc;   // half-size of center box
-  const arm = 118 * sc;  // arm length
-  const aw  = 42 * sc;   // arm width
-  const maxBar = arm * 0.88;
+  const box = 52 * sc;
+  const arm = 118 * sc;
+  const aw  = 42 * sc;
 
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = '#0f172a';
@@ -65,7 +155,6 @@ function paint(
   const series = (mode === 'before' ? chunk.queue_series_before : chunk.queue_series_after) ?? {};
   const minute = Math.min(Math.floor(simTime / 60), 59);
 
-  // Signal state: only cycle in "after" mode with valid, non-signal-off timing
   const showCycles = mode === 'after' && timing != null && !timing.signal_off;
   const gs = showCycles
     ? computeGreenState(ids, timing!.cycle_length, timing!.green_splits, simTime)
@@ -75,21 +164,17 @@ function paint(
   ctx.fillStyle = '#1e293b';
   ctx.fillRect(cx - aw/2, cy - box - arm, aw, arm);  // N
   ctx.fillRect(cx - aw/2, cy + box,       aw, arm);  // S
-  ctx.fillRect(cx + box, cy - aw/2,       arm, aw);  // E
+  ctx.fillRect(cx + box,  cy - aw/2,      arm, aw);  // E
   ctx.fillRect(cx - box - arm, cy - aw/2, arm, aw);  // W
   ctx.fillRect(cx - box, cy - box, box*2, box*2);    // center
 
   // Lane edge lines
   ctx.strokeStyle = '#334155';
   ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.strokeRect(cx - aw/2, cy - box - arm, aw, arm);
-  ctx.beginPath();
-  ctx.strokeRect(cx - aw/2, cy + box, aw, arm);
-  ctx.beginPath();
-  ctx.strokeRect(cx + box, cy - aw/2, arm, aw);
-  ctx.beginPath();
-  ctx.strokeRect(cx - box - arm, cy - aw/2, arm, aw);
+  ctx.beginPath(); ctx.strokeRect(cx - aw/2, cy - box - arm, aw, arm);
+  ctx.beginPath(); ctx.strokeRect(cx - aw/2, cy + box, aw, arm);
+  ctx.beginPath(); ctx.strokeRect(cx + box, cy - aw/2, arm, aw);
+  ctx.beginPath(); ctx.strokeRect(cx - box - arm, cy - aw/2, arm, aw);
   ctx.stroke();
 
   // Center lines (dashed yellow)
@@ -97,10 +182,10 @@ function paint(
   ctx.strokeStyle = '#ca8a04';
   ctx.lineWidth = 1.5;
   const centerLines: [number, number, number, number][] = [
-    [cx, cy - box,       cx, cy - box - arm],
-    [cx, cy + box,       cx, cy + box + arm],
-    [cx + box, cy,       cx + box + arm, cy],
-    [cx - box, cy,       cx - box - arm, cy],
+    [cx, cy - box,    cx, cy - box - arm],
+    [cx, cy + box,    cx, cy + box + arm],
+    [cx + box, cy,    cx + box + arm, cy],
+    [cx - box, cy,    cx - box - arm, cy],
   ];
   for (const [x1, y1, x2, y2] of centerLines) {
     ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
@@ -111,8 +196,8 @@ function paint(
   ctx.strokeStyle = '#cbd5e1';
   ctx.lineWidth = 2 * sc;
   const stopLines: [number, number, number, number][] = [
-    [cx - aw/2, cy - box, cx + aw/2, cy - box],
-    [cx - aw/2, cy + box, cx + aw/2, cy + box],
+    [cx - aw/2, cy - box,  cx + aw/2, cy - box],
+    [cx - aw/2, cy + box,  cx + aw/2, cy + box],
     [cx + box,  cy - aw/2, cx + box,  cy + aw/2],
     [cx - box,  cy - aw/2, cx - box,  cy + aw/2],
   ];
@@ -120,26 +205,32 @@ function paint(
     ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
   }
 
-  // Per-approach: queue bar + signal light + label
+  // Vehicle entities — placed statically per queue count at the current minute
+  const vehicles = placeVehicles(ids, series, minute, cx, cy, box, arm, sc);
+  for (const v of vehicles) {
+    ctx.globalAlpha = 0.9;
+    ctx.fillStyle = COLORS[v.approach % COLORS.length];
+    ctx.fillRect(v.x, v.y, v.width, v.height);
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = '#0f172a';
+    ctx.lineWidth = 0.8;
+    ctx.strokeRect(v.x, v.y, v.width, v.height);
+
+    const minDim = Math.min(v.width, v.height);
+    if (minDim >= 8) {
+      ctx.font = `bold ${Math.max(minDim * 0.5, 5)}px sans-serif`;
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(v.type, v.x + v.width / 2, v.y + v.height / 2);
+    }
+  }
+
+  // Per-approach: signal dot + direction label
   ids.slice(0, 4).forEach((id, i) => {
-    const rawQ = (series[id] ?? [])[minute] ?? 0;
-    const bar  = Math.min(rawQ / maxQ, 1) * maxBar;
-    const color = COLORS[i % COLORS.length];
     const isGreen = gs[i] ?? false;
 
-    // Queue bar (semi-transparent, from stop line outward)
-    ctx.save();
-    ctx.globalAlpha = 0.68;
-    ctx.fillStyle = color;
-    switch (i) {
-      case 0: ctx.fillRect(cx - aw/2 + 2*sc, cy - box - bar, aw - 4*sc, bar); break; // N up
-      case 1: ctx.fillRect(cx + box,          cy - aw/2 + 2*sc, bar, aw - 4*sc); break; // E right
-      case 2: ctx.fillRect(cx - aw/2 + 2*sc, cy + box,         aw - 4*sc, bar); break; // S down
-      case 3: ctx.fillRect(cx - box - bar,   cy - aw/2 + 2*sc, bar, aw - 4*sc); break; // W left
-    }
-    ctx.restore();
-
-    // Signal dot (near stop line, outer-right corner of each arm)
+    // Signal dot (near stop line, outer-right corner of arm)
     const r = 5 * sc;
     let sx = 0, sy = 0;
     switch (i) {
@@ -156,25 +247,22 @@ function paint(
     ctx.lineWidth = 1;
     ctx.stroke();
 
-    // Direction label + queue count
+    // Direction label
     let lx = 0, ly = 0;
     switch (i) {
-      case 0: lx = cx;                ly = cy - box - arm * 0.82; break;
-      case 1: lx = cx + box + arm * 0.82; ly = cy;               break;
-      case 2: lx = cx;                ly = cy + box + arm * 0.82; break;
-      case 3: lx = cx - box - arm * 0.82; ly = cy;               break;
+      case 0: lx = cx;                     ly = cy - box - arm * 0.82; break;
+      case 1: lx = cx + box + arm * 0.82;  ly = cy;                    break;
+      case 2: lx = cx;                     ly = cy + box + arm * 0.82; break;
+      case 3: lx = cx - box - arm * 0.82;  ly = cy;                    break;
     }
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.font = `bold ${14 * sc}px sans-serif`;
     ctx.fillStyle = '#f1f5f9';
-    ctx.fillText(DIR_LABELS[i] ?? `A${i}`, lx, ly - 8 * sc);
-    ctx.font = `${10 * sc}px sans-serif`;
-    ctx.fillStyle = '#64748b';
-    ctx.fillText(`${rawQ.toFixed(0)} veh`, lx, ly + 8 * sc);
+    ctx.fillText(DIR_LABELS[i] ?? `A${i}`, lx, ly);
   });
 
-  // HUD: time + cycle phase
+  // HUD: sim clock + cycle phase
   const mm = String(Math.floor(simTime / 60)).padStart(2, '0');
   const ss = String(Math.floor(simTime % 60)).padStart(2, '0');
   ctx.font = `${11 * sc}px monospace`;
@@ -197,7 +285,7 @@ function paint(
 export function IntersectionCanvas({
   chunk,
   timing,
-  signalStatus: _signalStatus, // kept for future use; logic uses timing presence instead
+  signalStatus: _signalStatus,
 }: {
   chunk: SimulationChunk;
   timing: TimingChunk | null;
@@ -208,49 +296,32 @@ export function IntersectionCanvas({
   const rafRef       = useRef<number>(0);
   const lastRtRef    = useRef<number>(0);
 
-  // Animation state — all in refs to avoid stale closures in the RAF loop
   const playingRef = useRef(false);
   const spsRef     = useRef(60);
   const modeRef    = useRef<'before' | 'after'>('after');
   const simTRef    = useRef(0);
 
-  // Prop refs — always current inside the loop
   const chunkRef  = useRef(chunk);
   const timingRef = useRef(timing);
   const idsRef    = useRef<string[]>([]);
-  const maxQRef   = useRef<number>(1);
 
   chunkRef.current  = chunk;
   timingRef.current = timing;
 
-  // Compute approach IDs and max queue from current chunk (memoized)
   const ids = useMemo(() => {
     const s = chunk.queue_series_after ?? chunk.queue_series_before;
     return s ? Object.keys(s).sort() : [];
   }, [chunk]);
 
-  const maxQ = useMemo(() => {
-    if (!ids.length) return 1;
-    let m = 1;
-    for (const id of ids) {
-      const sb = chunk.queue_series_before?.[id] ?? [];
-      const sa = chunk.queue_series_after?.[id] ?? [];
-      m = Math.max(m, ...sb, ...sa);
-    }
-    return Math.max(m, 1);
-  }, [chunk, ids]);
-
   idsRef.current = ids;
-  maxQRef.current = maxQ;
 
-  // React state — only needed to drive control UI re-renders
   const [playing, setPlaying] = useState(false);
   const [sps, setSps] = useState(60);
   const [mode, setMode] = useState<'before' | 'after'>('after');
 
   // Reset when chunk changes
   useEffect(() => {
-    simTRef.current  = 0;
+    simTRef.current    = 0;
     playingRef.current = false;
     setPlaying(false);
   }, [chunk.chunk_name]);
@@ -295,7 +366,6 @@ export function IntersectionCanvas({
             modeRef.current,
             simTRef.current,
             idsRef.current,
-            maxQRef.current,
           );
         }
       }
@@ -312,15 +382,8 @@ export function IntersectionCanvas({
     playingRef.current = true;
     setPlaying(true);
   };
-  const handlePause = () => {
-    playingRef.current = false;
-    setPlaying(false);
-  };
-  const handleReset = () => {
-    simTRef.current    = 0;
-    playingRef.current = false;
-    setPlaying(false);
-  };
+  const handlePause = () => { playingRef.current = false; setPlaying(false); };
+  const handleReset = () => { simTRef.current = 0; playingRef.current = false; setPlaying(false); };
   const handleSpeed = (v: number) => { spsRef.current = v; setSps(v); };
   const handleMode  = (m: 'before' | 'after') => { modeRef.current = m; setMode(m); };
 
@@ -380,7 +443,7 @@ export function IntersectionCanvas({
       </div>
 
       <p className="text-xs text-muted-foreground">
-        Queue bars show vehicles per approach · signal lights cycle per Webster's timing (After mode only)
+        Vehicle agents per approach · signal lights cycle per Webster's timing (After mode only)
       </p>
     </div>
   );
