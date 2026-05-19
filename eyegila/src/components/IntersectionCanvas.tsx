@@ -7,8 +7,10 @@ import type { TimingChunk } from '@/services/timing';
 const COLORS = ['#6366f1', '#f59e0b', '#10b981', '#ef4444'];
 const DIR_LABELS = ['N', 'E', 'S', 'W'];
 const SPEEDS = [
-  { label: '1×', sps: 60 },
-  { label: '5×', sps: 300 },
+  { label: '⅒×', sps: 6 },
+  { label: '¼×', sps: 15 },
+  { label: '1×',  sps: 60 },
+  { label: '5×',  sps: 300 },
   { label: '10×', sps: 600 },
 ];
 const SIM_DURATION = 3600;
@@ -442,14 +444,29 @@ function paint(
   ctx.fillText(`${mm}:${ss} / 60:00`, 10 * sc, 10 * sc);
   if (timing) {
     const phase = Math.floor(simTime % timing.cycle_length);
-    ctx.fillText(`cycle ${timing.cycle_length}s · phase ${phase}s`, 10 * sc, 24 * sc);
+    const greenIdx = gs.indexOf(true);
+    const greenLabel = greenIdx >= 0 ? `  green: ${DIR_LABELS[greenIdx] ?? `A${greenIdx}`}` : '';
+    ctx.fillText(`cycle ${timing.cycle_length}s · ${phase}s${greenLabel}`, 10 * sc, 24 * sc);
   }
-  ctx.fillText(`vehicles: ${vehicles.length}`, 10 * sc, 38 * sc);
+
+  // Per-approach queue depth
+  const qCounts = ids.slice(0, 4).map((_, i) =>
+    vehicles.filter(v => v.approach === i && !v.clearing).length,
+  );
+  const qLabel = ids.slice(0, 4).map((_, i) =>
+    `${DIR_LABELS[i] ?? `A${i}`}:${qCounts[i]}`,
+  ).join('  ');
+  ctx.fillText(qLabel, 10 * sc, 38 * sc);
 
   ctx.textAlign = 'right';
   ctx.font = `bold ${11 * sc}px sans-serif`;
   ctx.fillStyle = mode === 'after' ? '#22c55e' : '#94a3b8';
   ctx.fillText(mode.toUpperCase(), W - 10 * sc, 10 * sc);
+
+  // Total vehicle count bottom-right
+  ctx.font = `${11 * sc}px monospace`;
+  ctx.fillStyle = '#475569';
+  ctx.fillText(`${vehicles.length} vehicles`, W - 10 * sc, 24 * sc);
 }
 
 // --- Component ---
@@ -471,7 +488,7 @@ export function IntersectionCanvas({
   const lastRtRef    = useRef<number>(0);
 
   const playingRef = useRef(false);
-  const spsRef     = useRef(60);
+  const spsRef     = useRef(6);
   const modeRef    = useRef<'before' | 'after'>('after');
   const simTRef    = useRef(0);
 
@@ -497,7 +514,7 @@ export function IntersectionCanvas({
   idsRef.current = ids;
 
   const [playing, setPlaying] = useState(false);
-  const [sps, setSps] = useState(60);
+  const [sps, setSps] = useState(6);
   const [mode, setMode] = useState<'before' | 'after'>('after');
 
   // Recompute spawn intervals when chunk/ids change
