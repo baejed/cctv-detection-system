@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Pause, Play, RotateCcw } from 'lucide-react';
+import { Pause, Play, RotateCcw, Maximize2, Minimize2 } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import type { SimulationChunk } from '@/services/simulation';
 import type { TimingChunk } from '@/services/timing';
@@ -491,6 +492,7 @@ export function IntersectionCanvas({
   signalStatus: string;
   typeMix?: Record<string, TypeFractions>;
 }) {
+  const wrapperRef   = useRef<HTMLDivElement>(null);
   const canvasRef    = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const rafRef       = useRef<number>(0);
@@ -525,6 +527,7 @@ export function IntersectionCanvas({
   const [playing, setPlaying] = useState(false);
   const [sps, setSps] = useState(6);
   const [mode, setMode] = useState<'before' | 'after'>('after');
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   // Recompute spawn intervals when chunk/ids change
   useEffect(() => {
@@ -539,8 +542,7 @@ export function IntersectionCanvas({
     activeApproachesRef.current = active;
     const numActive = Math.max(active.size, 1);
     const perApproachVolume = chunk.volume_pcu_hr / numActive;
-    // Cap at 30 sim-s so low-volume intersections still show visible traffic
-    // (≥120 PCU/hr per approach minimum for display purposes).
+    // Cap at 30 sim-s so low-volume intersections still show visible traffic.
     const interval = Math.min(3600 / Math.max(perApproachVolume, 0.1), 30);
     spawnIntervalsRef.current = [interval, interval, interval, interval];
   }, [chunk, ids]);
@@ -555,19 +557,51 @@ export function IntersectionCanvas({
     setPlaying(false);
   }, [chunk.chunk_name]);
 
-  // Responsive canvas sizing
+  // Responsive canvas sizing — multiply by devicePixelRatio for sharp rendering
   useEffect(() => {
     const container = containerRef.current;
     const canvas    = canvasRef.current;
     if (!container || !canvas) return;
     const resize = () => {
-      const w = Math.min(container.clientWidth, 420);
-      if (w > 0) { canvas.width = w; canvas.height = Math.round(w * 0.58); }
+      const dpr  = window.devicePixelRatio || 1;
+      const full = !!document.fullscreenElement;
+      const w    = full ? container.clientWidth  : Math.min(container.clientWidth, 420);
+      const h    = full ? container.clientHeight : Math.round(w * 0.58);
+      if (w > 0 && h > 0) {
+        canvas.width  = Math.round(w * dpr);
+        canvas.height = Math.round(h * dpr);
+        canvas.style.width  = `${w}px`;
+        canvas.style.height = `${h}px`;
+      }
     };
     resize();
     const ro = new ResizeObserver(resize);
     ro.observe(container);
     return () => ro.disconnect();
+  }, []);
+
+  // Sync fullscreen state and trigger a resize when entering/exiting
+  useEffect(() => {
+    const onFsChange = () => {
+      const full = !!document.fullscreenElement;
+      setIsFullscreen(full);
+      // ResizeObserver fires automatically when the container resizes, but
+      // trigger an explicit recalc for the devicePixelRatio path.
+      const container = containerRef.current;
+      const canvas    = canvasRef.current;
+      if (!container || !canvas) return;
+      const dpr = window.devicePixelRatio || 1;
+      const w   = full ? container.clientWidth  : Math.min(container.clientWidth, 420);
+      const h   = full ? container.clientHeight : Math.round(w * 0.58);
+      if (w > 0 && h > 0) {
+        canvas.width  = Math.round(w * dpr);
+        canvas.height = Math.round(h * dpr);
+        canvas.style.width  = `${w}px`;
+        canvas.style.height = `${h}px`;
+      }
+    };
+    document.addEventListener('fullscreenchange', onFsChange);
+    return () => document.removeEventListener('fullscreenchange', onFsChange);
   }, []);
 
   // RAF loop — permanent; all state from refs
@@ -579,7 +613,6 @@ export function IntersectionCanvas({
           const dt = lastRtRef.current > 0 ? (now - lastRtRef.current) / 1000 : 0;
           const dtSim = Math.min(dt * spsRef.current, 1.0);
 
-          // Sub-step: spawn + physics; compute signal state per sub-step for accuracy
           let remaining = dtSim;
           let subT = simTRef.current;
           while (remaining > 0) {
@@ -649,15 +682,31 @@ export function IntersectionCanvas({
     playingRef.current = true;
     setPlaying(true);
   };
-  const handlePause = () => { playingRef.current = false; setPlaying(false); };
-  const handleReset = resetState;
-  const handleSpeed = (v: number) => { spsRef.current = v; setSps(v); };
-  const handleMode  = (m: 'before' | 'after') => { modeRef.current = m; setMode(m); };
+  const handlePause      = () => { playingRef.current = false; setPlaying(false); };
+  const handleReset      = resetState;
+  const handleSpeed      = (v: number) => { spsRef.current = v; setSps(v); };
+  const handleMode       = (m: 'before' | 'after') => { modeRef.current = m; setMode(m); };
+  const handleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      wrapperRef.current?.requestFullscreen();
+    } else {
+      document.exitFullscreen();
+    }
+  };
 
   return (
-    <div className="space-y-3">
-      <div ref={containerRef} className="w-full rounded-md overflow-hidden">
-        <canvas ref={canvasRef} className="w-full block" />
+    <div
+      ref={wrapperRef}
+      className={cn(
+        'space-y-3',
+        isFullscreen && 'bg-[#0f172a] flex flex-col p-4 h-full',
+      )}
+    >
+      <div
+        ref={containerRef}
+        className={cn('rounded-md overflow-hidden', isFullscreen ? 'flex-1 w-full' : 'w-full')}
+      >
+        <canvas ref={canvasRef} className="block" />
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
@@ -706,11 +755,27 @@ export function IntersectionCanvas({
         >
           After
         </Button>
+
+        <div className="h-5 w-px bg-border mx-0.5" />
+
+        <Button
+          size="sm"
+          variant="ghost"
+          className="size-8 p-0"
+          title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+          onClick={handleFullscreen}
+        >
+          {isFullscreen
+            ? <Minimize2 className="size-3.5" />
+            : <Maximize2 className="size-3.5" />}
+        </Button>
       </div>
 
-      <p className="text-xs text-muted-foreground">
-        After: Webster signal cycles · Before / signal-off: gap-acceptance (6 s) · toggle live
-      </p>
+      {!isFullscreen && (
+        <p className="text-xs text-muted-foreground">
+          After: Webster signal cycles · Before / signal-off: gap-acceptance (6 s) · toggle live
+        </p>
+      )}
     </div>
   );
 }
