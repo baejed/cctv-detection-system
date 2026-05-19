@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import { type RecommendationResponse, recommendationsApi } from '@/services/recommendations';
 import { Progress } from '@/components/ui/progress';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
-import { Loader2, RefreshCw, Pencil, Check, X } from 'lucide-react';
+import { Loader2, RefreshCw, Pencil, Check, X, BarChart2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface Props {
@@ -98,6 +99,23 @@ export function LatestTab({ rec, onRegenerate, regenerating, onNotesSaved }: Pro
           <Stat label="PHF"   value={rec.phf}          suffix="" digits={2} />
         </div>
       </div>
+
+      <Separator />
+
+      {/* Signal timing link */}
+      <Link to={`/timing/${rec.intersection_id}`} className="block">
+        <div className="rounded-md border border-border bg-card px-4 py-3 flex items-center justify-between hover:bg-muted/40 transition-colors">
+          <div>
+            <div className="text-xs font-medium">Signal timing &amp; simulation</div>
+            <div className="text-[10px] text-muted-foreground mt-0.5">
+              {rec.timing_cycle != null
+                ? `${rec.timing_cycle}s cycle · peak chunk: ${rec.timing_chunk ?? '—'}`
+                : 'Run analysis to compute timing'}
+            </div>
+          </div>
+          <BarChart2 className="size-4 text-muted-foreground shrink-0" />
+        </div>
+      </Link>
 
       <Separator />
 

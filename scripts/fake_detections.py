@@ -43,6 +43,7 @@ from common.models import (
     RegionPoint,
     Street,
 )
+from server.tod import seed_tod_chunks
 
 OBJECT_TYPES = ["tricycle", "motorcycle", "car", "truck", "pedicab", "pedestrian"]
 
@@ -259,6 +260,7 @@ def seed_base_data(db) -> list[tuple]:
         )
         db.add(intersection)
         db.flush()
+        seed_tod_chunks(db, intersection.id)
         print(f"  Intersection id={intersection.id} '{intersection.name}' "
               f"({intersection.latitude}, {intersection.longitude})")
 

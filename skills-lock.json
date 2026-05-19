@@ -42,6 +42,30 @@
       "sourceType": "github",
       "skillPath": "plugins/observability-monitoring/skills/grafana-dashboards/SKILL.md",
       "computedHash": "e9b692daf06faf96fa28b2b98f50b362e68b974db5ab503963a610c719cda79b"
+    },
+    "grill-me": {
+      "source": "mattpocock/skills",
+      "sourceType": "github",
+      "skillPath": "skills/productivity/grill-me/SKILL.md",
+      "computedHash": "784f0dbb7403b0f00324bce9a112f715342777a0daee7bbb7385f9c6f0a170ea"
+    },
+    "tdd": {
+      "source": "mattpocock/skills",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/tdd/SKILL.md",
+      "computedHash": "15a7b5e36383ebadb2dec5e586679e55e9663d292da418926b8da6fc0ef27d84"
+    },
+    "to-issues": {
+      "source": "mattpocock/skills",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/to-issues/SKILL.md",
+      "computedHash": "47f648f3414848ccfc62cb41d2828b7e575fb5e7cbd6c4bdf630c063b5dc5e82"
+    },
+    "to-prd": {
+      "source": "mattpocock/skills",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/to-prd/SKILL.md",
+      "computedHash": "6d741474efd4bc3db55fabc2722ed78ca9c374cabcb6212936d79d4fd4a30fcb"
     }
   }
 }

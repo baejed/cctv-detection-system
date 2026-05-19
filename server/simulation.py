@@ -130,6 +130,17 @@ def generate_simulation(
 
         flows = pcu_flow_per_street(db, intersection.id, chunk, pce_map)
         if not flows:
+            results.append(SimulationResult(
+                intersection_id=intersection.id,
+                recommendation_id=recommendation_id,
+                chunk_name=chunk.name,
+                delay_before=0.0,
+                delay_after=0.0,
+                volume_pcu_hr=0.0,
+                vehicle_hours_saved=0.0,
+                queue_series_before=None,
+                queue_series_after=None,
+            ))
             continue
 
         n = len(flows)

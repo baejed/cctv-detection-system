@@ -150,3 +150,28 @@ Commit: 9f26198
 - Per-approach cap (15) unchanged — already counts only non-clearing vehicles
 
 Blocked by: Issue 10
+
+---
+
+### Issue 13 — Backend hardening + cross-nav link from recommendations to timing ✅ DONE (2026-05-19)
+
+- `server/webster.py`: added `AND street_id IS NOT NULL` filter in pcu_flow_per_street query
+  to prevent null grouping rows from skewing flow computations
+- `server/tod.py`: relaxed contiguity validation from `!=` to `<` — gaps in TOD chunk
+  coverage now raise an error but overlaps are the only hard constraint (prevents false
+  422 errors when chunks are slightly reordered during editing)
+- `server/simulation.py`: `generate_simulation()` now appends a zero-fill SimulationResult
+  row when a chunk has no aggregation flows, so the per-chunk table always has a complete
+  row set even for sparse intersections
+- `scripts/fake_detections.py`: `seed_base_data()` calls `seed_tod_chunks()` on each
+  newly-created intersection so fake-data seeding produces a working TOD config
+- `DetailSheet.tsx`: removed `historyLoading` from useEffect deps to fix an infinite
+  refetch loop — setting historyLoading(true) was re-triggering the effect and cancelling
+  the in-flight request before the response arrived
+- `LatestTab.tsx`: added "Signal timing & simulation" link card at the bottom of the
+  Latest tab; shows cycle length + peak chunk when timing has been run, otherwise
+  "Run analysis to compute timing"
+- Alembic migration `0004` renamed to `0011` (down_revision: 0010) to slot correctly
+  into the migration chain after the simulation_results table migration
+
+Blocked by: Issues 8–12

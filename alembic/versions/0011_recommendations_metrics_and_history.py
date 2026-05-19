@@ -1,7 +1,7 @@
 """recommendations metrics + history support
 
-Revision ID: 0004
-Revises: 0003
+Revision ID: 0011
+Revises: 0010
 Create Date: 2026-05-14
 """
 from typing import Sequence, Union
@@ -9,8 +9,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "0004"
-down_revision: Union[str, None] = "0003"
+revision: str = "0011"
+down_revision: Union[str, None] = "0010"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

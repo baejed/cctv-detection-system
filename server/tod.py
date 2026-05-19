@@ -57,8 +57,8 @@ def validate_chunks(chunks: list[TodChunk]) -> None:
         if chunk.start_minutes >= chunk.end_minutes:
             raise HTTPException(status_code=422, detail=f"Chunk '{chunk.name}': start must be before end")
     for i in range(len(sorted_chunks) - 1):
-        if sorted_chunks[i].end_minutes != sorted_chunks[i + 1].start_minutes:
+        if sorted_chunks[i].end_minutes < sorted_chunks[i + 1].start_minutes:
             raise HTTPException(
                 status_code=422,
-                detail="Chunks must be contiguous (no gaps or overlaps)",
+                detail="Chunks must be contiguous (no gaps)",
             )

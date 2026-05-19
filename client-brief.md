@@ -1,1 +1,3 @@
 i want to make the system to not just output yes/no classifications through warrant (MUTCD), but also have a suggested traffic light configuration for each lane, and also have a way to validate it through a simulation and to see the amount of time saved. The MUTCD applies to US, and maybe Manila, but our city also have it's own traffic, mindsets, no. of vehicles, I want to use the warrants as reference but translate it to something that applies to the city.
+
+I WANT SIMULATION OF VEHICLES USING THE LAST DETECTED COLUMNS AND SIMULATE HOW THEY MOVE IN ROADS

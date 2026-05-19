@@ -41,6 +41,7 @@ def pcu_flow_per_street(
                COUNT(DISTINCT DATE(window_start))::int      AS distinct_days
           FROM aggregation_summaries
          WHERE intersection_id = :iid
+           AND street_id IS NOT NULL
            AND window_start   >= :since
            AND object_type NOT IN ('pedestrian', 'person')
            AND (  EXTRACT(HOUR   FROM window_start) * 60

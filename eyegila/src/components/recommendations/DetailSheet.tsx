@@ -28,9 +28,11 @@ export function DetailSheet({ rec, onClose, onRegenerate, regenerating, onNotesS
     }
   }, [rec?.intersection_id]);
 
-  // Fetch history when the History tab becomes active and rows are not yet loaded
+  // Fetch history when the History tab becomes active and rows are not yet loaded.
+  // historyLoading is intentionally omitted from deps — including it would re-run the
+  // cleanup when setHistoryLoading(true) fires, cancelling the in-flight request.
   useEffect(() => {
-    if (tab !== 'history' || !rec || historyRows !== undefined || historyLoading) return;
+    if (tab !== 'history' || !rec || historyRows !== undefined) return;
     let cancelled = false;
     setHistoryLoading(true);
     setHistoryError(false);
@@ -39,7 +41,8 @@ export function DetailSheet({ rec, onClose, onRegenerate, regenerating, onNotesS
       .catch(() => { if (!cancelled) setHistoryError(true); })
       .finally(() => { if (!cancelled) setHistoryLoading(false); });
     return () => { cancelled = true; };
-  }, [tab, rec?.intersection_id, historyRows, historyLoading]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, rec?.intersection_id, historyRows]);
 
   function retryHistory() {
     setHistoryRows(undefined);
