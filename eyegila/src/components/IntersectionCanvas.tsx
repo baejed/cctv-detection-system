@@ -20,6 +20,19 @@ const GAP_THRESHOLD_S = 6;
 // Conflicting approach indices for gap-acceptance (perpendicular pairs)
 const CONFLICTS: [number, number][][] = [[1, 3], [0, 2], [1, 3], [0, 2]];
 
+// Turn routing geometry (canvas units from intersection center)
+const ARM_ENTRY: [number, number][] = [
+  [0, -BOX_UNITS], [BOX_UNITS, 0], [0, BOX_UNITS], [-BOX_UNITS, 0],
+];
+const ARM_EXIT_PT: [number, number][] = [
+  [0, -(BOX_UNITS + ARM_UNITS)], [BOX_UNITS + ARM_UNITS, 0],
+  [0, BOX_UNITS + ARM_UNITS],    [-(BOX_UNITS + ARM_UNITS), 0],
+];
+// Exit arm index per approach: [through, left, right]
+const TURN_EXIT: [number, number, number][] = [
+  [2, 1, 3], [3, 2, 0], [0, 3, 1], [1, 0, 2],
+];
+
 export type VehicleType = 'MC' | 'CAR' | 'JEP' | 'BUS' | 'TRUCK';
 export type TypeFractions = Record<VehicleType, number>;
 
@@ -43,9 +56,13 @@ interface Vehicle {
   id: number;
   type: VehicleType;
   approach: number;
-  distFromStop: number; // canvas units, front of vehicle to stop line (negative = past stop line)
-  currSpeed: number;    // canvas units/s toward stop line
-  clearing: boolean;    // true once front has crossed the stop line
+  distFromStop: number;
+  currSpeed: number;
+  clearing: boolean;
+  turn: 'through' | 'left' | 'right' | null;
+  px: number;   // canvas units from center; valid when clearing
+  py: number;
+  waypoints: { x: number; y: number }[];
 }
 
 const VEHICLE_PARAMS: Record<VehicleType, {
@@ -57,6 +74,25 @@ const VEHICLE_PARAMS: Record<VehicleType, {
   BUS:   { length: 28, width: 14, maxSpeed: 45, decel: 90,  minGap: 20 },
   TRUCK: { length: 28, width: 14, maxSpeed: 45, decel: 90,  minGap: 20 },
 };
+
+// --- Turn routing ---
+
+function buildWaypoints(approach: number, turn: 'through' | 'left' | 'right'): { x: number; y: number }[] {
+  const exitArm = TURN_EXIT[approach][turn === 'through' ? 0 : turn === 'left' ? 1 : 2];
+  const [sx, sy] = ARM_ENTRY[exitArm];
+  const [ex, ey] = ARM_EXIT_PT[exitArm];
+  if (turn === 'through') {
+    return [{ x: sx, y: sy }, { x: ex, y: ey }];
+  }
+  return [{ x: 0, y: 0 }, { x: sx, y: sy }, { x: ex, y: ey }];
+}
+
+function initClearing(v: Vehicle): void {
+  const r = (v.id * 1337 + 42) % 100;
+  v.turn = r < 70 ? 'through' : r < 85 ? 'left' : 'right';
+  [v.px, v.py] = ARM_ENTRY[v.approach];
+  v.waypoints = buildWaypoints(v.approach, v.turn);
+}
 
 // --- Gap acceptance ---
 
@@ -83,29 +119,46 @@ function stepPhysics(
   greenFlags: boolean[],
   gapMode: boolean,
 ): void {
-  // Remove vehicles that have fully exited the far end of the intersection
-  const REMOVAL_DIST = -(BOX_UNITS + ARM_UNITS);
-  for (let i = vehicles.length - 1; i >= 0; i--) {
-    if (vehicles[i].distFromStop < REMOVAL_DIST) vehicles.splice(i, 1);
+  // Move clearing vehicles along their waypoint path
+  for (const v of vehicles) {
+    if (!v.clearing) continue;
+    const p = VEHICLE_PARAMS[v.type];
+    v.currSpeed = Math.min(v.currSpeed + p.decel * 0.6 * dt, p.maxSpeed);
+    let rem = v.currSpeed * dt;
+    while (rem > 1e-9 && v.waypoints.length > 0) {
+      const wp = v.waypoints[0];
+      const dx = wp.x - v.px;
+      const dy = wp.y - v.py;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (d < 1e-9) { v.waypoints.shift(); continue; }
+      if (rem >= d) {
+        v.px = wp.x; v.py = wp.y;
+        v.waypoints.shift();
+        rem -= d;
+      } else {
+        v.px += (dx / d) * rem;
+        v.py += (dy / d) * rem;
+        rem = 0;
+      }
+    }
   }
 
+  // Remove clearing vehicles that have reached their exit
+  for (let i = vehicles.length - 1; i >= 0; i--) {
+    if (vehicles[i].clearing && vehicles[i].waypoints.length === 0) vehicles.splice(i, 1);
+  }
+
+  // Car-following for queuing vehicles
   const byApproach = new Map<number, Vehicle[]>();
   for (const v of vehicles) {
+    if (v.clearing) continue;
     let list = byApproach.get(v.approach);
     if (!list) { list = []; byApproach.set(v.approach, list); }
     list.push(v);
   }
 
   for (const [ap, apVehicles] of byApproach) {
-    // Clearing vehicles: accelerate to max speed through the box, no stop constraint
-    for (const v of apVehicles.filter(v => v.clearing)) {
-      const p = VEHICLE_PARAMS[v.type];
-      v.currSpeed = Math.min(v.currSpeed + p.decel * 0.6 * dt, p.maxSpeed);
-      v.distFromStop -= v.currSpeed * dt;
-    }
-
-    // Queuing vehicles: car-following + signal/gap logic
-    const queuing = apVehicles.filter(v => !v.clearing).sort((a, b) => a.distFromStop - b.distFromStop);
+    const queuing = apVehicles.sort((a, b) => a.distFromStop - b.distFromStop);
     const canProceed = gapMode
       ? conflictingGapOk(ap, vehicles)
       : (greenFlags[ap] ?? false);
@@ -116,7 +169,6 @@ function stepPhysics(
 
       let obstaclePos: number;
       if (k === 0) {
-        // Lead vehicle: stop line unless signal is green or gap accepted
         obstaclePos = canProceed ? -99999 : 0;
       } else {
         const ahead = queuing[k - 1];
@@ -140,9 +192,9 @@ function stepPhysics(
 
       v.distFromStop = Math.max(v.distFromStop - v.currSpeed * dt, obstaclePos);
 
-      // Transition to clearing once the front of the lead vehicle crosses the stop line
       if (k === 0 && canProceed && v.distFromStop < 0) {
         v.clearing = true;
+        initClearing(v);
       }
     }
   }
@@ -180,7 +232,11 @@ function spawnVehicles(
         if (spawnDist - maxBack < p.minGap) continue;
       }
 
-      vehicles.push({ id: nextId.current++, type, approach: i, distFromStop: spawnDist, currSpeed: 0, clearing: false });
+      vehicles.push({
+        id: nextId.current++, type, approach: i,
+        distFromStop: spawnDist, currSpeed: 0, clearing: false,
+        turn: null, px: 0, py: 0, waypoints: [],
+      });
     }
   }
 }
@@ -280,8 +336,9 @@ function paint(
     ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
   }
 
-  // Vehicle entities (queuing + clearing)
+  // Queuing vehicles (approach-aligned rects)
   for (const v of vehicles) {
+    if (v.clearing) continue;
     const p = VEHICLE_PARAMS[v.type];
     const d = v.distFromStop;
     let x = 0, y = 0, w = 0, h = 0;
@@ -292,7 +349,7 @@ function paint(
       case 3: x = cx - box - (d + p.length)*sc; y = cy - (p.width*sc)/2; w = p.length*sc; h = p.width*sc; break;
       default: continue;
     }
-    ctx.globalAlpha = v.clearing ? 0.65 : 0.9;
+    ctx.globalAlpha = 0.9;
     ctx.fillStyle = COLORS[v.approach % COLORS.length];
     ctx.fillRect(x, y, w, h);
     ctx.globalAlpha = 1;
@@ -307,6 +364,39 @@ function paint(
       ctx.textBaseline = 'middle';
       ctx.fillText(v.type, x + w / 2, y + h / 2);
     }
+  }
+
+  // Clearing (in-transit) vehicles — oriented toward next waypoint
+  const AP_ANGLE = [Math.PI / 2, Math.PI, -Math.PI / 2, 0];
+  for (const v of vehicles) {
+    if (!v.clearing || v.waypoints.length === 0) continue;
+    const p = VEHICLE_PARAMS[v.type];
+    const wx = cx + v.px * sc;
+    const wy = cy + v.py * sc;
+    const wp = v.waypoints[0];
+    const hdx = wp.x - v.px;
+    const hdy = wp.y - v.py;
+    const hlen = Math.sqrt(hdx * hdx + hdy * hdy);
+    const angle = hlen > 1e-6 ? Math.atan2(hdy, hdx) : (AP_ANGLE[v.approach] ?? 0);
+    ctx.save();
+    ctx.translate(wx, wy);
+    ctx.rotate(angle);
+    ctx.globalAlpha = 0.65;
+    ctx.fillStyle = COLORS[v.approach % COLORS.length];
+    ctx.fillRect(-p.length * sc / 2, -p.width * sc / 2, p.length * sc, p.width * sc);
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = '#0f172a';
+    ctx.lineWidth = 0.8;
+    ctx.strokeRect(-p.length * sc / 2, -p.width * sc / 2, p.length * sc, p.width * sc);
+    const minDim = Math.min(p.length, p.width) * sc;
+    if (minDim >= 8) {
+      ctx.font = `bold ${Math.max(minDim * 0.5, 5)}px sans-serif`;
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(v.type, 0, 0);
+    }
+    ctx.restore();
   }
 
   // Signal dots + direction labels
