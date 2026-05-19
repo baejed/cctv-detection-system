@@ -13,8 +13,12 @@ const SPEEDS = [
 ];
 const SIM_DURATION = 3600;
 const ARM_UNITS = 118;
+const BOX_UNITS = 52;
 const MAX_QUEUE = 15;
-const MAX_PHYSICS_DT = 0.1; // max simulated seconds per sub-step
+const MAX_PHYSICS_DT = 0.1;
+const GAP_THRESHOLD_S = 6;
+// Conflicting approach indices for gap-acceptance (perpendicular pairs)
+const CONFLICTS: [number, number][][] = [[1, 3], [0, 2], [1, 3], [0, 2]];
 
 type VehicleType = 'MC' | 'CAR' | 'JEP' | 'BUS' | 'TRUCK';
 
@@ -22,8 +26,9 @@ interface Vehicle {
   id: number;
   type: VehicleType;
   approach: number;
-  distFromStop: number; // canvas units, front of vehicle to stop line
+  distFromStop: number; // canvas units, front of vehicle to stop line (negative = past stop line)
   currSpeed: number;    // canvas units/s toward stop line
+  clearing: boolean;    // true once front has crossed the stop line
 }
 
 const VEHICLE_PARAMS: Record<VehicleType, {
@@ -38,9 +43,37 @@ const VEHICLE_PARAMS: Record<VehicleType, {
 
 const TYPE_SEQUENCE: VehicleType[] = ['MC', 'CAR', 'MC', 'CAR', 'MC', 'JEP', 'MC', 'CAR', 'BUS', 'TRUCK'];
 
+// --- Gap acceptance ---
+
+function conflictingGapOk(approach: number, vehicles: Vehicle[]): boolean {
+  const conflicts = CONFLICTS[approach] ?? [];
+  for (const ca of conflicts) {
+    // Only moving (non-stopped) queuing vehicles on the conflicting approach are threats
+    const cvs = vehicles.filter(
+      v => v.approach === ca && !v.clearing && v.distFromStop > 0 && v.currSpeed > 0,
+    );
+    if (cvs.length === 0) continue;
+    cvs.sort((a, b) => a.distFromStop - b.distFromStop);
+    const lead = cvs[0];
+    if (lead.distFromStop / lead.currSpeed < GAP_THRESHOLD_S) return false;
+  }
+  return true;
+}
+
 // --- Physics ---
 
-function stepPhysics(vehicles: Vehicle[], dt: number): void {
+function stepPhysics(
+  vehicles: Vehicle[],
+  dt: number,
+  greenFlags: boolean[],
+  gapMode: boolean,
+): void {
+  // Remove vehicles that have fully exited the far end of the intersection
+  const REMOVAL_DIST = -(BOX_UNITS + ARM_UNITS);
+  for (let i = vehicles.length - 1; i >= 0; i--) {
+    if (vehicles[i].distFromStop < REMOVAL_DIST) vehicles.splice(i, 1);
+  }
+
   const byApproach = new Map<number, Vehicle[]>();
   for (const v of vehicles) {
     let list = byApproach.get(v.approach);
@@ -48,24 +81,34 @@ function stepPhysics(vehicles: Vehicle[], dt: number): void {
     list.push(v);
   }
 
-  for (const apVehicles of byApproach.values()) {
-    apVehicles.sort((a, b) => a.distFromStop - b.distFromStop);
+  for (const [ap, apVehicles] of byApproach) {
+    // Clearing vehicles: accelerate to max speed through the box, no stop constraint
+    for (const v of apVehicles.filter(v => v.clearing)) {
+      const p = VEHICLE_PARAMS[v.type];
+      v.currSpeed = Math.min(v.currSpeed + p.decel * 0.6 * dt, p.maxSpeed);
+      v.distFromStop -= v.currSpeed * dt;
+    }
 
-    for (let k = 0; k < apVehicles.length; k++) {
-      const v = apVehicles[k];
+    // Queuing vehicles: car-following + signal/gap logic
+    const queuing = apVehicles.filter(v => !v.clearing).sort((a, b) => a.distFromStop - b.distFromStop);
+    const canProceed = gapMode
+      ? conflictingGapOk(ap, vehicles)
+      : (greenFlags[ap] ?? false);
+
+    for (let k = 0; k < queuing.length; k++) {
+      const v = queuing[k];
       const p = VEHICLE_PARAMS[v.type];
 
-      // Obstacle: stop line for the lead vehicle, otherwise back of vehicle ahead + minGap
       let obstaclePos: number;
       if (k === 0) {
-        obstaclePos = 0;
+        // Lead vehicle: stop line unless signal is green or gap accepted
+        obstaclePos = canProceed ? -99999 : 0;
       } else {
-        const ahead = apVehicles[k - 1];
+        const ahead = queuing[k - 1];
         obstaclePos = ahead.distFromStop + VEHICLE_PARAMS[ahead.type].length + p.minGap;
       }
 
       const gap = v.distFromStop - obstaclePos;
-
       let targetSpeed: number;
       if (gap <= 0) {
         targetSpeed = 0;
@@ -74,7 +117,6 @@ function stepPhysics(vehicles: Vehicle[], dt: number): void {
         targetSpeed = gap < brakeDist ? Math.sqrt(2 * p.decel * gap) : p.maxSpeed;
       }
 
-      // Decelerate quickly; accelerate at 60% of decel
       if (v.currSpeed > targetSpeed) {
         v.currSpeed = Math.max(v.currSpeed - p.decel * dt, targetSpeed);
       } else {
@@ -82,6 +124,11 @@ function stepPhysics(vehicles: Vehicle[], dt: number): void {
       }
 
       v.distFromStop = Math.max(v.distFromStop - v.currSpeed * dt, obstaclePos);
+
+      // Transition to clearing once the front of the lead vehicle crosses the stop line
+      if (k === 0 && canProceed && v.distFromStop < 0) {
+        v.clearing = true;
+      }
     }
   }
 }
@@ -105,20 +152,20 @@ function spawnVehicles(
     while (timers[i] >= intervals[i]) {
       timers[i] -= intervals[i];
 
-      const apVehicles = vehicles.filter(v => v.approach === i);
+      // Per-approach cap counts only queuing (non-clearing) vehicles
+      const apVehicles = vehicles.filter(v => v.approach === i && !v.clearing);
       if (apVehicles.length >= MAX_QUEUE) continue;
 
       const type = TYPE_SEQUENCE[counts[i] % TYPE_SEQUENCE.length];
       const p = VEHICLE_PARAMS[type];
       const spawnDist = ARM_UNITS - p.length;
 
-      // Ensure there is room at the spawn point
       if (apVehicles.length > 0) {
         const maxBack = Math.max(...apVehicles.map(v => v.distFromStop + VEHICLE_PARAMS[v.type].length));
         if (spawnDist - maxBack < p.minGap) continue;
       }
 
-      vehicles.push({ id: nextId.current++, type, approach: i, distFromStop: spawnDist, currSpeed: 0 });
+      vehicles.push({ id: nextId.current++, type, approach: i, distFromStop: spawnDist, currSpeed: 0, clearing: false });
       counts[i]++;
     }
   }
@@ -163,7 +210,7 @@ function paint(
   const cy = H / 2;
   const sc = Math.min(W / 460, H / 340);
 
-  const box = 52 * sc;
+  const box = BOX_UNITS * sc;
   const arm = ARM_UNITS * sc;
   const aw  = 42 * sc;
 
@@ -219,7 +266,7 @@ function paint(
     ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
   }
 
-  // Vehicle entities (live physics positions)
+  // Vehicle entities (queuing + clearing)
   for (const v of vehicles) {
     const p = VEHICLE_PARAMS[v.type];
     const d = v.distFromStop;
@@ -231,7 +278,7 @@ function paint(
       case 3: x = cx - box - (d + p.length)*sc; y = cy - (p.width*sc)/2; w = p.length*sc; h = p.width*sc; break;
       default: continue;
     }
-    ctx.globalAlpha = 0.9;
+    ctx.globalAlpha = v.clearing ? 0.65 : 0.9;
     ctx.fillStyle = COLORS[v.approach % COLORS.length];
     ctx.fillRect(x, y, w, h);
     ctx.globalAlpha = 1;
@@ -293,8 +340,7 @@ function paint(
     const phase = Math.floor(simTime % timing.cycle_length);
     ctx.fillText(`cycle ${timing.cycle_length}s · phase ${phase}s`, 10 * sc, 24 * sc);
   }
-  const queueCount = vehicles.length;
-  ctx.fillText(`vehicles: ${queueCount}`, 10 * sc, 38 * sc);
+  ctx.fillText(`vehicles: ${vehicles.length}`, 10 * sc, 38 * sc);
 
   ctx.textAlign = 'right';
   ctx.font = `bold ${11 * sc}px sans-serif`;
@@ -397,13 +443,19 @@ export function IntersectionCanvas({
       if (canvas && canvas.width > 0 && canvas.height > 0) {
         if (playingRef.current) {
           const dt = lastRtRef.current > 0 ? (now - lastRtRef.current) / 1000 : 0;
-          // Cap dtSim to 1 simulated second per frame to prevent instability on tab-resume
           const dtSim = Math.min(dt * spsRef.current, 1.0);
 
-          // Sub-step: spawn + physics at fixed max step size
+          // Sub-step: spawn + physics; compute signal state per sub-step for accuracy
           let remaining = dtSim;
+          let subT = simTRef.current;
           while (remaining > 0) {
             const step = Math.min(remaining, MAX_PHYSICS_DT);
+            const t = timingRef.current;
+            const useGapMode = modeRef.current === 'before' || !t || t.signal_off;
+            const greenFlags = (!useGapMode && t)
+              ? computeGreenState(idsRef.current, t.cycle_length, t.green_splits, subT)
+              : new Array(idsRef.current.length).fill(false);
+
             spawnVehicles(
               vehiclesRef.current,
               spawnTimersRef.current,
@@ -414,7 +466,9 @@ export function IntersectionCanvas({
               spawnIntervalsRef.current,
               step,
             );
-            stepPhysics(vehiclesRef.current, step);
+            stepPhysics(vehiclesRef.current, step, greenFlags, useGapMode);
+
+            subT += step;
             remaining -= step;
           }
 
@@ -519,7 +573,7 @@ export function IntersectionCanvas({
       </div>
 
       <p className="text-xs text-muted-foreground">
-        Vehicle agents · car-following model · all approaches hold at stop line (signal phasing in next slice)
+        After: Webster signal cycles · Before / signal-off: gap-acceptance (6 s) · toggle live
       </p>
     </div>
   );
