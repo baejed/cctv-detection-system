@@ -252,14 +252,23 @@ function computeGreenState(
   simTime: number,
 ): boolean[] {
   const n = ids.length;
+  if (n === 0) return [];
+  // Normalise splits so they sum exactly to cycleLength — prevents float gaps
+  // where tInCycle falls between phases and no approach gets green.
+  const raw = ids.map(id => Math.max(splits[id] ?? cycleLength / n, 0));
+  const total = raw.reduce((a, b) => a + b, 0) || cycleLength;
+  const norm = raw.map(g => (g / total) * cycleLength);
+
   const tInCycle = simTime % cycleLength;
   const out = new Array<boolean>(n).fill(false);
   let elapsed = 0;
   for (let i = 0; i < n; i++) {
-    const g = splits[ids[i]] ?? cycleLength / n;
-    if (tInCycle >= elapsed && tInCycle < elapsed + g) { out[i] = true; break; }
-    elapsed += g;
+    const end = i === n - 1 ? cycleLength : elapsed + norm[i];
+    if (tInCycle >= elapsed && tInCycle < end) { out[i] = true; return out; }
+    elapsed += norm[i];
   }
+  // Fallback: last phase catches floating-point edge at tInCycle ≈ cycleLength
+  out[n - 1] = true;
   return out;
 }
 
@@ -530,7 +539,9 @@ export function IntersectionCanvas({
     activeApproachesRef.current = active;
     const numActive = Math.max(active.size, 1);
     const perApproachVolume = chunk.volume_pcu_hr / numActive;
-    const interval = 3600 / Math.max(perApproachVolume, 0.1);
+    // Cap at 30 sim-s so low-volume intersections still show visible traffic
+    // (≥120 PCU/hr per approach minimum for display purposes).
+    const interval = Math.min(3600 / Math.max(perApproachVolume, 0.1), 30);
     spawnIntervalsRef.current = [interval, interval, interval, interval];
   }, [chunk, ids]);
 
@@ -550,8 +561,8 @@ export function IntersectionCanvas({
     const canvas    = canvasRef.current;
     if (!container || !canvas) return;
     const resize = () => {
-      const w = container.clientWidth;
-      if (w > 0) { canvas.width = w; canvas.height = Math.round(w * 0.65); }
+      const w = Math.min(container.clientWidth, 420);
+      if (w > 0) { canvas.width = w; canvas.height = Math.round(w * 0.58); }
     };
     resize();
     const ro = new ResizeObserver(resize);
