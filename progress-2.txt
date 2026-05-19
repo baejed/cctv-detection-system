@@ -115,22 +115,19 @@ Blocked by: Issue 9
 
 ---
 
-### Issue 11 — Data-driven type mix from aggregation API
+### Issue 11 — Data-driven type mix from aggregation API ✅ DONE (2026-05-19)
+Commit: 77bdb41
 
-What to build:
-Fetch /aggregation/history (existing endpoint, existing aggregationApi.history() service)
-for the last complete hour per intersection. Derive the object_type distribution (MC%/JEP%/
-CAR%/BUS%/TRUCK%) per street_id. When spawning a vehicle on a given approach, sample its
-type stochastically from that distribution. Falls back to a citywide default mix
-(MC=50%, CAR=30%, JEP=15%, BUS=3%, TRUCK=2%) if the aggregation fetch returns no rows for
-that approach.
-
-Acceptance criteria:
-- [ ] SignalTiming page co-fetches aggregation history alongside simulation + timing data
-- [ ] Type distribution computed per street_id from object_type counts
-- [ ] Vehicle type on spawn is sampled from the per-approach distribution
-- [ ] Fallback default mix applied when a street has no detection rows
-- [ ] No new backend endpoints
+- SignalTiming co-fetches aggregationApi.history() for last complete hour (truncated-hour
+  end, 1h window) alongside simulation + timing data; errors silently suppressed
+- buildTypeMix(): maps object_type rows → VehicleType fractions per street_id using
+  OBJECT_TO_VEHICLE (motorcycle/pedicab/tricycle/bicycle→MC, car→CAR, jeepney→JEP,
+  bus→BUS, truck→TRUCK); normalises counts to fractions summing to 1
+- TypeFractions type exported from IntersectionCanvas; typeMix prop passed through
+- sampleType(fractions): replaces deterministic TYPE_SEQUENCE with weighted random draw
+- DEFAULT_TYPE_MIX (MC=0.50, CAR=0.30, JEP=0.15, BUS=0.03, TRUCK=0.02) applied per
+  approach when no aggregation rows exist for that street_id
+- spawnCountsRef removed (TYPE_SEQUENCE indexing eliminated)
 
 Blocked by: Issue 8 (entity type must exist before type sampling can be wired in)
 
