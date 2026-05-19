@@ -26,9 +26,26 @@ Blocked by: None — can start immediately
 
 ---
 
-### Issue 9 — Simple following model + stop-line queuing
+### Issue 9 — Simple following model + stop-line queuing ✅ DONE (2026-05-19)
+Commit: 8f4dac9
 
-What to build:
+- Vehicle interface gains distFromStop (canvas units, front to stop line) + currSpeed
+- VEHICLE_PARAMS expanded: maxSpeed + decel per type (MC=90/180, CAR=70/140, JEP=55/110,
+  BUS/TRUCK=45/90, all canvas-units/s)
+- stepPhysics(): groups by approach, sorts front-to-back, applies braking-distance formula
+  (targetSpeed = sqrt(2·decel·gap) when within braking range, else maxSpeed);
+  decelerates at decel, accelerates at 0.6·decel; clamps to obstacle position (no overshoot)
+- spawnVehicles(): per-approach timer ticked by dtSim, interval=3600/(volume_pcu_hr/numApproaches);
+  spawns at ARM_UNITS–length, respects MAX_QUEUE=15 and min-gap check at spawn point
+- RAF loop sub-steps at MAX_PHYSICS_DT=0.1s for stability at all speed multipliers
+- paint() refactored: receives live Vehicle[] param, draws from distFromStop; chunk param removed
+- Reset clears vehiclesRef + spawnTimers/Counts; chunk-change effect also resets all vehicle state
+- All approaches hold at stop line (signal phasing wired in Issue 10)
+- HUD shows live vehicle count
+
+Blocked by: None — can start immediately
+
+What to build (original spec):
 Add velocity and deceleration physics to vehicle entities. Each vehicle spawns at the far
 end of its arm and moves toward the stop line at max_speed. It decelerates when within
 min_gap of the vehicle ahead or the stop line itself. All approaches hold red during this
