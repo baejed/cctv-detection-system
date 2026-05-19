@@ -6,7 +6,9 @@ import {
 } from 'recharts';
 import { simulationApi, type SimulationChunk, type SimulationResponse } from '@/services/simulation';
 import { timingApi, type TimingChunk } from '@/services/timing';
-import { IntersectionCanvas } from '@/components/IntersectionCanvas';
+import { aggregationApi } from '@/services/aggregation';
+import { IntersectionCanvas, type VehicleType, type TypeFractions } from '@/components/IntersectionCanvas';
+import type { AggregationRow } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
@@ -16,6 +18,40 @@ import { ArrowLeft, TrendingDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const APPROACH_COLORS = ['#6366f1', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6', '#06b6d4'];
+
+const OBJECT_TO_VEHICLE: Record<string, VehicleType> = {
+  motorcycle: 'MC', pedicab: 'MC', tricycle: 'MC', bicycle: 'MC',
+  car: 'CAR',
+  jeepney: 'JEP',
+  bus: 'BUS',
+  truck: 'TRUCK',
+};
+
+function buildTypeMix(rows: AggregationRow[]): Record<string, TypeFractions> {
+  const byStreet = new Map<string, Record<VehicleType, number>>();
+  for (const row of rows) {
+    if (!row.street_id) continue;
+    const vt = OBJECT_TO_VEHICLE[row.object_type];
+    if (!vt) continue;
+    const key = String(row.street_id);
+    if (!byStreet.has(key)) byStreet.set(key, { MC: 0, CAR: 0, JEP: 0, BUS: 0, TRUCK: 0 });
+    byStreet.get(key)![vt] += row.count;
+  }
+
+  const mix: Record<string, TypeFractions> = {};
+  for (const [sid, counts] of byStreet) {
+    const total = (counts.MC + counts.CAR + counts.JEP + counts.BUS + counts.TRUCK);
+    if (total === 0) continue;
+    mix[sid] = {
+      MC:    counts.MC    / total,
+      CAR:   counts.CAR   / total,
+      JEP:   counts.JEP   / total,
+      BUS:   counts.BUS   / total,
+      TRUCK: counts.TRUCK / total,
+    };
+  }
+  return mix;
+}
 
 function fmt(n: number | null | undefined, unit = 's'): string {
   if (n == null) return '—';
@@ -87,7 +123,7 @@ function ChunkQueueChart({ chunk, showBefore, showAfter }: {
         <YAxis tick={{ fontSize: 11 }} width={36} label={{ value: 'Queue', angle: -90, position: 'insideLeft', fontSize: 11 }} />
         <Tooltip
           contentStyle={{ fontSize: 11 }}
-          formatter={(v: number, name: string) => [`${v.toFixed(1)} veh`, name.replace('_', ' Approach ')]}
+          formatter={(v, name) => [`${Number(v).toFixed(1)} veh`, String(name ?? '').replace('_', ' Approach ')]}
         />
         <Legend wrapperStyle={{ fontSize: 11 }} />
         {allKeys.map((key, idx) => {
@@ -117,6 +153,7 @@ export function SignalTimingPage() {
 
   const [data, setData] = useState<SimulationResponse | null>(null);
   const [timingData, setTimingData] = useState<TimingChunk[]>([]);
+  const [typeMix, setTypeMix] = useState<Record<string, TypeFractions>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedChunk, setSelectedChunk] = useState<string | null>(null);
@@ -126,14 +163,32 @@ export function SignalTimingPage() {
   useEffect(() => {
     if (!intersectionId) return;
     setLoading(true);
+
+    // Last complete hour window for aggregation
+    const now = new Date();
+    const end = new Date(now);
+    end.setMinutes(0, 0, 0);
+    const start = new Date(end.getTime() - 3600 * 1000);
+
     Promise.all([
       simulationApi.get(intersectionId),
       timingApi.list(intersectionId).catch(() => [] as TimingChunk[]),
+      aggregationApi.history({
+        start: start.toISOString(),
+        end: end.toISOString(),
+        intersection_id: intersectionId,
+        bucket: 'hour',
+      }).catch(() => []),
     ])
-      .then(([sim, tim]) => {
+      .then(([sim, tim, agg]) => {
         setData(sim);
         setTimingData(tim);
-        if (sim.chunks.length > 0) setSelectedChunk(sim.chunks[0].chunk_name);
+        if (sim.chunks.length > 0) {
+          // Pick the highest-volume chunk so the chart shows real queue data by default
+          const peak = [...sim.chunks].sort((a, b) => b.volume_pcu_hr - a.volume_pcu_hr)[0];
+          setSelectedChunk(peak.chunk_name);
+        }
+        setTypeMix(buildTypeMix(agg));
       })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false));
@@ -323,6 +378,7 @@ export function SignalTimingPage() {
                 chunk={activeChunk}
                 timing={activeTiming}
                 signalStatus={data.signal_status}
+                typeMix={typeMix}
               />
             </div>
           )}

@@ -20,7 +20,24 @@ const GAP_THRESHOLD_S = 6;
 // Conflicting approach indices for gap-acceptance (perpendicular pairs)
 const CONFLICTS: [number, number][][] = [[1, 3], [0, 2], [1, 3], [0, 2]];
 
-type VehicleType = 'MC' | 'CAR' | 'JEP' | 'BUS' | 'TRUCK';
+export type VehicleType = 'MC' | 'CAR' | 'JEP' | 'BUS' | 'TRUCK';
+export type TypeFractions = Record<VehicleType, number>;
+
+const DEFAULT_TYPE_MIX: TypeFractions = {
+  MC: 0.50, CAR: 0.30, JEP: 0.15, BUS: 0.03, TRUCK: 0.02,
+};
+
+const VEHICLE_TYPES: VehicleType[] = ['MC', 'CAR', 'JEP', 'BUS', 'TRUCK'];
+
+function sampleType(fractions: TypeFractions): VehicleType {
+  const r = Math.random();
+  let cum = 0;
+  for (const t of VEHICLE_TYPES) {
+    cum += fractions[t];
+    if (r < cum) return t;
+  }
+  return 'CAR';
+}
 
 interface Vehicle {
   id: number;
@@ -40,8 +57,6 @@ const VEHICLE_PARAMS: Record<VehicleType, {
   BUS:   { length: 28, width: 14, maxSpeed: 45, decel: 90,  minGap: 20 },
   TRUCK: { length: 28, width: 14, maxSpeed: 45, decel: 90,  minGap: 20 },
 };
-
-const TYPE_SEQUENCE: VehicleType[] = ['MC', 'CAR', 'MC', 'CAR', 'MC', 'JEP', 'MC', 'CAR', 'BUS', 'TRUCK'];
 
 // --- Gap acceptance ---
 
@@ -138,11 +153,11 @@ function stepPhysics(
 function spawnVehicles(
   vehicles: Vehicle[],
   timers: number[],
-  counts: number[],
   nextId: { current: number },
   ids: string[],
   activeApproaches: Set<number>,
   intervals: number[],
+  typeMixByApproach: TypeFractions[],
   dtSim: number,
 ): void {
   for (let i = 0; i < ids.length && i < 4; i++) {
@@ -156,7 +171,7 @@ function spawnVehicles(
       const apVehicles = vehicles.filter(v => v.approach === i && !v.clearing);
       if (apVehicles.length >= MAX_QUEUE) continue;
 
-      const type = TYPE_SEQUENCE[counts[i] % TYPE_SEQUENCE.length];
+      const type = sampleType(typeMixByApproach[i] ?? DEFAULT_TYPE_MIX);
       const p = VEHICLE_PARAMS[type];
       const spawnDist = ARM_UNITS - p.length;
 
@@ -166,7 +181,6 @@ function spawnVehicles(
       }
 
       vehicles.push({ id: nextId.current++, type, approach: i, distFromStop: spawnDist, currSpeed: 0, clearing: false });
-      counts[i]++;
     }
   }
 }
@@ -354,10 +368,12 @@ export function IntersectionCanvas({
   chunk,
   timing,
   signalStatus: _signalStatus,
+  typeMix = {},
 }: {
   chunk: SimulationChunk;
   timing: TimingChunk | null;
   signalStatus: string;
+  typeMix?: Record<string, TypeFractions>;
 }) {
   const canvasRef    = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -369,15 +385,16 @@ export function IntersectionCanvas({
   const modeRef    = useRef<'before' | 'after'>('after');
   const simTRef    = useRef(0);
 
-  const timingRef = useRef(timing);
-  const idsRef    = useRef<string[]>([]);
+  const timingRef  = useRef(timing);
+  const idsRef     = useRef<string[]>([]);
+  const typeMixRef = useRef<Record<string, TypeFractions>>(typeMix);
 
-  timingRef.current = timing;
+  timingRef.current  = timing;
+  typeMixRef.current = typeMix;
 
   // Physics state
   const vehiclesRef          = useRef<Vehicle[]>([]);
   const spawnTimersRef       = useRef<number[]>([0, 0, 0, 0]);
-  const spawnCountsRef       = useRef<number[]>([0, 0, 0, 0]);
   const nextVehicleIdRef     = useRef(0);
   const spawnIntervalsRef    = useRef<number[]>([Infinity, Infinity, Infinity, Infinity]);
   const activeApproachesRef  = useRef<Set<number>>(new Set());
@@ -414,7 +431,6 @@ export function IntersectionCanvas({
   useEffect(() => {
     vehiclesRef.current       = [];
     spawnTimersRef.current    = [0, 0, 0, 0];
-    spawnCountsRef.current    = [0, 0, 0, 0];
     nextVehicleIdRef.current  = 0;
     simTRef.current           = 0;
     playingRef.current        = false;
@@ -456,14 +472,17 @@ export function IntersectionCanvas({
               ? computeGreenState(idsRef.current, t.cycle_length, t.green_splits, subT)
               : new Array(idsRef.current.length).fill(false);
 
+            const mixPerApproach = idsRef.current.map(
+              sid => typeMixRef.current[sid] ?? DEFAULT_TYPE_MIX,
+            );
             spawnVehicles(
               vehiclesRef.current,
               spawnTimersRef.current,
-              spawnCountsRef.current,
               nextVehicleIdRef,
               idsRef.current,
               activeApproachesRef.current,
               spawnIntervalsRef.current,
+              mixPerApproach,
               step,
             );
             stepPhysics(vehiclesRef.current, step, greenFlags, useGapMode);
@@ -500,7 +519,6 @@ export function IntersectionCanvas({
   const resetState = () => {
     vehiclesRef.current      = [];
     spawnTimersRef.current   = [0, 0, 0, 0];
-    spawnCountsRef.current   = [0, 0, 0, 0];
     nextVehicleIdRef.current = 0;
     simTRef.current          = 0;
     playingRef.current       = false;
