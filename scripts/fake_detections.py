@@ -424,6 +424,162 @@ def insert_detections(db, cctv_id, region_id, count, hours, weights):
 
 
 # ---------------------------------------------------------------------------
+# Scenario seeding (warranted + borderline demo intersections)
+# ---------------------------------------------------------------------------
+
+# Feature targets determined by probing the warrant MLP directly:
+#   Warranted:  major≈650, minor≈280, peds≈49, vpm≈11, phf≈1.0 → rec=1.000
+#   Borderline: major≈500, minor≈165, peds≈35, vpm≈9,  phf≈1.0 → rec=0.491, w1=0.320
+#
+# Detections are inserted without jitter so the aggregate for the last complete
+# hour is deterministic.  Run the analysis from the UI after ~60 s for the
+# TimescaleDB continuous aggregate to refresh.
+
+SCENARIO_INTERSECTIONS = [
+    {
+        "name": "Visayan Avenue Junction",
+        "latitude":  7.4521,
+        "longitude": 125.8133,
+        "expected": "warranted",
+        "streets": [
+            # dominant approach drives major_volume ≈ 650
+            {"name": "Northbound — Visayan Ave",  "cam": "Cam V1 — Visayan NB", "peak": 684},
+            {"name": "Southbound — Visayan Ave",  "cam": "Cam V2 — Visayan SB", "peak": 98},
+            {"name": "Eastbound — Digos Road",    "cam": "Cam V3 — Digos EB",   "peak": 98},
+            {"name": "Westbound — Digos Road",    "cam": "Cam V4 — Digos WB",   "peak": 98},
+        ],
+    },
+    {
+        "name": "Caryving Road Junction",
+        "latitude":  7.4498,
+        "longitude": 125.8071,
+        "expected": "borderline",
+        "streets": [
+            # dominant approach drives major_volume ≈ 500
+            {"name": "Northbound — Caryving Rd",  "cam": "Cam C1 — Caryving NB", "peak": 526},
+            {"name": "Southbound — Caryving Rd",  "cam": "Cam C2 — Caryving SB", "peak": 58},
+            {"name": "Eastbound — Buhangin St",   "cam": "Cam C3 — Buhangin EB", "peak": 58},
+            {"name": "Westbound — Buhangin St",   "cam": "Cam C4 — Buhangin WB", "peak": 58},
+        ],
+    },
+]
+
+
+def _insert_exact_hour(db, cctv_id: int, region_id: int, hour_start: "datetime", count: int, weights: dict):
+    """Insert `count` detections spread uniformly across the 60-minute window."""
+    if count == 0:
+        return
+    detections = []
+    for i in range(count):
+        object_type = random_object_type(weights)
+        x1, y1, x2, y2 = random_bounding_box()
+        # Spread evenly + small sub-second noise so each minute gets ~count/60 rows
+        offset_secs = (i / count) * 3599 + random.uniform(0, 1)
+        detected_at = hour_start + timedelta(seconds=offset_secs)
+        detections.append(Detection(
+            cctv_id=cctv_id,
+            track_id=random.randint(1, 99999),
+            object_type=object_type,
+            confidence=round(random.uniform(0.65, 0.99), 4),
+            x1=x1, y1=y1, x2=x2, y2=y2,
+            time=detected_at,
+        ))
+    db.add_all(detections)
+    db.flush()
+    links = [
+        DetectionInRegion(region_id=region_id, detection_id=d.id, time=d.time)
+        for d in detections
+    ]
+    db.add_all(links)
+    db.flush()
+
+
+def seed_scenarios(db, weights: dict):
+    """
+    Create (or reuse) two demo intersections and insert exact detection counts
+    for the last 3 complete hours so the warrant model reliably produces
+    'warranted' and 'borderline' classifications.
+
+    Safe to re-run — existing detections in those hours are deleted first.
+    """
+    from sqlalchemy import text
+
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    hours_to_fill = [now - timedelta(hours=h) for h in range(1, 4)]  # last 3 complete hours
+
+    print("Seeding scenario intersections …")
+    print()
+
+    for spec in SCENARIO_INTERSECTIONS:
+        # Create or reuse intersection
+        existing = db.query(Intersection).filter_by(name=spec["name"]).first()
+        if existing:
+            intersection = existing
+            print(f"  [reuse] '{spec['name']}' id={intersection.id}")
+        else:
+            intersection = Intersection(
+                name=spec["name"],
+                latitude=spec["latitude"],
+                longitude=spec["longitude"],
+            )
+            db.add(intersection)
+            db.flush()
+            seed_tod_chunks(db, intersection.id)
+            print(f"  [new]   '{spec['name']}' id={intersection.id}")
+
+        for s in spec["streets"]:
+            # Reuse or create street / CCTV / region
+            street = db.query(Street).filter_by(
+                intersection_id=intersection.id, name=s["name"]
+            ).first()
+            if not street:
+                street = Street(intersection_id=intersection.id, name=s["name"])
+                db.add(street)
+                db.flush()
+
+            cctv = db.query(CCTV).filter_by(
+                intersection_id=intersection.id, name=s["cam"]
+            ).first()
+            if not cctv:
+                cctv = CCTV(
+                    intersection_id=intersection.id,
+                    name=s["cam"],
+                    rtsp_url=f"rtsp://{MEDIAMTX_HOST}:8554/scenario",
+                    status="offline",
+                )
+                db.add(cctv)
+                db.flush()
+
+            region = db.query(Region).filter_by(cctv_id=cctv.id, street_id=street.id).first()
+            if not region:
+                region = Region(cctv_id=cctv.id, street_id=street.id)
+                db.add(region)
+                db.flush()
+                for x, y in [(0.1, 0.1), (0.9, 0.1), (0.9, 0.9), (0.1, 0.9)]:
+                    db.add(RegionPoint(region_id=region.id, x=x, y=y))
+                db.flush()
+
+            # Delete any existing detections in the target hours, then re-insert exactly
+            for h_start in hours_to_fill:
+                h_end = h_start + timedelta(hours=1)
+                db.execute(text(
+                    "DELETE FROM detections WHERE cctv_id = :cid AND time >= :s AND time < :e"
+                ), {"cid": cctv.id, "s": h_start, "e": h_end})
+                db.flush()
+                _insert_exact_hour(db, cctv.id, region.id, h_start, s["peak"], weights)
+
+            print(f"    {s['name']:<35} {s['peak']:>4} det/hr × {len(hours_to_fill)} hrs")
+
+        db.commit()
+        print(f"  → expected classification: {spec['expected'].upper()}")
+        print()
+
+    print("Done. Wait ~60 s for the TimescaleDB aggregate to refresh, then run")
+    print("'Generate all' on the Recommendations page to see results.")
+    print()
+
+
+# ---------------------------------------------------------------------------
 # List
 # ---------------------------------------------------------------------------
 
@@ -471,6 +627,8 @@ def main():
                         help="Bulk-fill all cameras/regions with realistic traffic data")
     parser.add_argument("--full",      action="store_true",
                         help="--seed then --fill (recommended for a clean DB)")
+    parser.add_argument("--scenarios", action="store_true",
+                        help="Seed 'Visayan Ave' (warranted) + 'Caryving Rd' (borderline) demo intersections")
     parser.add_argument("--list",      action="store_true",
                         help="List existing data and counts")
 
@@ -500,6 +658,10 @@ def main():
 
         if args.seed:
             seed_base_data(db)
+            return
+
+        if args.scenarios:
+            seed_scenarios(db, weights)
             return
 
         if args.fill:
