@@ -1,0 +1,124 @@
+## Vehicle Agent Simulation — Progress
+
+Source: grill-me session 2026-05-19
+
+Replaces Issue 7 (queue-bar canvas) in IntersectionCanvas.tsx with microscopic vehicle agents.
+All work is pure client-side (TypeScript, HTML Canvas API, RAF loop). No new backend endpoints.
+
+Execution order: Issue 1 → Issues 2 & 4 (parallel) → Issue 3 → Issue 5
+
+---
+
+### Issue 8 — Vehicle entity model + static rendering ✅ DONE (2026-05-19)
+Commit: 8ed1496
+
+- VehicleType = 'MC' | 'CAR' | 'JEP' | 'BUS' | 'TRUCK'; Vehicle interface with
+  { id, type, approach, x, y, width, height, speed, gap }
+- VEHICLE_PARAMS: MC=14×8, CAR=18×10, JEP=22×12, BUS=28×14, TRUCK=28×14 (canvas units),
+  speed and minGap stored per type for future physics use
+- placeVehicles(): deterministic TYPE_SEQUENCE assignment per (approach×13 + k) % 10,
+  queues from stop line outward, capped at 15 vehicles per approach
+- Arms with all-zero queue_series are skipped (T-intersection support via .some check)
+- draw: approach-colored filled rect + dark stroke + white bold type label (shown when minDim ≥ 8px)
+- Removed queue-bar drawing and maxQ computation; all controls preserved unchanged
+
+Blocked by: None — can start immediately
+
+---
+
+### Issue 9 — Simple following model + stop-line queuing
+
+What to build:
+Add velocity and deceleration physics to vehicle entities. Each vehicle spawns at the far
+end of its arm and moves toward the stop line at max_speed. It decelerates when within
+min_gap of the vehicle ahead or the stop line itself. All approaches hold red during this
+slice to isolate the physics. New vehicles are suppressed when the per-approach queue
+reaches 15 vehicles (models spillback).
+
+Parameters per type (defaults, not user-configurable in this slice):
+  MC:    max_speed=90, decel=180, min_gap=8
+  CAR:   max_speed=70, decel=140, min_gap=12
+  JEP:   max_speed=55, decel=110, min_gap=16
+  BUS:   max_speed=45, decel=90,  min_gap=20
+  TRUCK: max_speed=45, decel=90,  min_gap=20
+(all in canvas-units/s; scaled by sc factor)
+
+Spawn rate: 1 vehicle per approach every (3600 / volume_pcu_hr) simulated seconds,
+sampled from queue_series_after average to determine arrival rate.
+
+Acceptance criteria:
+- [ ] Vehicles accelerate to max_speed after spawning
+- [ ] Vehicles decelerate smoothly when within min_gap of the vehicle ahead or stop line
+- [ ] No vehicle overshoots the stop line or clips into the vehicle ahead
+- [ ] Per-approach cap of 15 vehicles enforced; new spawns suppressed when queue is full
+- [ ] Simulation plays correctly at 1×/5×/10× speed multipliers
+- [ ] Reset clears all vehicle entities and resets sim clock
+
+Blocked by: Issue 8
+
+---
+
+### Issue 10 — Signal phasing + before/after modes
+
+What to build:
+Wire signal control into vehicle movement. After mode uses Webster's per-chunk cycle_length
+and green_splits from the existing timingApi response — vehicles on a green approach proceed
+through the stop line and travel across the intersection box, then are removed. Before mode
+uses unsignalized gap-acceptance: a vehicle at the stop line checks if the conflicting
+approach gap is > 6s; if so, it proceeds. signal_off chunks (timing.signal_off === true)
+use the Before/yield behavior regardless of toggle.
+
+Acceptance criteria:
+- [ ] After mode: signal cycles through approaches using Webster's splits; green approach
+      vehicles clear the stop line, red approach vehicles hold
+- [ ] Before mode: gap-acceptance logic — vehicle at stop line yields until 6s gap in
+      conflicting flow, then proceeds
+- [ ] signal_off chunks display amber signal dots and use gap-acceptance regardless of toggle
+- [ ] Before/after toggle switches mode live without resetting sim clock
+- [ ] Chunk selector change resets vehicle entities and sim clock (existing behavior preserved)
+- [ ] Signal dot color: green=active green, red=red, amber=signal_off or before mode
+
+Blocked by: Issue 9
+
+---
+
+### Issue 11 — Data-driven type mix from aggregation API
+
+What to build:
+Fetch /aggregation/history (existing endpoint, existing aggregationApi.history() service)
+for the last complete hour per intersection. Derive the object_type distribution (MC%/JEP%/
+CAR%/BUS%/TRUCK%) per street_id. When spawning a vehicle on a given approach, sample its
+type stochastically from that distribution. Falls back to a citywide default mix
+(MC=50%, CAR=30%, JEP=15%, BUS=3%, TRUCK=2%) if the aggregation fetch returns no rows for
+that approach.
+
+Acceptance criteria:
+- [ ] SignalTiming page co-fetches aggregation history alongside simulation + timing data
+- [ ] Type distribution computed per street_id from object_type counts
+- [ ] Vehicle type on spawn is sampled from the per-approach distribution
+- [ ] Fallback default mix applied when a street has no detection rows
+- [ ] No new backend endpoints
+
+Blocked by: Issue 8 (entity type must exist before type sampling can be wired in)
+
+---
+
+### Issue 12 — Turn path routing + intersection clearing
+
+What to build:
+After a vehicle crosses the stop line on green/yield, it follows a path to its exit arm.
+Turn assignment uses a fixed split: 70% through, 15% left-turn, 15% right-turn (constant,
+not user-configurable). Through vehicles travel straight across the center box to the
+opposite arm. Left/right vehicles follow a simple two-segment path (straight to center,
+then pivot to exit arm). Vehicles are removed from the entity list once they exit the arm
+boundary, preventing center-box congestion.
+
+Acceptance criteria:
+- [ ] Turn direction assigned at stop-line crossing (70/15/15 split, seeded per vehicle id)
+- [ ] Through vehicles travel straight to exit arm and are removed at arm boundary
+- [ ] Left/right vehicles follow a two-segment path through the center box and are removed
+- [ ] Vehicle count in center box does not grow unbounded during extended play
+- [ ] Per-approach cap (15 vehicles) counts only queuing vehicles, not vehicles in transit
+- [ ] Animation remains smooth at 10× speed with vehicles in transit
+
+Blocked by: Issue 10
