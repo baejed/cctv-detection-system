@@ -12,6 +12,9 @@ const SPEEDS = [
   { label: '10×', sps: 600 },
 ];
 const SIM_DURATION = 3600;
+const ARM_UNITS = 118;
+const MAX_QUEUE = 15;
+const MAX_PHYSICS_DT = 0.1; // max simulated seconds per sub-step
 
 type VehicleType = 'MC' | 'CAR' | 'JEP' | 'BUS' | 'TRUCK';
 
@@ -19,25 +22,109 @@ interface Vehicle {
   id: number;
   type: VehicleType;
   approach: number;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  speed: number;
-  gap: number;
+  distFromStop: number; // canvas units, front of vehicle to stop line
+  currSpeed: number;    // canvas units/s toward stop line
 }
 
-// Dimensions in canvas units (length × width along/across direction of travel)
-const VEHICLE_PARAMS: Record<VehicleType, { length: number; width: number; speed: number; minGap: number }> = {
-  MC:    { length: 14, width: 8,  speed: 90, minGap: 8  },
-  CAR:   { length: 18, width: 10, speed: 70, minGap: 12 },
-  JEP:   { length: 22, width: 12, speed: 55, minGap: 16 },
-  BUS:   { length: 28, width: 14, speed: 45, minGap: 20 },
-  TRUCK: { length: 28, width: 14, speed: 45, minGap: 20 },
+const VEHICLE_PARAMS: Record<VehicleType, {
+  length: number; width: number; maxSpeed: number; decel: number; minGap: number;
+}> = {
+  MC:    { length: 14, width: 8,  maxSpeed: 90, decel: 180, minGap: 8  },
+  CAR:   { length: 18, width: 10, maxSpeed: 70, decel: 140, minGap: 12 },
+  JEP:   { length: 22, width: 12, maxSpeed: 55, decel: 110, minGap: 16 },
+  BUS:   { length: 28, width: 14, maxSpeed: 45, decel: 90,  minGap: 20 },
+  TRUCK: { length: 28, width: 14, maxSpeed: 45, decel: 90,  minGap: 20 },
 };
 
-// Deterministic type sequence: ~50% MC, ~30% CAR, ~10% JEP, ~5% BUS, ~5% TRUCK
 const TYPE_SEQUENCE: VehicleType[] = ['MC', 'CAR', 'MC', 'CAR', 'MC', 'JEP', 'MC', 'CAR', 'BUS', 'TRUCK'];
+
+// --- Physics ---
+
+function stepPhysics(vehicles: Vehicle[], dt: number): void {
+  const byApproach = new Map<number, Vehicle[]>();
+  for (const v of vehicles) {
+    let list = byApproach.get(v.approach);
+    if (!list) { list = []; byApproach.set(v.approach, list); }
+    list.push(v);
+  }
+
+  for (const apVehicles of byApproach.values()) {
+    apVehicles.sort((a, b) => a.distFromStop - b.distFromStop);
+
+    for (let k = 0; k < apVehicles.length; k++) {
+      const v = apVehicles[k];
+      const p = VEHICLE_PARAMS[v.type];
+
+      // Obstacle: stop line for the lead vehicle, otherwise back of vehicle ahead + minGap
+      let obstaclePos: number;
+      if (k === 0) {
+        obstaclePos = 0;
+      } else {
+        const ahead = apVehicles[k - 1];
+        obstaclePos = ahead.distFromStop + VEHICLE_PARAMS[ahead.type].length + p.minGap;
+      }
+
+      const gap = v.distFromStop - obstaclePos;
+
+      let targetSpeed: number;
+      if (gap <= 0) {
+        targetSpeed = 0;
+      } else {
+        const brakeDist = (p.maxSpeed * p.maxSpeed) / (2 * p.decel);
+        targetSpeed = gap < brakeDist ? Math.sqrt(2 * p.decel * gap) : p.maxSpeed;
+      }
+
+      // Decelerate quickly; accelerate at 60% of decel
+      if (v.currSpeed > targetSpeed) {
+        v.currSpeed = Math.max(v.currSpeed - p.decel * dt, targetSpeed);
+      } else {
+        v.currSpeed = Math.min(v.currSpeed + p.decel * 0.6 * dt, targetSpeed);
+      }
+
+      v.distFromStop = Math.max(v.distFromStop - v.currSpeed * dt, obstaclePos);
+    }
+  }
+}
+
+// --- Spawn ---
+
+function spawnVehicles(
+  vehicles: Vehicle[],
+  timers: number[],
+  counts: number[],
+  nextId: { current: number },
+  ids: string[],
+  activeApproaches: Set<number>,
+  intervals: number[],
+  dtSim: number,
+): void {
+  for (let i = 0; i < ids.length && i < 4; i++) {
+    if (!activeApproaches.has(i)) continue;
+    timers[i] += dtSim;
+
+    while (timers[i] >= intervals[i]) {
+      timers[i] -= intervals[i];
+
+      const apVehicles = vehicles.filter(v => v.approach === i);
+      if (apVehicles.length >= MAX_QUEUE) continue;
+
+      const type = TYPE_SEQUENCE[counts[i] % TYPE_SEQUENCE.length];
+      const p = VEHICLE_PARAMS[type];
+      const spawnDist = ARM_UNITS - p.length;
+
+      // Ensure there is room at the spawn point
+      if (apVehicles.length > 0) {
+        const maxBack = Math.max(...apVehicles.map(v => v.distFromStop + VEHICLE_PARAMS[v.type].length));
+        if (spawnDist - maxBack < p.minGap) continue;
+      }
+
+      vehicles.push({ id: nextId.current++, type, approach: i, distFromStop: spawnDist, currSpeed: 0 });
+      counts[i]++;
+    }
+  }
+}
+
+// --- Signal ---
 
 function computeGreenState(
   ids: string[],
@@ -51,89 +138,21 @@ function computeGreenState(
   let elapsed = 0;
   for (let i = 0; i < n; i++) {
     const g = splits[ids[i]] ?? cycleLength / n;
-    if (tInCycle >= elapsed && tInCycle < elapsed + g) {
-      out[i] = true;
-      break;
-    }
+    if (tInCycle >= elapsed && tInCycle < elapsed + g) { out[i] = true; break; }
     elapsed += g;
   }
   return out;
 }
 
-function placeVehicles(
-  ids: string[],
-  series: Record<string, number[]>,
-  minute: number,
-  cx: number,
-  cy: number,
-  box: number,
-  arm: number,
-  sc: number,
-): Vehicle[] {
-  const armUnits = arm / sc; // arm length in unscaled canvas units (= 118)
-  const vehicles: Vehicle[] = [];
-  let globalId = 0;
-
-  ids.slice(0, 4).forEach((id, i) => {
-    const seriesData = series[id] ?? [];
-    // Arms with all-zero queue_series are not rendered (T-intersection support)
-    if (!seriesData.some(v => v > 0)) return;
-
-    const rawQ = seriesData[minute] ?? 0;
-    const count = Math.min(Math.round(rawQ), 15);
-    let dist = 0; // distance from stop line in canvas units
-
-    for (let k = 0; k < count; k++) {
-      const type = TYPE_SEQUENCE[(i * 13 + k) % TYPE_SEQUENCE.length];
-      const { length, width, speed, minGap } = VEHICLE_PARAMS[type];
-      if (dist + length > armUnits * 0.92) break;
-
-      let x: number, y: number, w: number, h: number;
-      switch (i) {
-        case 0: // N — queue from stop line going north (y decreases)
-          x = cx - (width * sc) / 2;
-          y = cy - box - (dist + length) * sc;
-          w = width * sc;
-          h = length * sc;
-          break;
-        case 1: // E — queue from stop line going east (x increases)
-          x = cx + box + dist * sc;
-          y = cy - (width * sc) / 2;
-          w = length * sc;
-          h = width * sc;
-          break;
-        case 2: // S — queue from stop line going south (y increases)
-          x = cx - (width * sc) / 2;
-          y = cy + box + dist * sc;
-          w = width * sc;
-          h = length * sc;
-          break;
-        case 3: // W — queue from stop line going west (x decreases)
-          x = cx - box - (dist + length) * sc;
-          y = cy - (width * sc) / 2;
-          w = length * sc;
-          h = width * sc;
-          break;
-        default:
-          dist += length + minGap;
-          return;
-      }
-
-      vehicles.push({ id: globalId++, type, approach: i, x, y, width: w, height: h, speed, gap: minGap });
-      dist += length + minGap;
-    }
-  });
-
-  return vehicles;
-}
+// --- Draw ---
 
 function paint(
   canvas: HTMLCanvasElement,
-  chunk: SimulationChunk,
   timing: TimingChunk | null,
   mode: 'before' | 'after',
   simTime: number,
   ids: string[],
+  vehicles: Vehicle[],
 ) {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
@@ -145,30 +164,27 @@ function paint(
   const sc = Math.min(W / 460, H / 340);
 
   const box = 52 * sc;
-  const arm = 118 * sc;
+  const arm = ARM_UNITS * sc;
   const aw  = 42 * sc;
 
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = '#0f172a';
   ctx.fillRect(0, 0, W, H);
 
-  const series = (mode === 'before' ? chunk.queue_series_before : chunk.queue_series_after) ?? {};
-  const minute = Math.min(Math.floor(simTime / 60), 59);
-
   const showCycles = mode === 'after' && timing != null && !timing.signal_off;
   const gs = showCycles
     ? computeGreenState(ids, timing!.cycle_length, timing!.green_splits, simTime)
     : ids.map(() => false);
 
-  // Roads (4 arms + center box)
+  // Roads
   ctx.fillStyle = '#1e293b';
-  ctx.fillRect(cx - aw/2, cy - box - arm, aw, arm);  // N
-  ctx.fillRect(cx - aw/2, cy + box,       aw, arm);  // S
-  ctx.fillRect(cx + box,  cy - aw/2,      arm, aw);  // E
-  ctx.fillRect(cx - box - arm, cy - aw/2, arm, aw);  // W
-  ctx.fillRect(cx - box, cy - box, box*2, box*2);    // center
+  ctx.fillRect(cx - aw/2, cy - box - arm, aw, arm);
+  ctx.fillRect(cx - aw/2, cy + box,       aw, arm);
+  ctx.fillRect(cx + box,  cy - aw/2,      arm, aw);
+  ctx.fillRect(cx - box - arm, cy - aw/2, arm, aw);
+  ctx.fillRect(cx - box, cy - box, box*2, box*2);
 
-  // Lane edge lines
+  // Lane edges
   ctx.strokeStyle = '#334155';
   ctx.lineWidth = 1;
   ctx.beginPath(); ctx.strokeRect(cx - aw/2, cy - box - arm, aw, arm);
@@ -177,17 +193,16 @@ function paint(
   ctx.beginPath(); ctx.strokeRect(cx - box - arm, cy - aw/2, arm, aw);
   ctx.stroke();
 
-  // Center lines (dashed yellow)
+  // Center lines
   ctx.setLineDash([6*sc, 7*sc]);
   ctx.strokeStyle = '#ca8a04';
   ctx.lineWidth = 1.5;
-  const centerLines: [number, number, number, number][] = [
+  for (const [x1, y1, x2, y2] of [
     [cx, cy - box,    cx, cy - box - arm],
     [cx, cy + box,    cx, cy + box + arm],
     [cx + box, cy,    cx + box + arm, cy],
     [cx - box, cy,    cx - box - arm, cy],
-  ];
-  for (const [x1, y1, x2, y2] of centerLines) {
+  ] as [number, number, number, number][]) {
     ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
   }
   ctx.setLineDash([]);
@@ -195,42 +210,47 @@ function paint(
   // Stop lines
   ctx.strokeStyle = '#cbd5e1';
   ctx.lineWidth = 2 * sc;
-  const stopLines: [number, number, number, number][] = [
+  for (const [x1, y1, x2, y2] of [
     [cx - aw/2, cy - box,  cx + aw/2, cy - box],
     [cx - aw/2, cy + box,  cx + aw/2, cy + box],
     [cx + box,  cy - aw/2, cx + box,  cy + aw/2],
     [cx - box,  cy - aw/2, cx - box,  cy + aw/2],
-  ];
-  for (const [x1, y1, x2, y2] of stopLines) {
+  ] as [number, number, number, number][]) {
     ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
   }
 
-  // Vehicle entities — placed statically per queue count at the current minute
-  const vehicles = placeVehicles(ids, series, minute, cx, cy, box, arm, sc);
+  // Vehicle entities (live physics positions)
   for (const v of vehicles) {
+    const p = VEHICLE_PARAMS[v.type];
+    const d = v.distFromStop;
+    let x = 0, y = 0, w = 0, h = 0;
+    switch (v.approach) {
+      case 0: x = cx - (p.width*sc)/2; y = cy - box - (d + p.length)*sc; w = p.width*sc; h = p.length*sc; break;
+      case 1: x = cx + box + d*sc;     y = cy - (p.width*sc)/2;          w = p.length*sc; h = p.width*sc; break;
+      case 2: x = cx - (p.width*sc)/2; y = cy + box + d*sc;              w = p.width*sc; h = p.length*sc; break;
+      case 3: x = cx - box - (d + p.length)*sc; y = cy - (p.width*sc)/2; w = p.length*sc; h = p.width*sc; break;
+      default: continue;
+    }
     ctx.globalAlpha = 0.9;
     ctx.fillStyle = COLORS[v.approach % COLORS.length];
-    ctx.fillRect(v.x, v.y, v.width, v.height);
+    ctx.fillRect(x, y, w, h);
     ctx.globalAlpha = 1;
     ctx.strokeStyle = '#0f172a';
     ctx.lineWidth = 0.8;
-    ctx.strokeRect(v.x, v.y, v.width, v.height);
-
-    const minDim = Math.min(v.width, v.height);
+    ctx.strokeRect(x, y, w, h);
+    const minDim = Math.min(w, h);
     if (minDim >= 8) {
       ctx.font = `bold ${Math.max(minDim * 0.5, 5)}px sans-serif`;
       ctx.fillStyle = '#ffffff';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(v.type, v.x + v.width / 2, v.y + v.height / 2);
+      ctx.fillText(v.type, x + w / 2, y + h / 2);
     }
   }
 
-  // Per-approach: signal dot + direction label
-  ids.slice(0, 4).forEach((id, i) => {
+  // Signal dots + direction labels
+  ids.slice(0, 4).forEach((_id, i) => {
     const isGreen = gs[i] ?? false;
-
-    // Signal dot (near stop line, outer-right corner of arm)
     const r = 5 * sc;
     let sx = 0, sy = 0;
     switch (i) {
@@ -247,7 +267,6 @@ function paint(
     ctx.lineWidth = 1;
     ctx.stroke();
 
-    // Direction label
     let lx = 0, ly = 0;
     switch (i) {
       case 0: lx = cx;                     ly = cy - box - arm * 0.82; break;
@@ -262,7 +281,7 @@ function paint(
     ctx.fillText(DIR_LABELS[i] ?? `A${i}`, lx, ly);
   });
 
-  // HUD: sim clock + cycle phase
+  // HUD
   const mm = String(Math.floor(simTime / 60)).padStart(2, '0');
   const ss = String(Math.floor(simTime % 60)).padStart(2, '0');
   ctx.font = `${11 * sc}px monospace`;
@@ -274,13 +293,16 @@ function paint(
     const phase = Math.floor(simTime % timing.cycle_length);
     ctx.fillText(`cycle ${timing.cycle_length}s · phase ${phase}s`, 10 * sc, 24 * sc);
   }
+  const queueCount = vehicles.length;
+  ctx.fillText(`vehicles: ${queueCount}`, 10 * sc, 38 * sc);
 
-  // Mode badge (top-right)
   ctx.textAlign = 'right';
   ctx.font = `bold ${11 * sc}px sans-serif`;
   ctx.fillStyle = mode === 'after' ? '#22c55e' : '#94a3b8';
   ctx.fillText(mode.toUpperCase(), W - 10 * sc, 10 * sc);
 }
+
+// --- Component ---
 
 export function IntersectionCanvas({
   chunk,
@@ -301,12 +323,18 @@ export function IntersectionCanvas({
   const modeRef    = useRef<'before' | 'after'>('after');
   const simTRef    = useRef(0);
 
-  const chunkRef  = useRef(chunk);
   const timingRef = useRef(timing);
   const idsRef    = useRef<string[]>([]);
 
-  chunkRef.current  = chunk;
   timingRef.current = timing;
+
+  // Physics state
+  const vehiclesRef          = useRef<Vehicle[]>([]);
+  const spawnTimersRef       = useRef<number[]>([0, 0, 0, 0]);
+  const spawnCountsRef       = useRef<number[]>([0, 0, 0, 0]);
+  const nextVehicleIdRef     = useRef(0);
+  const spawnIntervalsRef    = useRef<number[]>([Infinity, Infinity, Infinity, Infinity]);
+  const activeApproachesRef  = useRef<Set<number>>(new Set());
 
   const ids = useMemo(() => {
     const s = chunk.queue_series_after ?? chunk.queue_series_before;
@@ -319,10 +347,31 @@ export function IntersectionCanvas({
   const [sps, setSps] = useState(60);
   const [mode, setMode] = useState<'before' | 'after'>('after');
 
-  // Reset when chunk changes
+  // Recompute spawn intervals when chunk/ids change
   useEffect(() => {
-    simTRef.current    = 0;
-    playingRef.current = false;
+    const series = (chunk.queue_series_after ?? chunk.queue_series_before) ?? {};
+    const active = new Set<number>();
+    ids.forEach((id, i) => {
+      if (i < 4) {
+        const s = series[id] ?? [];
+        if (s.some(v => v > 0)) active.add(i);
+      }
+    });
+    activeApproachesRef.current = active;
+    const numActive = Math.max(active.size, 1);
+    const perApproachVolume = chunk.volume_pcu_hr / numActive;
+    const interval = 3600 / Math.max(perApproachVolume, 0.1);
+    spawnIntervalsRef.current = [interval, interval, interval, interval];
+  }, [chunk, ids]);
+
+  // Reset vehicle state and sim clock when chunk changes
+  useEffect(() => {
+    vehiclesRef.current       = [];
+    spawnTimersRef.current    = [0, 0, 0, 0];
+    spawnCountsRef.current    = [0, 0, 0, 0];
+    nextVehicleIdRef.current  = 0;
+    simTRef.current           = 0;
+    playingRef.current        = false;
     setPlaying(false);
   }, [chunk.chunk_name]);
 
@@ -333,10 +382,7 @@ export function IntersectionCanvas({
     if (!container || !canvas) return;
     const resize = () => {
       const w = container.clientWidth;
-      if (w > 0) {
-        canvas.width  = w;
-        canvas.height = Math.round(w * 0.65);
-      }
+      if (w > 0) { canvas.width = w; canvas.height = Math.round(w * 0.65); }
     };
     resize();
     const ro = new ResizeObserver(resize);
@@ -344,14 +390,35 @@ export function IntersectionCanvas({
     return () => ro.disconnect();
   }, []);
 
-  // RAF loop — permanent for component lifetime; reads all state from refs
+  // RAF loop — permanent; all state from refs
   useEffect(() => {
     const loop = (now: number) => {
       const canvas = canvasRef.current;
       if (canvas && canvas.width > 0 && canvas.height > 0) {
         if (playingRef.current) {
           const dt = lastRtRef.current > 0 ? (now - lastRtRef.current) / 1000 : 0;
-          simTRef.current = Math.min(simTRef.current + dt * spsRef.current, SIM_DURATION);
+          // Cap dtSim to 1 simulated second per frame to prevent instability on tab-resume
+          const dtSim = Math.min(dt * spsRef.current, 1.0);
+
+          // Sub-step: spawn + physics at fixed max step size
+          let remaining = dtSim;
+          while (remaining > 0) {
+            const step = Math.min(remaining, MAX_PHYSICS_DT);
+            spawnVehicles(
+              vehiclesRef.current,
+              spawnTimersRef.current,
+              spawnCountsRef.current,
+              nextVehicleIdRef,
+              idsRef.current,
+              activeApproachesRef.current,
+              spawnIntervalsRef.current,
+              step,
+            );
+            stepPhysics(vehiclesRef.current, step);
+            remaining -= step;
+          }
+
+          simTRef.current = Math.min(simTRef.current + dtSim, SIM_DURATION);
           if (simTRef.current >= SIM_DURATION) {
             playingRef.current = false;
             setPlaying(false);
@@ -361,11 +428,11 @@ export function IntersectionCanvas({
         if (idsRef.current.length > 0) {
           paint(
             canvas,
-            chunkRef.current,
             timingRef.current,
             modeRef.current,
             simTRef.current,
             idsRef.current,
+            vehiclesRef.current,
           );
         }
       }
@@ -376,14 +443,24 @@ export function IntersectionCanvas({
     return () => cancelAnimationFrame(rafRef.current);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handlePlay = () => {
-    if (simTRef.current >= SIM_DURATION) simTRef.current = 0;
-    lastRtRef.current = performance.now();
+  const resetState = () => {
+    vehiclesRef.current      = [];
+    spawnTimersRef.current   = [0, 0, 0, 0];
+    spawnCountsRef.current   = [0, 0, 0, 0];
+    nextVehicleIdRef.current = 0;
+    simTRef.current          = 0;
+    playingRef.current       = false;
+    setPlaying(false);
+  };
+
+  const handlePlay  = () => {
+    if (simTRef.current >= SIM_DURATION) resetState();
+    lastRtRef.current  = performance.now();
     playingRef.current = true;
     setPlaying(true);
   };
   const handlePause = () => { playingRef.current = false; setPlaying(false); };
-  const handleReset = () => { simTRef.current = 0; playingRef.current = false; setPlaying(false); };
+  const handleReset = resetState;
   const handleSpeed = (v: number) => { spsRef.current = v; setSps(v); };
   const handleMode  = (m: 'before' | 'after') => { modeRef.current = m; setMode(m); };
 
@@ -393,7 +470,6 @@ export function IntersectionCanvas({
         <canvas ref={canvasRef} className="w-full block" />
       </div>
 
-      {/* Controls */}
       <div className="flex flex-wrap items-center gap-2">
         {playing ? (
           <Button size="sm" variant="outline" className="h-8 gap-1.5" onClick={handlePause}>
@@ -443,7 +519,7 @@ export function IntersectionCanvas({
       </div>
 
       <p className="text-xs text-muted-foreground">
-        Vehicle agents per approach · signal lights cycle per Webster's timing (After mode only)
+        Vehicle agents · car-following model · all approaches hold at stop line (signal phasing in next slice)
       </p>
     </div>
   );
