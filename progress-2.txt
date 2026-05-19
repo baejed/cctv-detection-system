@@ -133,22 +133,20 @@ Blocked by: Issue 8 (entity type must exist before type sampling can be wired in
 
 ---
 
-### Issue 12 — Turn path routing + intersection clearing
+### Issue 12 — Turn path routing + intersection clearing ✅ DONE (2026-05-19)
+Commit: 9f26198
 
-What to build:
-After a vehicle crosses the stop line on green/yield, it follows a path to its exit arm.
-Turn assignment uses a fixed split: 70% through, 15% left-turn, 15% right-turn (constant,
-not user-configurable). Through vehicles travel straight across the center box to the
-opposite arm. Left/right vehicles follow a simple two-segment path (straight to center,
-then pivot to exit arm). Vehicles are removed from the entity list once they exit the arm
-boundary, preventing center-box congestion.
-
-Acceptance criteria:
-- [ ] Turn direction assigned at stop-line crossing (70/15/15 split, seeded per vehicle id)
-- [ ] Through vehicles travel straight to exit arm and are removed at arm boundary
-- [ ] Left/right vehicles follow a two-segment path through the center box and are removed
-- [ ] Vehicle count in center box does not grow unbounded during extended play
-- [ ] Per-approach cap (15 vehicles) counts only queuing vehicles, not vehicles in transit
-- [ ] Animation remains smooth at 10× speed with vehicles in transit
+- Vehicle interface gains `turn`, `px`, `py`, `waypoints` fields for cleared path state
+- ARM_ENTRY / ARM_EXIT_PT / TURN_EXIT constants encode turn geometry in canvas units from center
+- `initClearing()`: assigns turn (70/15/15 split seeded by (id*1337+42)%100), snaps px/py to
+  approach entry stop line, calls buildWaypoints()
+- `buildWaypoints()`: through → 2-waypoint straight path (far stop line + arm exit);
+  left/right → 3-waypoint path (intersection center → exit stop line → arm exit)
+- `stepPhysics()` rewritten: clearing vehicles advance along waypoints at max speed
+  (sub-pixel epsilon guard), removed when waypoints exhausted; old REMOVAL_DIST check dropped
+- `paint()`: queuing vehicles unchanged (approach-aligned rects); clearing vehicles drawn
+  as ctx.save()/translate/rotate oriented rects at (px, py); heading from atan2(Δy, Δx)
+  to next waypoint with per-approach fallback angle
+- Per-approach cap (15) unchanged — already counts only non-clearing vehicles
 
 Blocked by: Issue 10
