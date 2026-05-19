@@ -7,7 +7,7 @@ import {
 import { simulationApi, type SimulationChunk, type SimulationResponse } from '@/services/simulation';
 import { timingApi, type TimingChunk } from '@/services/timing';
 import { aggregationApi } from '@/services/aggregation';
-import { IntersectionCanvas, type VehicleType, type TypeFractions } from '@/components/IntersectionCanvas';
+import { DualIntersectionCanvas, type VehicleType, type TypeFractions } from '@/components/IntersectionCanvas';
 import type { AggregationRow } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -374,7 +374,7 @@ export function SignalTimingPage() {
                   Top-down canvas · queue bars grow during red, clear on green · 60-minute window
                 </p>
               </div>
-              <IntersectionCanvas
+              <DualIntersectionCanvas
                 chunk={activeChunk}
                 timing={activeTiming}
                 signalStatus={data.signal_status}

@@ -779,3 +779,328 @@ export function IntersectionCanvas({
     </div>
   );
 }
+
+// --- Dual simulation ---
+
+const PESO_PER_VEH_HR = 65; // conservative value-of-time estimate (₱/veh-hr) for PH secondary city
+
+function createSimState() {
+  return {
+    vehicles: [] as Vehicle[],
+    timers:   [0, 0, 0, 0] as number[],
+    nextId:   { current: 0 },
+  };
+}
+
+function applyCanvasSize(container: HTMLDivElement, canvas: HTMLCanvasElement, fullscreen: boolean) {
+  const dpr = window.devicePixelRatio || 1;
+  const w   = fullscreen ? container.clientWidth : container.clientWidth;
+  const h   = Math.round(w * 0.72);
+  if (w > 0 && h > 0) {
+    canvas.width  = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+    canvas.style.width  = `${w}px`;
+    canvas.style.height = `${h}px`;
+  }
+}
+
+export function DualIntersectionCanvas({
+  chunk,
+  timing,
+  signalStatus: _signalStatus,
+  typeMix = {},
+}: {
+  chunk: SimulationChunk;
+  timing: TimingChunk | null;
+  signalStatus: string;
+  typeMix?: Record<string, TypeFractions>;
+}) {
+  const wrapperRef        = useRef<HTMLDivElement>(null);
+  const canvasBeforeRef   = useRef<HTMLCanvasElement>(null);
+  const ctnBeforeRef      = useRef<HTMLDivElement>(null);
+  const canvasAfterRef    = useRef<HTMLCanvasElement>(null);
+  const ctnAfterRef       = useRef<HTMLDivElement>(null);
+
+  const beforeSim = useRef(createSimState());
+  const afterSim  = useRef(createSimState());
+
+  const rafRef     = useRef<number>(0);
+  const lastRtRef  = useRef<number>(0);
+  const playingRef = useRef(false);
+  const spsRef     = useRef(6);
+  const simTRef    = useRef(0);
+  const frameRef   = useRef(0);
+
+  const timingRef  = useRef(timing);
+  const idsRef     = useRef<string[]>([]);
+  const typeMixRef = useRef<Record<string, TypeFractions>>(typeMix);
+  timingRef.current  = timing;
+  typeMixRef.current = typeMix;
+
+  const spawnIntervalsRef   = useRef<number[]>([Infinity, Infinity, Infinity, Infinity]);
+  const activeApproachesRef = useRef<Set<number>>(new Set());
+
+  const ids = useMemo(() => {
+    const s = chunk.queue_series_after ?? chunk.queue_series_before;
+    return s ? Object.keys(s).sort() : [];
+  }, [chunk]);
+  idsRef.current = ids;
+
+  const [playing, setPlaying]         = useState(false);
+  const [sps, setSps]                 = useState(6);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [liveQ, setLiveQ]             = useState({ before: 0, after: 0 });
+
+  useEffect(() => {
+    const series = (chunk.queue_series_after ?? chunk.queue_series_before) ?? {};
+    const active = new Set<number>();
+    ids.forEach((id, i) => {
+      if (i < 4) {
+        const s = series[id] ?? [];
+        if (s.some(v => v > 0)) active.add(i);
+      }
+    });
+    activeApproachesRef.current = active;
+    const numActive = Math.max(active.size, 1);
+    const perVol    = chunk.volume_pcu_hr / numActive;
+    spawnIntervalsRef.current = Array(4).fill(Math.min(3600 / Math.max(perVol, 0.1), 30));
+  }, [chunk, ids]);
+
+  useEffect(() => {
+    beforeSim.current  = createSimState();
+    afterSim.current   = createSimState();
+    simTRef.current    = 0;
+    playingRef.current = false;
+    setPlaying(false);
+    setLiveQ({ before: 0, after: 0 });
+  }, [chunk.chunk_name]);
+
+  // Canvas sizing — observe both containers
+  useEffect(() => {
+    const pairs: [React.RefObject<HTMLDivElement | null>, React.RefObject<HTMLCanvasElement | null>][] = [
+      [ctnBeforeRef, canvasBeforeRef],
+      [ctnAfterRef,  canvasAfterRef],
+    ];
+    const observers: ResizeObserver[] = [];
+    for (const [cRef, cvRef] of pairs) {
+      const container = cRef.current;
+      const canvas    = cvRef.current;
+      if (!container || !canvas) continue;
+      const resize = () => applyCanvasSize(container, canvas, !!document.fullscreenElement);
+      resize();
+      const ro = new ResizeObserver(resize);
+      ro.observe(container);
+      observers.push(ro);
+    }
+    return () => observers.forEach(ro => ro.disconnect());
+  }, []);
+
+  useEffect(() => {
+    const onFsChange = () => {
+      const full = !!document.fullscreenElement;
+      setIsFullscreen(full);
+      const pairs: [React.RefObject<HTMLDivElement | null>, React.RefObject<HTMLCanvasElement | null>][] = [
+        [ctnBeforeRef, canvasBeforeRef],
+        [ctnAfterRef,  canvasAfterRef],
+      ];
+      for (const [cRef, cvRef] of pairs) {
+        const container = cRef.current;
+        const canvas    = cvRef.current;
+        if (container && canvas) applyCanvasSize(container, canvas, full);
+      }
+    };
+    document.addEventListener('fullscreenchange', onFsChange);
+    return () => document.removeEventListener('fullscreenchange', onFsChange);
+  }, []);
+
+  useEffect(() => {
+    const loop = (now: number) => {
+      const cvB = canvasBeforeRef.current;
+      const cvA = canvasAfterRef.current;
+      if (cvB && cvA && cvB.width > 0 && cvA.width > 0) {
+        if (playingRef.current) {
+          const dt    = lastRtRef.current > 0 ? (now - lastRtRef.current) / 1000 : 0;
+          const dtSim = Math.min(dt * spsRef.current, 1.0);
+          let remaining = dtSim;
+          let subT      = simTRef.current;
+          while (remaining > 0) {
+            const step    = Math.min(remaining, MAX_PHYSICS_DT);
+            const t       = timingRef.current;
+            const gapAfter = !t || t.signal_off;
+            const greenA  = !gapAfter
+              ? computeGreenState(idsRef.current, t!.cycle_length, t!.green_splits, subT)
+              : new Array(idsRef.current.length).fill(false);
+            const greenB  = new Array(idsRef.current.length).fill(false);
+            const mix     = idsRef.current.map(sid => typeMixRef.current[sid] ?? DEFAULT_TYPE_MIX);
+
+            spawnVehicles(beforeSim.current.vehicles, beforeSim.current.timers,
+              beforeSim.current.nextId, idsRef.current,
+              activeApproachesRef.current, spawnIntervalsRef.current, mix, step);
+            spawnVehicles(afterSim.current.vehicles, afterSim.current.timers,
+              afterSim.current.nextId, idsRef.current,
+              activeApproachesRef.current, spawnIntervalsRef.current, mix, step);
+
+            stepPhysics(beforeSim.current.vehicles, step, greenB, true);
+            stepPhysics(afterSim.current.vehicles,  step, greenA, gapAfter);
+
+            subT      += step;
+            remaining -= step;
+          }
+          simTRef.current = Math.min(simTRef.current + dtSim, SIM_DURATION);
+          if (simTRef.current >= SIM_DURATION) { playingRef.current = false; setPlaying(false); }
+        }
+        lastRtRef.current = now;
+        if (idsRef.current.length > 0) {
+          paint(cvB, timingRef.current, 'before', simTRef.current, idsRef.current, beforeSim.current.vehicles);
+          paint(cvA, timingRef.current, 'after',  simTRef.current, idsRef.current, afterSim.current.vehicles);
+          frameRef.current++;
+          if (frameRef.current % 30 === 0) {
+            setLiveQ({
+              before: beforeSim.current.vehicles.filter(v => !v.clearing).length,
+              after:  afterSim.current.vehicles.filter(v  => !v.clearing).length,
+            });
+          }
+        }
+      }
+      rafRef.current = requestAnimationFrame(loop);
+    };
+    lastRtRef.current = performance.now();
+    rafRef.current = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const resetState = () => {
+    beforeSim.current  = createSimState();
+    afterSim.current   = createSimState();
+    simTRef.current    = 0;
+    playingRef.current = false;
+    setPlaying(false);
+    setLiveQ({ before: 0, after: 0 });
+  };
+
+  const handlePlay  = () => {
+    if (simTRef.current >= SIM_DURATION) resetState();
+    lastRtRef.current  = performance.now();
+    playingRef.current = true;
+    setPlaying(true);
+  };
+  const handlePause      = () => { playingRef.current = false; setPlaying(false); };
+  const handleSpeed      = (v: number) => { spsRef.current = v; setSps(v); };
+  const handleFullscreen = () => {
+    if (!document.fullscreenElement) wrapperRef.current?.requestFullscreen();
+    else document.exitFullscreen();
+  };
+
+  const delayDiff = chunk.delay_before - chunk.delay_after;
+  const pesoSaved = chunk.vehicle_hours_saved * PESO_PER_VEH_HR;
+  const qDiff     = liveQ.before - liveQ.after;
+
+  return (
+    <div
+      ref={wrapperRef}
+      className={cn('space-y-3', isFullscreen && 'bg-[#0f172a] flex flex-col p-4 h-full')}
+    >
+      {/* Side-by-side canvases */}
+      <div className={cn('grid grid-cols-2 gap-2', isFullscreen && 'flex-1')}>
+        <div className={cn('flex flex-col', isFullscreen && 'flex-1')}>
+          <p className="text-[10px] font-medium text-muted-foreground mb-1 uppercase tracking-wide">
+            Before — gap acceptance
+          </p>
+          <div ref={ctnBeforeRef} className="rounded-md overflow-hidden w-full">
+            <canvas ref={canvasBeforeRef} className="block" />
+          </div>
+        </div>
+        <div className={cn('flex flex-col', isFullscreen && 'flex-1')}>
+          <p className="text-[10px] font-medium text-green-500 mb-1 uppercase tracking-wide">
+            After — Webster's signal
+          </p>
+          <div ref={ctnAfterRef} className="rounded-md overflow-hidden w-full">
+            <canvas ref={canvasAfterRef} className="block" />
+          </div>
+        </div>
+      </div>
+
+      {/* Live queue comparison */}
+      <div className="grid grid-cols-2 gap-2">
+        <div className="rounded-md border border-border bg-card px-3 py-2">
+          <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Queuing</p>
+          <p className="text-2xl font-semibold tabular-nums mt-0.5">{liveQ.before}</p>
+        </div>
+        <div className="rounded-md border border-green-500/30 bg-card px-3 py-2">
+          <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Queuing</p>
+          <div className="flex items-end gap-1.5 mt-0.5">
+            <span className="text-2xl font-semibold tabular-nums text-green-500">{liveQ.after}</span>
+            {qDiff > 0 && (
+              <span className="text-green-500 text-xs font-medium mb-0.5">−{qDiff} fewer</span>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Savings strip */}
+      <div className="grid grid-cols-3 gap-2">
+        <div className="rounded-md border border-border bg-card px-3 py-2 text-center">
+          <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Delay saved</p>
+          <p className="text-xl font-semibold tabular-nums mt-0.5">
+            {delayDiff > 0 ? `−${delayDiff.toFixed(0)}s` : '—'}
+          </p>
+          <p className="text-[10px] text-muted-foreground">per vehicle</p>
+        </div>
+        <div className="rounded-md border border-border bg-card px-3 py-2 text-center">
+          <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Veh-hrs saved</p>
+          <p className="text-xl font-semibold tabular-nums mt-0.5">{chunk.vehicle_hours_saved.toFixed(2)}</p>
+          <p className="text-[10px] text-muted-foreground">this chunk</p>
+        </div>
+        <div className="rounded-md border border-green-500/30 bg-card px-3 py-2 text-center">
+          <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Est. savings</p>
+          <p className="text-xl font-semibold tabular-nums mt-0.5 text-green-500">
+            {pesoSaved > 0 ? `₱${Math.round(pesoSaved)}` : '—'}
+          </p>
+          <p className="text-[10px] text-muted-foreground">chunk · @₱{PESO_PER_VEH_HR}/veh-hr</p>
+        </div>
+      </div>
+
+      {/* Controls */}
+      <div className="flex flex-wrap items-center gap-2">
+        {playing ? (
+          <Button size="sm" variant="outline" className="h-8 gap-1.5" onClick={handlePause}>
+            <Pause className="size-3.5" /> Pause
+          </Button>
+        ) : (
+          <Button size="sm" className="h-8 gap-1.5" onClick={handlePlay}>
+            <Play className="size-3.5" /> Play
+          </Button>
+        )}
+        <Button size="sm" variant="ghost" className="size-8 p-0" title="Reset" onClick={resetState}>
+          <RotateCcw className="size-3.5" />
+        </Button>
+
+        <div className="h-5 w-px bg-border mx-0.5" />
+
+        {SPEEDS.map(sp => (
+          <Button
+            key={sp.label}
+            size="sm"
+            variant={sps === sp.sps ? 'default' : 'outline'}
+            className="h-8 px-2.5 text-xs"
+            onClick={() => handleSpeed(sp.sps)}
+          >
+            {sp.label}
+          </Button>
+        ))}
+
+        <div className="h-5 w-px bg-border mx-0.5" />
+
+        <Button
+          size="sm"
+          variant="ghost"
+          className="size-8 p-0"
+          title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+          onClick={handleFullscreen}
+        >
+          {isFullscreen ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
+        </Button>
+      </div>
+    </div>
+  );
+}
