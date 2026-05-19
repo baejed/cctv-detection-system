@@ -18,7 +18,7 @@ const MAX_QUEUE = 15;
 const MAX_PHYSICS_DT = 0.1;
 const GAP_THRESHOLD_S = 6;
 // Conflicting approach indices for gap-acceptance (perpendicular pairs)
-const CONFLICTS: [number, number][][] = [[1, 3], [0, 2], [1, 3], [0, 2]];
+const CONFLICTS: number[][] = [[1, 3], [0, 2], [1, 3], [0, 2]];
 
 // Turn routing geometry (canvas units from intersection center)
 const ARM_ENTRY: [number, number][] = [
