@@ -21,6 +21,26 @@ _TC = 6.5   # critical gap (s), TWSC through movement HCM 6th ed.
 _TF = 3.3   # follow-up time (s)
 _N_MINUTES = 60
 
+# HCM 6th ed. LOS thresholds (control delay, s/veh)
+_LOS_SIGNALIZED   = [(10, "A"), (20, "B"), (35, "C"), (55, "D"), (80, "E")]
+_LOS_UNSIGNALIZED = [(10, "A"), (15, "B"), (25, "C"), (35, "D"), (50, "E")]
+
+
+def delay_to_los(delay: float, signalized: bool = True) -> str:
+    """Return HCM Level of Service letter (A–F) for a given control delay (s/veh)."""
+    thresholds = _LOS_SIGNALIZED if signalized else _LOS_UNSIGNALIZED
+    for limit, grade in thresholds:
+        if delay <= limit:
+            return grade
+    return "F"
+
+
+def compute_vc_ratio(C: int, g: float, q_pcu_hr: float) -> float:
+    """Degree of saturation (v/c ratio) for a signalized approach."""
+    if g <= 0 or C <= 0:
+        return 0.0
+    return round(min(q_pcu_hr * C / (SATURATION_FLOW * g), 1.0), 3)
+
 
 def compute_uniform_delay(C: int, g: float, q_pcu_hr: float) -> float:
     """Webster's uniform delay per vehicle (seconds).
@@ -149,15 +169,18 @@ def generate_simulation(
 
         # ── After: proposed Webster's timing ────────────────────────────
         delay_after_per: dict[int, float] = {}
+        vc_after_per:    dict[int, float] = {}
         q_series_after:  dict[str, list[float]] = {}
 
         for sid, q in flows.items():
             g = proposed_splits.get(sid, proposed_C / n)
             delay_after_per[sid] = compute_uniform_delay(proposed_C, g, q)
+            vc_after_per[sid]    = compute_vc_ratio(proposed_C, g, q)
             q_series_after[str(sid)] = _queue_series_signalized(q, proposed_C, g)
 
         # ── Before: existing timing or gap-acceptance ────────────────────
         delay_before_per: dict[int, float] = {}
+        vc_before_per:    dict[int, float] = {}
         q_series_before:  dict[str, list[float]] = {}
 
         if status in ("fixed_time", "actuated"):
@@ -171,6 +194,7 @@ def generate_simulation(
             for sid, q in flows.items():
                 g = exist_splits.get(sid, exist_C / n)
                 delay_before_per[sid] = compute_uniform_delay(exist_C, g, q)
+                vc_before_per[sid]    = compute_vc_ratio(exist_C, g, q)
                 q_series_before[str(sid)] = _queue_series_signalized(q, exist_C, g)
         else:
             # unsignalized: major-street approach has near-zero delay
@@ -180,9 +204,11 @@ def generate_simulation(
                 if sid == major_id:
                     delay_before_per[sid] = 2.0
                     cap = SATURATION_FLOW
+                    vc_before_per[sid] = round(q / SATURATION_FLOW, 3)
                 else:
                     delay_before_per[sid] = compute_hcm_gap_delay(q_major, q)
                     cap = _gap_acceptance_capacity(q_major)
+                    vc_before_per[sid] = round(min(q / max(cap, 1), 1.0), 3)
                 q_series_before[str(sid)] = _queue_series_unsignalized(q, cap)
 
         # ── Weighted averages ────────────────────────────────────────────
@@ -193,6 +219,10 @@ def generate_simulation(
         else:
             delay_before = delay_after = 0.0
 
+        # Worst-approach v/c (most useful for diagnosing congestion)
+        vc_before = max(vc_before_per.values(), default=0.0)
+        vc_after  = max(vc_after_per.values(),  default=0.0)
+
         chunk_hours = (chunk.end_minutes - chunk.start_minutes) / 60.0
         vh_saved = (delay_before - delay_after) * total_flow * chunk_hours / 3600
 
@@ -202,6 +232,8 @@ def generate_simulation(
             chunk_name=chunk.name,
             delay_before=round(delay_before, 2),
             delay_after=round(delay_after, 2),
+            vc_ratio_before=round(vc_before, 3),
+            vc_ratio_after=round(vc_after, 3),
             volume_pcu_hr=round(total_flow, 2),
             vehicle_hours_saved=round(vh_saved, 3),
             queue_series_before=q_series_before,

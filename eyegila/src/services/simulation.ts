@@ -4,6 +4,10 @@ export interface SimulationChunk {
   chunk_name: string;
   delay_before: number;
   delay_after: number;
+  los_before: string;
+  los_after: string;
+  vc_ratio_before: number | null;
+  vc_ratio_after: number | null;
   volume_pcu_hr: number;
   vehicle_hours_saved: number;
   queue_series_before: Record<string, number[]> | null;
@@ -15,6 +19,8 @@ export interface DailySummary {
   total_vehicle_hours_saved: number;
   avg_delay_before: number;
   avg_delay_after: number;
+  los_before: string;
+  los_after: string;
   total_volume_pcu_hr: number;
 }
 
@@ -22,6 +28,8 @@ export interface SimulationResponse {
   intersection_id: number;
   intersection_name: string;
   signal_status: string;
+  baseline_note: string;
+  existing_cycle_s: number | null;
   chunks: SimulationChunk[];
   daily_summary: DailySummary;
 }

@@ -112,21 +112,25 @@ SEED_INTERSECTIONS = [
                 "name": "Northbound -Apokon Road",
                 "cam_name": "Cam A1 -Apokon Northbound",
                 "stream": f"rtsp://{MEDIAMTX_HOST}:8554/cam1",
+                "direction": "northbound",
             },
             {
                 "name": "Southbound -Apokon Road",
                 "cam_name": "Cam A2 -Apokon Southbound",
                 "stream": f"rtsp://{MEDIAMTX_HOST}:8554/cam2",
+                "direction": "southbound",
             },
             {
                 "name": "Eastbound -Lapu-Lapu Street",
                 "cam_name": "Cam A3 -Lapu-Lapu Eastbound",
                 "stream": f"rtsp://{MEDIAMTX_HOST}:8554/cam3",
+                "direction": "eastbound",
             },
             {
                 "name": "Westbound -Lapu-Lapu Street",
                 "cam_name": "Cam A4 -Lapu-Lapu Westbound",
                 "stream": f"rtsp://{MEDIAMTX_HOST}:8554/cam4",
+                "direction": "westbound",
             },
         ],
     },
@@ -139,21 +143,25 @@ SEED_INTERSECTIONS = [
                 "name": "Northbound -Rizal Street",
                 "cam_name": "Cam B1 -Rizal Northbound",
                 "stream": f"rtsp://{MEDIAMTX_HOST}:8554/cam1",
+                "direction": "northbound",
             },
             {
                 "name": "Southbound -Rizal Street",
                 "cam_name": "Cam B2 -Rizal Southbound",
                 "stream": f"rtsp://{MEDIAMTX_HOST}:8554/cam2",
+                "direction": "southbound",
             },
             {
                 "name": "Eastbound -Coryville Road",
                 "cam_name": "Cam B3 -Coryville Eastbound",
                 "stream": f"rtsp://{MEDIAMTX_HOST}:8554/cam3",
+                "direction": "eastbound",
             },
             {
                 "name": "Westbound -Coryville Road",
                 "cam_name": "Cam B4 -Coryville Westbound",
                 "stream": f"rtsp://{MEDIAMTX_HOST}:8554/cam4",
+                "direction": "westbound",
             },
         ],
     },
@@ -166,21 +174,25 @@ SEED_INTERSECTIONS = [
                 "name": "Northbound -National Highway",
                 "cam_name": "Cam C1 -Highway Northbound",
                 "stream": f"rtsp://{MEDIAMTX_HOST}:8554/cam1",
+                "direction": "northbound",
             },
             {
                 "name": "Southbound -National Highway",
                 "cam_name": "Cam C2 -Highway Southbound",
                 "stream": f"rtsp://{MEDIAMTX_HOST}:8554/cam2",
+                "direction": "southbound",
             },
             {
                 "name": "Eastbound -Dahlia Street",
                 "cam_name": "Cam C3 -Dahlia Eastbound",
                 "stream": f"rtsp://{MEDIAMTX_HOST}:8554/cam3",
+                "direction": "eastbound",
             },
             {
                 "name": "Westbound -Dahlia Street",
                 "cam_name": "Cam C4 -Dahlia Westbound",
                 "stream": f"rtsp://{MEDIAMTX_HOST}:8554/cam4",
+                "direction": "westbound",
             },
         ],
     },
@@ -278,7 +290,8 @@ def seed_base_data(db) -> list[tuple]:
             db.add(cctv)
             db.flush()
 
-            region = Region(cctv_id=cctv.id, street_id=street.id)
+            region = Region(cctv_id=cctv.id, street_id=street.id,
+                            direction=s.get("direction", "unknown"))
             db.add(region)
             db.flush()
 
@@ -442,11 +455,10 @@ SCENARIO_INTERSECTIONS = [
         "longitude": 125.8133,
         "expected": "warranted",
         "streets": [
-            # dominant approach drives major_volume ≈ 650
-            {"name": "Northbound — Visayan Ave",  "cam": "Cam V1 — Visayan NB", "peak": 684},
-            {"name": "Southbound — Visayan Ave",  "cam": "Cam V2 — Visayan SB", "peak": 98},
-            {"name": "Eastbound — Digos Road",    "cam": "Cam V3 — Digos EB",   "peak": 98},
-            {"name": "Westbound — Digos Road",    "cam": "Cam V4 — Digos WB",   "peak": 98},
+            {"name": "Northbound — Visayan Ave",  "cam": "Cam V1 — Visayan NB", "peak": 684, "direction": "northbound"},
+            {"name": "Southbound — Visayan Ave",  "cam": "Cam V2 — Visayan SB", "peak": 98,  "direction": "southbound"},
+            {"name": "Eastbound — Digos Road",    "cam": "Cam V3 — Digos EB",   "peak": 98,  "direction": "eastbound"},
+            {"name": "Westbound — Digos Road",    "cam": "Cam V4 — Digos WB",   "peak": 98,  "direction": "westbound"},
         ],
     },
     {
@@ -455,11 +467,10 @@ SCENARIO_INTERSECTIONS = [
         "longitude": 125.8071,
         "expected": "borderline",
         "streets": [
-            # dominant approach drives major_volume ≈ 500
-            {"name": "Northbound — Caryving Rd",  "cam": "Cam C1 — Caryving NB", "peak": 526},
-            {"name": "Southbound — Caryving Rd",  "cam": "Cam C2 — Caryving SB", "peak": 58},
-            {"name": "Eastbound — Buhangin St",   "cam": "Cam C3 — Buhangin EB", "peak": 58},
-            {"name": "Westbound — Buhangin St",   "cam": "Cam C4 — Buhangin WB", "peak": 58},
+            {"name": "Northbound — Caryving Rd",  "cam": "Cam C1 — Caryving NB", "peak": 526, "direction": "northbound"},
+            {"name": "Southbound — Caryving Rd",  "cam": "Cam C2 — Caryving SB", "peak": 58,  "direction": "southbound"},
+            {"name": "Eastbound — Buhangin St",   "cam": "Cam C3 — Buhangin EB", "peak": 58,  "direction": "eastbound"},
+            {"name": "Westbound — Buhangin St",   "cam": "Cam C4 — Buhangin WB", "peak": 58,  "direction": "westbound"},
         ],
     },
 ]
@@ -552,11 +563,15 @@ def seed_scenarios(db, weights: dict):
 
             region = db.query(Region).filter_by(cctv_id=cctv.id, street_id=street.id).first()
             if not region:
-                region = Region(cctv_id=cctv.id, street_id=street.id)
+                region = Region(cctv_id=cctv.id, street_id=street.id,
+                                direction=s.get("direction", "unknown"))
                 db.add(region)
                 db.flush()
                 for x, y in [(0.1, 0.1), (0.9, 0.1), (0.9, 0.9), (0.1, 0.9)]:
                     db.add(RegionPoint(region_id=region.id, x=x, y=y))
+                db.flush()
+            elif region.direction == "unknown" and s.get("direction"):
+                region.direction = s["direction"]
                 db.flush()
 
             # Delete any existing detections in the target hours, then re-insert exactly
@@ -569,6 +584,27 @@ def seed_scenarios(db, weights: dict):
                 _insert_exact_hour(db, cctv.id, region.id, h_start, s["peak"], weights)
 
             print(f"    {s['name']:<35} {s['peak']:>4} det/hr × {len(hours_to_fill)} hrs")
+
+        # Warranted: model as fixed_time with equal splits so the dominant approach
+        # is severely undersatisfied before — Webster's then shows clear improvement.
+        if spec["expected"] == "warranted":
+            n_streets = len(spec["streets"])
+            existing_cycle = 90
+            lost_time_each = 7   # lost_time_per_phase(4) + all_red_clearance(3)
+            g_equal = round((existing_cycle - n_streets * lost_time_each) / n_streets, 1)
+            g_equal = max(g_equal, 10.0)
+            street_ids = [
+                db.query(Street).filter_by(
+                    intersection_id=intersection.id, name=s["name"]
+                ).first().id
+                for s in spec["streets"]
+            ]
+            intersection.signal_status = "fixed_time"
+            intersection.existing_cycle_length = existing_cycle
+            intersection.existing_green_splits = {str(sid): g_equal for sid in street_ids}
+            db.flush()
+            print(f"  → existing timing: fixed_time, C={existing_cycle}s, "
+                  f"equal splits={g_equal}s (will be oversaturated at dominant approach)")
 
         db.commit()
         print(f"  → expected classification: {spec['expected'].upper()}")

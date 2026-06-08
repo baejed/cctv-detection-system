@@ -1,11 +1,13 @@
 from server.schemas import IntersectionCreate, IntersectionUpdate, IntersectionResponse, SignalTimingUpdate, LocalWarrantConfigUpdate
 from server.utils import log_and_commit, get_current_user
 from server.tod import seed_tod_chunks
+from server.cycle_detection import estimate_signal_timing
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from pydantic import BaseModel
 from common.models import User, Intersection, CCTV
 from common.database import get_db
 from sqlalchemy.orm import Session
-from typing import Annotated
+from typing import Annotated, Optional
 import csv
 import io
 
@@ -219,6 +221,36 @@ def update_local_warrant_config(
     )
     db.refresh(db_intersection)
     return db_intersection
+
+
+class DetectTimingResponse(BaseModel):
+    intersection_id:   int
+    estimated_cycle_s: Optional[int]
+    confidence:        str
+    note:              str
+    dispersion_index:  Optional[float]
+    best_lag_min:      Optional[int]
+    best_autocorr:     Optional[float]
+
+
+@router.get("/{intersection_id}/detect-timing", response_model=DetectTimingResponse)
+def detect_signal_timing(
+    intersection_id: int,
+    db:   Annotated[Session, Depends(get_db)],
+    user: Annotated[User,    Depends(get_current_user)],
+) -> DetectTimingResponse:
+    """Estimate the existing signal cycle length from camera detection patterns.
+
+    Uses autocorrelation of minute-level vehicle counts to detect periodicity
+    consistent with signal phase cycles.  Results are labelled low / medium /
+    high confidence; low-confidence results should not be saved without first
+    reading the controller box directly.
+    """
+    if not db.get(Intersection, intersection_id):
+        raise HTTPException(status_code=404, detail="Intersection not found")
+
+    result = estimate_signal_timing(db, intersection_id)
+    return DetectTimingResponse(intersection_id=intersection_id, **result)
 
 
 @router.delete("/{intersection_id}")

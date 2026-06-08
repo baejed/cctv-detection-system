@@ -70,9 +70,12 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logging.warning("Warrant model unavailable, predictions disabled: %s", exc)
         app.state.warrant_artifacts = None
-    task = asyncio.create_task(aggregation_pusher())
+    from server.scheduler import analysis_loop
+    task_agg      = asyncio.create_task(aggregation_pusher())
+    task_analysis = asyncio.create_task(analysis_loop(app))
     yield
-    task.cancel()
+    task_agg.cancel()
+    task_analysis.cancel()
 
 
 app = FastAPI(lifespan=lifespan)

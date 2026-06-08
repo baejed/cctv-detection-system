@@ -76,6 +76,7 @@ services:
       SUPER_KEY: ${SUPER_KEY:-}
       FERNET_KEY: ${FERNET_KEY:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      ANALYSIS_INTERVAL_MINUTES: ${ANALYSIS_INTERVAL_MINUTES:-0}
     command: uvicorn server.main:app --host 0.0.0.0 --port 8000 --reload
     ports:
       - "8000:8000"

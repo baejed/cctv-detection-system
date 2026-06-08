@@ -1,0 +1,211 @@
+# EyeGila — Production deployment
+#
+# First-time setup:
+#   1. cp .env.prod.example .env.prod
+#   2. python scripts/generate_secrets.py >> .env.prod   (fill in the values)
+#   3. docker compose -f docker-compose.prod.yml up -d
+#   4. docker compose -f docker-compose.prod.yml run --rm setup-admin
+#
+# Upgrade (after pulling new code):
+#   docker compose -f docker-compose.prod.yml build
+#   docker compose -f docker-compose.prod.yml up -d
+#   (migrations run automatically on server startup via the migrate service)
+
+services:
+
+  # ── Database ────────────────────────────────────────────────────────────────
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: timescaledb
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: traffic
+    command: >
+      postgres
+      -c password_encryption=md5
+      -c max_connections=200
+      -c shared_buffers=256MB
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    container_name: pgbouncer
+    restart: always
+    environment:
+      DB_HOST: timescaledb
+      DB_USER: postgres
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: traffic
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: ${PGBOUNCER_MAX_CLIENT_CONN:-200}
+      DEFAULT_POOL_SIZE: ${PGBOUNCER_DEFAULT_POOL_SIZE:-20}
+      AUTH_TYPE: md5
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 5432"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Migrations (runs once, exits) ───────────────────────────────────────────
+
+  migrate:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: migrate
+    restart: "no"
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+    command: alembic upgrade head
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+
+  # ── API server ──────────────────────────────────────────────────────────────
+
+  server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: server
+    restart: always
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: redis://redis:6379
+      UPLOAD_DIR: /app/uploads
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      TZ: ${TZ:-Asia/Manila}
+      TRUST_PROXY_HEADERS: "true"
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-8}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-500}
+      SUPER_KEY: ${SUPER_KEY}
+      FERNET_KEY: ${FERNET_KEY}
+      CORS_ORIGINS: ${CORS_ORIGINS}
+      ANALYSIS_INTERVAL_MINUTES: ${ANALYSIS_INTERVAL_MINUTES:-60}
+    # 2 workers; increase if the server has ≥4 CPU cores
+    command: uvicorn server.main:app --host 0.0.0.0 --port 8000 --workers 2
+    volumes:
+      - upload_data:/app/uploads
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  # ── Background job worker ───────────────────────────────────────────────────
+
+  rq-worker:
+    build:
+      context: .
+      dockerfile: ${RQ_WORKER_DOCKERFILE:-rq-worker/Dockerfile}
+    container_name: rq-worker
+    restart: always
+    environment:
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: ${DATABASE_URL}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      UPLOAD_DIR: /app/uploads
+    volumes:
+      - upload_data:/app/uploads
+    depends_on:
+      redis:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_healthy
+
+  # ── YOLO camera worker (GPU) ────────────────────────────────────────────────
+  # Remove or comment out if this server has no NVIDIA GPU.
+  # Use the worker profile (docker compose --profile worker ...) for CPU-only.
+
+  worker-gpu:
+    profiles: [worker-gpu]
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    container_name: worker-gpu
+    restart: always
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: redis://redis:6379
+      CAMERAS_PER_WORKER: ${CAMERAS_PER_WORKER:-16}
+      INFERENCE_EVERY_N: ${INFERENCE_EVERY_N:-1}
+      READER_MAX_FPS: ${READER_MAX_FPS:-0}
+      TRT_CACHE_DIR: /app/trt_cache
+      FERNET_KEY: ${FERNET_KEY}
+    volumes:
+      - trt_cache:/app/trt_cache
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ── Frontend ────────────────────────────────────────────────────────────────
+
+  frontend:
+    build:
+      context: ./eyegila
+      dockerfile: Dockerfile
+    container_name: frontend
+    restart: always
+    ports:
+      - "80:80"
+    depends_on:
+      - server
+
+  # ── First-run admin setup (one-shot, run manually) ──────────────────────────
+  # docker compose -f docker-compose.prod.yml run --rm setup-admin
+
+  setup-admin:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    restart: "no"
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+    command: python scripts/setup_admin.py
+    volumes:
+      - ./scripts:/app/scripts:ro
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+
+networks:
+  default:
+    name: traffic_network
+
+volumes:
+  timescale_data:
+  upload_data:
+  trt_cache:

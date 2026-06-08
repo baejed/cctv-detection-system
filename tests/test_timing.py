@@ -11,11 +11,9 @@ def test_compute_timing_basic():
     """Known inputs produce correct cycle length and green splits."""
     from server.webster import compute_timing, SATURATION_FLOW
 
-    # 4 approaches, each with 400 PCU/hr flow
+    # 4 approaches, each with 400 PCU/hr flow (one phase per street, fallback)
+    # Y = 4 * (400/S); with S=1400: Y ≈ 1.14 → clamped to max_cycle
     flows = {1: 400.0, 2: 400.0, 3: 400.0, 4: 400.0}
-    # Y = 4 * (400/1800) ≈ 0.889
-    # L = 4 * (4 + 3) = 28
-    # C_opt = (1.5*28 + 5) / (1 - 0.889) ≈ 47 / 0.111 ≈ 423  → clamped to 120
     cycle, splits = compute_timing(flows, lost_time_per_phase=4, all_red_clearance=3,
                                    min_cycle=40, max_cycle=120)
     assert cycle == 120
@@ -29,9 +27,8 @@ def test_compute_timing_low_flow():
     """Low flows produce a cycle near the minimum."""
     from server.webster import compute_timing
 
+    # Y = 4 * (50/S) — stays well below 0.9 for any reasonable S
     flows = {1: 50.0, 2: 50.0, 3: 50.0, 4: 50.0}
-    # Y = 4 * (50/1800) ≈ 0.111
-    # C_opt = (1.5*28 + 5) / (1 - 0.111) ≈ 47 / 0.889 ≈ 52.9 → rounds to 53
     cycle, splits = compute_timing(flows)
     assert 40 <= cycle <= 120
     assert len(splits) == 4
@@ -48,10 +45,10 @@ def test_compute_timing_clamped_min():
 
 def test_compute_timing_clamped_max():
     """Near-saturated flows clamp to max_cycle."""
-    from server.webster import compute_timing
+    from server.webster import compute_timing, SATURATION_FLOW
 
-    # Y ≈ 0.95 → over threshold → max
-    flows = {1: 855.0, 2: 855.0}   # 2 * (855/1800) = 0.95
+    # Y ≈ 0.95 → over threshold → max_cycle regardless of S
+    flows = {1: round(0.475 * SATURATION_FLOW), 2: round(0.475 * SATURATION_FLOW)}
     cycle, splits = compute_timing(flows, min_cycle=40, max_cycle=120)
     assert cycle == 120
 

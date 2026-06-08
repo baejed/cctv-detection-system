@@ -11,6 +11,8 @@ export interface TimingChunk {
   pce_tier_used: string;
   signal_off: boolean;
   generated_at: string;
+  measured_flows: Record<string, number> | null;
+  assumptions: Record<string, number | string> | null;
 }
 
 export const timingApi = {

@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from common import models
 from common.database import get_db
 from server.utils import get_current_user
+from server.simulation import delay_to_los
 
 router = APIRouter(prefix="/simulation", tags=["Simulation"])
 
@@ -16,6 +17,10 @@ class SimulationChunkResponse(BaseModel):
     chunk_name: str
     delay_before: float
     delay_after: float
+    los_before: str
+    los_after: str
+    vc_ratio_before: Optional[float] = None
+    vc_ratio_after: Optional[float] = None
     volume_pcu_hr: float
     vehicle_hours_saved: float
     queue_series_before: Optional[dict] = None
@@ -30,6 +35,8 @@ class DailySummaryResponse(BaseModel):
     total_vehicle_hours_saved: float
     avg_delay_before: float
     avg_delay_after: float
+    los_before: str
+    los_after: str
     total_volume_pcu_hr: float
 
 
@@ -37,6 +44,8 @@ class SimulationResponse(BaseModel):
     intersection_id: int
     intersection_name: str
     signal_status: str
+    baseline_note: str = ""
+    existing_cycle_s: Optional[int] = None
     chunks: list[SimulationChunkResponse]
     daily_summary: DailySummaryResponse
 
@@ -72,11 +81,16 @@ def get_simulation(
     if not rows:
         raise HTTPException(status_code=404, detail="No simulation results found — run generate first")
 
+    before_signalized = status in ("fixed_time", "actuated")
     chunks = [
         SimulationChunkResponse(
             chunk_name=r.chunk_name,
             delay_before=r.delay_before,
             delay_after=r.delay_after,
+            los_before=delay_to_los(r.delay_before, signalized=before_signalized),
+            los_after=delay_to_los(r.delay_after, signalized=True),
+            vc_ratio_before=r.vc_ratio_before,
+            vc_ratio_after=r.vc_ratio_after,
             volume_pcu_hr=r.volume_pcu_hr,
             vehicle_hours_saved=r.vehicle_hours_saved,
             queue_series_before=r.queue_series_before,
@@ -92,15 +106,52 @@ def get_simulation(
     avg_before = sum(c.delay_before for c in chunks) / n if n else 0.0
     avg_after  = sum(c.delay_after  for c in chunks) / n if n else 0.0
 
+    status = intersection.signal_status or "unsignalized"
+    existing_cycle = intersection.existing_cycle_length
+    existing_splits = intersection.existing_green_splits
+
+    if status == "unsignalized":
+        baseline_note = (
+            "Before-state: HCM gap-acceptance (TWSC) — "
+            "no signal present; minor approaches yield to major-street gaps"
+        )
+    elif status == "fixed_time":
+        if existing_cycle and existing_splits:
+            baseline_note = (
+                f"Before-state: Fixed-time signal, {existing_cycle}s cycle · "
+                f"{len(existing_splits)}-approach splits (observed or configured)"
+            )
+        elif existing_cycle:
+            baseline_note = (
+                f"Before-state: Fixed-time signal, {existing_cycle}s cycle · "
+                "equal splits assumed (no per-approach data)"
+            )
+        else:
+            baseline_note = (
+                "Before-state: Fixed-time signal · "
+                "cycle length and splits assumed (not configured)"
+            )
+    elif status == "actuated":
+        baseline_note = (
+            "Before-state: Actuated signal · "
+            "delay estimated from average phase utilization"
+        )
+    else:
+        baseline_note = f"Before-state: {status.replace('_', ' ')} signal"
+
     return SimulationResponse(
         intersection_id=intersection_id,
         intersection_name=intersection.name,
-        signal_status=intersection.signal_status or "unsignalized",
+        signal_status=status,
+        baseline_note=baseline_note,
+        existing_cycle_s=existing_cycle,
         chunks=chunks,
         daily_summary=DailySummaryResponse(
             total_vehicle_hours_saved=round(total_vh_saved, 2),
             avg_delay_before=round(avg_before, 2),
             avg_delay_after=round(avg_after, 2),
+            los_before=delay_to_los(avg_before, signalized=before_signalized),
+            los_after=delay_to_los(avg_after, signalized=True),
             total_volume_pcu_hr=round(total_vol, 2),
         ),
     )

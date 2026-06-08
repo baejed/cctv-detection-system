@@ -111,6 +111,7 @@ export interface Recommendation {
   vpm: number | null;
   phf: number | null;
   hour_start: string | null;
+  data_age_hours: number | null;
   notes: string | null;
   generated_at: string;
   timing_cycle: number | null;

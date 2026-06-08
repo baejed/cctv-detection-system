@@ -3,7 +3,7 @@ import { MapContainer, TileLayer, Marker, Popup, useMapEvents } from 'react-leaf
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { toast } from 'sonner';
-import { intersectionsApi } from '@/services/intersections';
+import { intersectionsApi, type DetectTimingResult } from '@/services/intersections';
 import { streetsApi } from '@/services/streets';
 import { recommendationsApi, type RecommendationResponse } from '@/services/recommendations';
 import { pceApi, type PceValue } from '@/services/pce';
@@ -19,7 +19,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Separator } from '@/components/ui/separator';
-import { MapPin, Plus, Pencil, Trash2, ChevronRight, Loader2, TrafficCone, Clock } from 'lucide-react';
+import { MapPin, Plus, Pencil, Trash2, ChevronRight, Loader2, TrafficCone, Clock, ScanSearch } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { statusBucket, BUCKET_LABEL, BUCKET_BADGE_CLASS } from '@/components/recommendations/statusBucket';
 import { cn } from '@/lib/utils';
@@ -80,6 +80,8 @@ export function IntersectionsPage() {
   const [timingTarget, setTimingTarget] = useState<Intersection | null>(null);
   const [timingForm, setTimingForm] = useState<TimingForm>(EMPTY_TIMING);
   const [savingTiming, setSavingTiming] = useState(false);
+  const [detectingTiming, setDetectingTiming] = useState(false);
+  const [detectResult, setDetectResult] = useState<DetectTimingResult | null>(null);
 
   const [showPceModal, setShowPceModal] = useState(false);
   const [pceTarget, setPceTarget] = useState<Intersection | null>(null);
@@ -168,7 +170,27 @@ export function IntersectionsPage() {
       existing_cycle_length: inter.existing_cycle_length != null ? String(inter.existing_cycle_length) : '',
       existing_green_splits: inter.existing_green_splits ? JSON.stringify(inter.existing_green_splits, null, 2) : '',
     });
+    setDetectResult(null);
     setShowTimingModal(true);
+  }
+
+  async function detectFromCamera() {
+    if (!timingTarget) return;
+    setDetectingTiming(true);
+    try {
+      const result = await intersectionsApi.detectTiming(timingTarget.id);
+      setDetectResult(result);
+      if (result.estimated_cycle_s != null) {
+        setTimingForm(f => ({ ...f, existing_cycle_length: String(result.estimated_cycle_s) }));
+        toast.success(`Detected ~${result.estimated_cycle_s}s cycle (${result.confidence} confidence)`);
+      } else {
+        toast.info('Could not detect a cycle pattern — see note below.');
+      }
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Detection failed');
+    } finally {
+      setDetectingTiming(false);
+    }
   }
 
   async function saveTiming() {
@@ -575,21 +597,69 @@ export function IntersectionsPage() {
               </Select>
             </div>
 
+            {(timingForm.signal_status === 'fixed_time' || timingForm.signal_status === 'actuated') && (
+              <div className="rounded-md border border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-900 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
+                <span className="font-semibold">Enter the current signal plan below.</span>{' '}
+                Without it, the before/after delay comparison uses an equal-split assumption
+                and the improvement numbers will be unreliable.
+                Read the cycle length and splits from the controller box or the DPWH signal design sheet.
+              </div>
+            )}
+
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="cycle-length">Existing Cycle Length (seconds)</Label>
-              <Input
-                id="cycle-length"
-                type="number"
-                min={0}
-                placeholder="e.g. 90"
-                value={timingForm.existing_cycle_length}
-                onChange={e => setTimingForm({ ...timingForm, existing_cycle_length: e.target.value })}
-              />
-              <p className="text-xs text-muted-foreground">Leave blank if unknown — equal-split default will be used.</p>
+              <Label htmlFor="cycle-length">
+                Existing Cycle Length (seconds)
+                {(timingForm.signal_status === 'fixed_time' || timingForm.signal_status === 'actuated') && (
+                  <span className="ml-1 text-rose-500">*</span>
+                )}
+              </Label>
+              <div className="flex gap-2">
+                <Input
+                  id="cycle-length"
+                  type="number"
+                  min={0}
+                  placeholder="e.g. 90"
+                  value={timingForm.existing_cycle_length}
+                  onChange={e => setTimingForm({ ...timingForm, existing_cycle_length: e.target.value })}
+                  className="flex-1"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={detectFromCamera}
+                  disabled={detectingTiming}
+                  title="Estimate cycle length from camera detection patterns"
+                >
+                  {detectingTiming
+                    ? <Loader2 className="size-3.5 animate-spin" />
+                    : <ScanSearch className="size-3.5" />}
+                  <span className="ml-1.5">Detect</span>
+                </Button>
+              </div>
+              {!timingForm.existing_cycle_length && (timingForm.signal_status === 'fixed_time' || timingForm.signal_status === 'actuated') ? (
+                <p className="text-xs text-rose-500">Required for an accurate before/after comparison.</p>
+              ) : (
+                <p className="text-xs text-muted-foreground">Cycle length in seconds from the existing controller.</p>
+              )}
+              {detectResult && (
+                <div className={cn(
+                  'rounded-md border px-3 py-2 text-xs mt-1',
+                  detectResult.confidence === 'high'
+                    ? 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:bg-emerald-950/20 dark:border-emerald-900 dark:text-emerald-300'
+                    : detectResult.confidence === 'medium'
+                    ? 'border-amber-200 bg-amber-50 text-amber-800 dark:bg-amber-950/20 dark:border-amber-900 dark:text-amber-300'
+                    : 'border-border bg-muted/40 text-muted-foreground',
+                )}>
+                  <span className="font-semibold capitalize">{detectResult.confidence} confidence</span>
+                  {' — '}
+                  {detectResult.note}
+                </div>
+              )}
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="green-splits">Existing Green Splits (JSON)</Label>
+              <Label htmlFor="green-splits">Existing Green Splits (JSON, optional)</Label>
               <textarea
                 id="green-splits"
                 className="min-h-[90px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -597,7 +667,9 @@ export function IntersectionsPage() {
                 value={timingForm.existing_green_splits}
                 onChange={e => setTimingForm({ ...timingForm, existing_green_splits: e.target.value })}
               />
-              <p className="text-xs text-muted-foreground">Keyed by approach/street name, values in seconds. Leave blank to use equal-split.</p>
+              <p className="text-xs text-muted-foreground">
+                Green time per approach in seconds. If blank, equal splits from the cycle length above are assumed.
+              </p>
             </div>
           </div>
           <DialogFooter>

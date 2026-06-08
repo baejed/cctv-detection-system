@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
-import { type RecommendationResponse, recommendationsApi } from '@/services/recommendations';
+import { type RecommendationResponse, type DataHealthResponse, recommendationsApi } from '@/services/recommendations';
 import { Progress } from '@/components/ui/progress';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
-import { Loader2, RefreshCw, Pencil, Check, X, BarChart2 } from 'lucide-react';
+import { Loader2, RefreshCw, Pencil, Check, X, BarChart2, Wifi, WifiOff, AlertTriangle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface Props {
@@ -27,12 +27,18 @@ export function LatestTab({ rec, onRegenerate, regenerating, onNotesSaved }: Pro
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(rec.notes ?? '');
   const [saving, setSaving] = useState(false);
+  const [health, setHealth] = useState<DataHealthResponse | null>(null);
 
-  // Reset the notes editor when the underlying record changes (e.g. after regenerate)
   useEffect(() => {
     setEditing(false);
     setDraft(rec.notes ?? '');
   }, [rec.id]);
+
+  useEffect(() => {
+    recommendationsApi.dataHealth(rec.intersection_id)
+      .then(setHealth)
+      .catch(() => null);
+  }, [rec.intersection_id]);
 
   async function save() {
     setSaving(true);
@@ -55,14 +61,48 @@ export function LatestTab({ rec, onRegenerate, regenerating, onNotesSaved }: Pro
           Hour analyzed: <span className="text-foreground">
             {rec.hour_start ? new Date(rec.hour_start).toLocaleString() : 'unknown'}
           </span>
+          {rec.data_age_hours != null && rec.data_age_hours > 2 && (
+            <span className="ml-2 text-amber-600 font-medium">
+              ({rec.data_age_hours.toFixed(0)}h ago — stale)
+            </span>
+          )}
         </div>
-        <Button size="sm" variant="outline" onClick={onRegenerate} disabled={regenerating}>
+        <Button size="sm" variant="ghost" onClick={onRegenerate} disabled={regenerating} title="Analysis runs automatically every hour. Use this to force an immediate update.">
           {regenerating
             ? <Loader2 className="size-3.5 mr-1.5 animate-spin" />
             : <RefreshCw className="size-3.5 mr-1.5" />}
-          Regenerate
+          Run now
         </Button>
       </div>
+
+      {/* Camera health */}
+      {health && (
+        <div className={cn(
+          'flex items-start gap-2 rounded-md border px-3 py-2 text-xs',
+          health.camera_ok
+            ? 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:bg-emerald-950/20 dark:border-emerald-900 dark:text-emerald-300'
+            : 'border-rose-200 bg-rose-50 text-rose-800 dark:bg-rose-950/20 dark:border-rose-900 dark:text-rose-300',
+        )}>
+          {health.camera_ok
+            ? <Wifi className="size-3.5 mt-0.5 shrink-0" />
+            : <WifiOff className="size-3.5 mt-0.5 shrink-0" />}
+          <span>
+            {health.camera_ok
+              ? `Camera live · last detection ${health.data_age_hours?.toFixed(1)}h ago`
+              : health.last_detection_at
+                ? `Camera offline · last detection ${health.data_age_hours?.toFixed(0)}h ago — counts may be unreliable`
+                : 'No detections recorded — camera may not be configured'}
+          </span>
+        </div>
+      )}
+
+      {/* Market-day / recurring spike warning */}
+      {health && health.high_volume_days.length > 0 && (
+        <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-900 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
+          <AlertTriangle className="size-3.5 mt-0.5 shrink-0" />
+          <span>{health.high_volume_days_note}</span>
+        </div>
+      )}
 
       <div className="flex flex-col gap-3">
         {BARS.map(b => {
@@ -98,6 +138,30 @@ export function LatestTab({ rec, onRegenerate, regenerating, onNotesSaved }: Pro
           <Stat label="VPM"   value={rec.vpm}          suffix="" />
           <Stat label="PHF"   value={rec.phf}          suffix="" digits={2} />
         </div>
+      </div>
+
+      <Separator />
+
+      <div>
+        <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-2">Warrant evidence (DPWH thresholds)</div>
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b border-border">
+              <th className="text-left pb-1 font-medium text-muted-foreground">Criterion</th>
+              <th className="text-right pb-1 font-medium text-muted-foreground">Threshold</th>
+              <th className="text-right pb-1 font-medium text-muted-foreground">Measured</th>
+              <th className="text-right pb-1 font-medium text-muted-foreground">Met?</th>
+            </tr>
+          </thead>
+          <tbody>
+            <WarrantRow label="W1 — Major volume" threshold={400} measured={rec.major_volume} unit="veh/hr" />
+            <WarrantRow label="W1 — Minor volume" threshold={150} measured={rec.minor_volume} unit="veh/hr" />
+            <WarrantRow label="W4 — Pedestrians"  threshold={100} measured={rec.peds}         unit="/hr" />
+          </tbody>
+        </table>
+        <p className="text-[10px] text-muted-foreground mt-1.5">
+          DPWH Traffic Signal Manual Vol. 1 · Based on last-hour counts
+        </p>
       </div>
 
       <Separator />
@@ -165,5 +229,23 @@ function Stat({ label, value, suffix, digits = 0 }: { label: string; value: numb
       </div>
       {suffix && <div className="text-[9px] text-muted-foreground">{suffix}</div>}
     </div>
+  );
+}
+
+function WarrantRow({ label, threshold, measured, unit }: {
+  label: string; threshold: number; measured: number | null; unit: string;
+}) {
+  const met = measured !== null && measured >= threshold;
+  return (
+    <tr className="border-b border-border/50">
+      <td className="py-1.5">{label}</td>
+      <td className="text-right tabular-nums text-muted-foreground">≥ {threshold} {unit}</td>
+      <td className={cn('text-right tabular-nums', measured === null ? 'text-muted-foreground' : met ? 'text-emerald-600 font-semibold' : 'text-rose-500')}>
+        {measured !== null ? `${measured} ${unit}` : '—'}
+      </td>
+      <td className={cn('text-right', measured === null ? 'text-muted-foreground' : met ? 'text-emerald-600' : 'text-rose-500')}>
+        {measured !== null ? (met ? '✓' : '✗') : '—'}
+      </td>
+    </tr>
   );
 }

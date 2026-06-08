@@ -11,10 +11,10 @@ def test_uniform_delay_typical():
     """Webster's uniform delay produces a plausible value for a typical input."""
     from server.simulation import compute_uniform_delay
 
-    # C=90s, g=30s, q=400 PCU/hr  →  lam=0.333, x=400*90/(1800*30)=0.667
-    # d = 90*(1-0.333)^2 / (2*(1-0.667)) = 90*0.444 / 0.666 ≈ 60s
+    # C=90s, g=30s, q=400 PCU/hr, S=1400
+    # x = 400*90/(1400*30) = 0.857  →  d = 90*(0.667)^2 / (2*0.143) ≈ 140s
     d = compute_uniform_delay(C=90, g=30, q_pcu_hr=400)
-    assert 30 < d < 120
+    assert 30 < d < 300
 
 
 def test_uniform_delay_zero_flow():
@@ -85,6 +85,75 @@ def test_queue_series_unsignalized_stable():
     assert all(v == 0.0 for v in series)
 
 
+def test_delay_to_los_signalized_all_grades():
+    """Every HCM signalized LOS threshold boundary maps to the correct grade."""
+    from server.simulation import delay_to_los
+    assert delay_to_los(0.0,  signalized=True) == "A"
+    assert delay_to_los(10.0, signalized=True) == "A"  # boundary: ≤10 → A
+    assert delay_to_los(10.1, signalized=True) == "B"
+    assert delay_to_los(20.0, signalized=True) == "B"  # boundary: ≤20 → B
+    assert delay_to_los(20.1, signalized=True) == "C"
+    assert delay_to_los(35.0, signalized=True) == "C"  # boundary: ≤35 → C
+    assert delay_to_los(35.1, signalized=True) == "D"
+    assert delay_to_los(55.0, signalized=True) == "D"  # boundary: ≤55 → D
+    assert delay_to_los(55.1, signalized=True) == "E"
+    assert delay_to_los(80.0, signalized=True) == "E"  # boundary: ≤80 → E
+    assert delay_to_los(80.1, signalized=True) == "F"
+    assert delay_to_los(999,  signalized=True) == "F"
+
+
+def test_delay_to_los_unsignalized_all_grades():
+    """HCM TWSC LOS thresholds (tighter than signalized) map correctly."""
+    from server.simulation import delay_to_los
+    assert delay_to_los(10.0, signalized=False) == "A"
+    assert delay_to_los(10.1, signalized=False) == "B"
+    assert delay_to_los(15.0, signalized=False) == "B"
+    assert delay_to_los(15.1, signalized=False) == "C"
+    assert delay_to_los(25.0, signalized=False) == "C"
+    assert delay_to_los(25.1, signalized=False) == "D"
+    assert delay_to_los(35.0, signalized=False) == "D"
+    assert delay_to_los(35.1, signalized=False) == "E"
+    assert delay_to_los(50.0, signalized=False) == "E"
+    assert delay_to_los(50.1, signalized=False) == "F"
+
+
+def test_delay_to_los_defaults_to_signalized():
+    """Calling without signalized kwarg uses signalized thresholds."""
+    from server.simulation import delay_to_los
+    # 40s → LOS D under signalized (≤55), LOS E under unsignalized (>35)
+    assert delay_to_los(40.0) == "D"
+
+
+def test_compute_vc_ratio_typical():
+    from server.simulation import compute_vc_ratio
+    # x = q*C/(S*g) = 350*90/(1400*45) = 31500/63000 = 0.5
+    assert compute_vc_ratio(C=90, g=45, q_pcu_hr=350) == pytest.approx(0.5, rel=0.01)
+
+
+def test_compute_vc_ratio_capped_at_one():
+    """Oversaturated approaches are capped at 1.0, not returned as >1."""
+    from server.simulation import compute_vc_ratio
+    assert compute_vc_ratio(C=90, g=45, q_pcu_hr=9999) == 1.0
+
+
+def test_compute_vc_ratio_zero_cycle():
+    from server.simulation import compute_vc_ratio
+    assert compute_vc_ratio(C=0, g=45, q_pcu_hr=400) == 0.0
+
+
+def test_compute_vc_ratio_zero_green():
+    from server.simulation import compute_vc_ratio
+    assert compute_vc_ratio(C=90, g=0, q_pcu_hr=400) == 0.0
+
+
+def test_compute_vc_ratio_proportional():
+    """Doubling flow doubles v/c (below cap)."""
+    from server.simulation import compute_vc_ratio
+    vc_low  = compute_vc_ratio(C=90, g=45, q_pcu_hr=200)
+    vc_high = compute_vc_ratio(C=90, g=45, q_pcu_hr=400)
+    assert vc_high == pytest.approx(vc_low * 2, rel=0.01)
+
+
 # ── Integration tests ────────────────────────────────────────────────────────
 
 @pytest.fixture
@@ -111,7 +180,7 @@ def test_generate_creates_simulation_rows(auth, intersection):
 
 
 def test_simulation_chunk_fields(auth, intersection):
-    """Each simulation chunk has the required numeric fields."""
+    """Each simulation chunk has the required numeric fields and LOS grades."""
     iid = intersection["id"]
     auth.post(f"{API_URL}/recommendations/generate/{iid}")
 
@@ -121,6 +190,10 @@ def test_simulation_chunk_fields(auth, intersection):
         assert "delay_after"  in chunk
         assert chunk["delay_before"] >= 0
         assert chunk["delay_after"]  >= 0
+        assert chunk["los_before"] in ("A", "B", "C", "D", "E", "F")
+        assert chunk["los_after"]  in ("A", "B", "C", "D", "E", "F")
+        assert "vc_ratio_before" in chunk
+        assert "vc_ratio_after"  in chunk
 
 
 def test_simulation_queue_series_present(auth, intersection):
@@ -136,7 +209,7 @@ def test_simulation_queue_series_present(auth, intersection):
 
 
 def test_simulation_daily_summary(auth, intersection):
-    """daily_summary has the four required fields."""
+    """daily_summary has all required fields including LOS grades."""
     iid = intersection["id"]
     auth.post(f"{API_URL}/recommendations/generate/{iid}")
 
@@ -146,6 +219,8 @@ def test_simulation_daily_summary(auth, intersection):
     assert "avg_delay_before"          in ds
     assert "avg_delay_after"           in ds
     assert "total_volume_pcu_hr"       in ds
+    assert ds["los_before"] in ("A", "B", "C", "D", "E", "F")
+    assert ds["los_after"]  in ("A", "B", "C", "D", "E", "F")
 
 
 def test_simulation_404_no_recommendation(auth):

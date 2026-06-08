@@ -38,6 +38,7 @@ class RecommendationResponse(BaseModel):
     vpm: Optional[int] = None
     phf: Optional[float] = None
     hour_start: Optional[str] = None
+    data_age_hours: Optional[float] = None
     notes: Optional[str]
     generated_at: str
     timing_cycle: Optional[int] = None
@@ -205,6 +206,13 @@ def _analyze(
     }
 
 
+def _data_age_hours(hour_start: datetime | None) -> float | None:
+    if hour_start is None:
+        return None
+    hs = hour_start if hour_start.tzinfo else hour_start.replace(tzinfo=timezone.utc)
+    return round((datetime.now(timezone.utc) - hs).total_seconds() / 3600, 1)
+
+
 def _rec_to_response(
     rec: models.Recommendation,
     intersection_name: str,
@@ -229,6 +237,7 @@ def _rec_to_response(
         "vpm": rec.vpm,
         "phf": rec.phf,
         "hour_start": rec.hour_start.isoformat() if rec.hour_start else None,
+        "data_age_hours": _data_age_hours(rec.hour_start),
         "notes": rec.notes,
         "generated_at": rec.generated_at.isoformat(),
         "timing_cycle": timing_cycle,
@@ -289,6 +298,7 @@ def list_recommendations(
             "vpm": r.vpm,
             "phf": r.phf,
             "hour_start": r.hour_start.isoformat() if r.hour_start else None,
+            "data_age_hours": _data_age_hours(r.hour_start),
             "notes": r.notes,
             "generated_at": r.generated_at.isoformat(),
             "timing_cycle": r.timing_cycle,
@@ -358,60 +368,72 @@ def generate_recommendation(
     )
 
 
+def run_generate_all(db: Session, artifacts) -> list[dict]:
+    """Run warrant analysis + timing + simulation for every intersection.
+
+    Callable from the API endpoint and from the background scheduler.
+    Returns a list of response dicts (same shape as RecommendationResponse).
+    """
+    from server.webster import generate_timing_for_recommendation
+    from server.local_warrants import evaluate_all as evaluate_local_warrants
+    from server.simulation import generate_simulation
+
+    intersections = db.query(models.Intersection).all()
+    results = []
+
+    for intersection in intersections:
+        try:
+            analysis = _analyze(intersection.id, artifacts, db)
+
+            chunks = (
+                db.query(models.TodChunk)
+                .filter_by(intersection_id=intersection.id)
+                .order_by(models.TodChunk.start_minutes)
+                .all()
+            )
+            local_fields, signal_off = evaluate_local_warrants(db, intersection, chunks)
+            analysis.update(local_fields)
+
+            rec = models.Recommendation(intersection_id=intersection.id, **analysis)
+            db.add(rec)
+            db.flush()
+
+            timing_rows, peak_chunk = generate_timing_for_recommendation(
+                db, intersection, rec.id, signal_off_chunks=set(signal_off)
+            )
+            for tr in timing_rows:
+                db.add(tr)
+            db.flush()
+
+            sim_rows = generate_simulation(db, intersection, rec.id, timing_rows)
+            for sr in sim_rows:
+                db.add(sr)
+            db.flush()
+            db.refresh(rec)
+
+            overall = next((t for t in timing_rows if t.chunk_name == "overall"), None)
+            results.append(_rec_to_response(
+                rec,
+                intersection.name,
+                timing_cycle=overall.cycle_length if overall else None,
+                timing_chunk=peak_chunk,
+            ))
+        except Exception:
+            log.exception("generate_all: failed for intersection %d — skipping", intersection.id)
+            db.rollback()
+
+    db.commit()
+    return results
+
+
 @router.post("/generate-all", response_model=list[RecommendationResponse])
 def generate_all_recommendations(
     request: Request,
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[models.User, Depends(get_current_user)],
 ):
-    """Run warrant analysis + timing for every intersection."""
-    from server.webster import generate_timing_for_recommendation
-    from server.local_warrants import evaluate_all as evaluate_local_warrants
-
-    intersections = db.query(models.Intersection).all()
-    results = []
-
-    artifacts = request.app.state.warrant_artifacts
-    for intersection in intersections:
-        analysis = _analyze(intersection.id, artifacts, db)
-
-        chunks = (
-            db.query(models.TodChunk)
-            .filter_by(intersection_id=intersection.id)
-            .order_by(models.TodChunk.start_minutes)
-            .all()
-        )
-        local_fields, signal_off = evaluate_local_warrants(db, intersection, chunks)
-        analysis.update(local_fields)
-
-        rec = models.Recommendation(intersection_id=intersection.id, **analysis)
-        db.add(rec)
-        db.flush()
-
-        timing_rows, peak_chunk = generate_timing_for_recommendation(
-            db, intersection, rec.id, signal_off_chunks=set(signal_off)
-        )
-        for tr in timing_rows:
-            db.add(tr)
-        db.flush()
-
-        from server.simulation import generate_simulation
-        sim_rows = generate_simulation(db, intersection, rec.id, timing_rows)
-        for sr in sim_rows:
-            db.add(sr)
-        db.flush()
-        db.refresh(rec)
-
-        overall = next((t for t in timing_rows if t.chunk_name == "overall"), None)
-        results.append(_rec_to_response(
-            rec,
-            intersection.name,
-            timing_cycle=overall.cycle_length if overall else None,
-            timing_chunk=peak_chunk,
-        ))
-
-    db.commit()
-    return results
+    """Run warrant analysis + timing for every intersection (on-demand)."""
+    return run_generate_all(db, request.app.state.warrant_artifacts)
 
 
 class NotesUpdate(BaseModel):
@@ -461,3 +483,90 @@ def list_history(
     )
     log.info("history intersection=%d limit=%d → %d rows", intersection_id, limit, len(rows))
     return [_rec_to_response(rec, intersection.name) for rec in rows]
+
+
+_DOW_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+
+
+class DataHealthResponse(BaseModel):
+    intersection_id: int
+    last_detection_at: Optional[str] = None
+    data_age_hours: Optional[float] = None
+    camera_ok: bool
+    high_volume_days: list[str]
+    high_volume_days_note: Optional[str] = None
+
+
+@router.get("/data-health/{intersection_id}", response_model=DataHealthResponse)
+def data_health(
+    intersection_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    user: Annotated[models.User, Depends(get_current_user)],
+):
+    """Camera health check + weekly volume pattern for an intersection.
+
+    camera_ok = True when a detection was recorded within the last 2 hours.
+    high_volume_days = days of week where average daily volume exceeds 130 % of
+    the weekly mean — a proxy for market-day or recurring event spikes.
+    """
+    intersection = db.get(models.Intersection, intersection_id)
+    if not intersection:
+        raise HTTPException(status_code=404, detail="Intersection not found")
+
+    last_row = db.execute(text("""
+        SELECT MAX(window_start) AS last_seen
+        FROM aggregation_summaries
+        WHERE intersection_id = :iid
+    """), {"iid": intersection_id}).fetchone()
+
+    last_seen: datetime | None = last_row.last_seen if last_row else None
+    if last_seen and last_seen.tzinfo is None:
+        last_seen = last_seen.replace(tzinfo=timezone.utc)
+
+    age_hours = _data_age_hours(last_seen)
+    camera_ok = age_hours is not None and age_hours <= 2.0
+
+    # Weekly pattern: average vehicle count per calendar day, grouped by day-of-week
+    dow_rows = db.execute(text("""
+        SELECT EXTRACT(DOW FROM window_start)::int AS dow,
+               DATE(window_start AT TIME ZONE 'UTC')  AS day,
+               SUM(count)                             AS daily_total
+          FROM aggregation_summaries
+         WHERE intersection_id = :iid
+           AND window_start >= NOW() - INTERVAL '28 days'
+           AND object_type NOT IN ('pedestrian', 'person')
+         GROUP BY dow, day
+    """), {"iid": intersection_id}).fetchall()
+
+    # Aggregate: per DOW → list of daily totals
+    from collections import defaultdict
+    dow_totals: dict[int, list[float]] = defaultdict(list)
+    for r in dow_rows:
+        dow_totals[r.dow].append(float(r.daily_total))
+
+    high_volume_days: list[str] = []
+    if dow_totals:
+        dow_avgs = {dow: sum(vals) / len(vals) for dow, vals in dow_totals.items()}
+        overall_avg = sum(dow_avgs.values()) / len(dow_avgs)
+        threshold = overall_avg * 1.30
+        high_volume_days = [
+            _DOW_NAMES[dow]
+            for dow, avg in sorted(dow_avgs.items())
+            if avg >= threshold
+        ]
+
+    note = (
+        f"Volume on {', '.join(high_volume_days)} is consistently ≥130% of weekly average — "
+        "likely a recurring market day or school event. Webster's timing uses a 7-day rolling "
+        "average and will partially reflect this; consider a dedicated TOD chunk."
+        if high_volume_days else None
+    )
+
+    return DataHealthResponse(
+        intersection_id=intersection_id,
+        last_detection_at=last_seen.isoformat() if last_seen else None,
+        data_age_hours=age_hours,
+        camera_ok=camera_ok,
+        high_volume_days=high_volume_days,
+        high_volume_days_note=note,
+    )

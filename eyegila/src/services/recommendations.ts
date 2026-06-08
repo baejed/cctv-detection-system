@@ -5,6 +5,15 @@ export interface RecommendationResponse extends Recommendation {
   intersection_name: string;
 }
 
+export interface DataHealthResponse {
+  intersection_id: number;
+  last_detection_at: string | null;
+  data_age_hours: number | null;
+  camera_ok: boolean;
+  high_volume_days: string[];
+  high_volume_days_note: string | null;
+}
+
 export const recommendationsApi = {
   list(): Promise<RecommendationResponse[]> {
     return request('/recommendations/');
@@ -23,5 +32,8 @@ export const recommendationsApi = {
       method: 'PATCH',
       body: JSON.stringify({ notes }),
     });
+  },
+  dataHealth(intersectionId: number): Promise<DataHealthResponse> {
+    return request(`/recommendations/data-health/${intersectionId}`);
   },
 };

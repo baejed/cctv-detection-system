@@ -1,5 +1,8 @@
 yolov8*.pt
 .env
+.env.prod
+*.pem
+*.key
 
 scripts/.venv/
 scripts/venv/

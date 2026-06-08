@@ -13,6 +13,16 @@ export interface ImportResult {
   errors: string[];
 }
 
+export interface DetectTimingResult {
+  intersection_id:   number;
+  estimated_cycle_s: number | null;
+  confidence:        'low' | 'medium' | 'high';
+  note:              string;
+  dispersion_index:  number | null;
+  best_lag_min:      number | null;
+  best_autocorr:     number | null;
+}
+
 export const intersectionsApi = {
   list: () => request<Intersection[]>('/intersections/'),
 
@@ -44,4 +54,7 @@ export const intersectionsApi = {
       method: 'PATCH',
       body: JSON.stringify(data),
     }),
+
+  detectTiming: (id: number) =>
+    request<DetectTimingResult>(`/intersections/${id}/detect-timing`),
 };

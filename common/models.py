@@ -308,6 +308,8 @@ class SimulationResult(Base):
     chunk_name          = Column(String(50), nullable=False)
     delay_before        = Column(Float, nullable=False)
     delay_after         = Column(Float, nullable=False)
+    vc_ratio_before     = Column(Float, nullable=True)
+    vc_ratio_after      = Column(Float, nullable=True)
     volume_pcu_hr       = Column(Float, nullable=False, server_default="0")
     vehicle_hours_saved = Column(Float, nullable=False, server_default="0")
     queue_series_before = Column(JSON, nullable=True)

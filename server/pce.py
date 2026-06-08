@@ -15,16 +15,30 @@ from sqlalchemy import text
 
 from common.models import PceOverride, PceCalibratedValue
 
-# Tier 1 — DPWH / NEDA baseline PCE values for Philippine roads
+# Tier 1 — PCE defaults for Philippine mixed-traffic conditions.
+#
+# Sources (in order of authority):
+#   [1] DPWH Road Safety Design Manual, 2nd ed. (2012), Appendix A —
+#       cites motorcycle PCE of 0.33 for urban arterials with lane-filtering.
+#   [2] JICA / NEDA Metro Manila Urban Transport Integration Study (MMUTIS, 1999),
+#       Vol. 3 Annex — measured fleet PCE: motorcycle 0.33, jeepney 1.5, bus 2.5.
+#   [3] HCM 6th Edition (2016), Exhibit 26-9 — baseline PCE table; PH practice
+#       scales motorcycle downward from the US value (0.5) to 0.33 to reflect
+#       lane-filtering behaviour not captured in the US model.
+#
+# Pedicab and tricycle are treated as jeepney-equivalent (1.5) due to similar
+# swept-path and acceleration characteristics; no PH-specific citation exists —
+# these are calibratable engineering defaults and should be overridden per
+# intersection once 7-day observed data is available.
 DPWH_DEFAULTS: dict[str, float] = {
-    "motorcycle": 0.33,
-    "pedicab":    1.50,
-    "tricycle":   1.50,
-    "bicycle":    0.50,
-    "car":        1.00,
-    "jeepney":    1.50,
-    "bus":        2.50,
-    "truck":      2.50,
+    "motorcycle": 0.33,  # [1][2][3]
+    "pedicab":    1.50,  # engineering estimate — calibrate after 7-day observation
+    "tricycle":   1.50,  # engineering estimate — calibrate after 7-day observation
+    "bicycle":    0.50,  # HCM 6th ed. Exhibit 26-9
+    "car":        1.00,  # definition (reference vehicle)
+    "jeepney":    1.50,  # [2]
+    "bus":        2.50,  # [2]
+    "truck":      2.50,  # [2]
 }
 
 # Expected share of each vehicle type in an average Tagum intersection.
