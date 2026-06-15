@@ -71,3 +71,26 @@ Commit: 4a147a8
     per-approach green-seconds table with live % column; CSS Gantt phase diagram —
     proportional green/yellow(3s)/red bars per approach, updates on every keystroke;
     legend row; loading spinner while fetching
+
+### Issue #6 — Collecting data waiting state + sidebar progress indicator ✅ DONE (2026-06-15)
+Commit: 38cbf62
+
+- eyegila/src/components/OnboardingWizard.tsx:
+  - Added collecting step state: collectingTargetId, collectingHasRec,
+    collectingLastDetection, collectingLoading
+  - useEffect on entering 'collecting' step: resolves intersection (same fallback pattern
+    as regions/timing), fetches recommendationsApi.list() + dataHealth() in parallel
+  - Two UI states:
+    - "Results ready" (collectingHasRec = true): emerald banner with BarChart3 icon and
+      "View results on Intersections page" button that closes wizard + navigates to /
+    - "Still collecting" (default): animated Wifi icon, last-detection timestamp or
+      "no detections yet" message, "Refresh status" button, "Go to Intersections" shortcut
+  - Close wizard and go to app is prominently supported in both states
+
+- eyegila/src/components/Layout.tsx:
+  - Added intersectionsApi import + Intersection type
+  - intersectionList state: fetched on mount and whenever wizard closes (handleWizardClose)
+  - Sidebar "Setup Progress" widget (hidden in icon-collapsed mode):
+    - Shows "X/Y" configured count; "configured" = existing_cycle_length is set
+    - Proportional progress bar (emerald at 100%, primary otherwise)
+    - Subtitle: "All intersections configured" or "N pending timing setup"
