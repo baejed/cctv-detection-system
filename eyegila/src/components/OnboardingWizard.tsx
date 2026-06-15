@@ -116,6 +116,14 @@ export function OnboardingWizard({ open, initialStep, onClose }: OnboardingWizar
   const [regionLoading, setRegionLoading] = useState(false);
   const [regionTargetId, setRegionTargetId] = useState<number | null>(null);
 
+  // ── Timing step state ─────────────────────────────────────────────────────
+  const [timingTargetId, setTimingTargetId]       = useState<number | null>(null);
+  const [timingApproaches, setTimingApproaches]   = useState<string[]>([]);
+  const [timingStatus, setTimingStatus]           = useState<'unsignalized' | 'fixed_time' | 'actuated'>('fixed_time');
+  const [timingCycle, setTimingCycle]             = useState('90');
+  const [timingGreenSplits, setTimingGreenSplits] = useState<Record<string, string>>({});
+  const [timingLoading, setTimingLoading]         = useState(false);
+
   useEffect(() => {
     if (open) {
       setStepId(isValidStepId(initialStep) ? initialStep : 'welcome');
@@ -185,6 +193,57 @@ export function OnboardingWizard({ open, initialStep, onClose }: OnboardingWizar
     }
 
     init();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, stepId]);
+
+  // Initialise timing step when entering it
+  useEffect(() => {
+    if (!open || stepId !== 'timing') return;
+
+    async function initTiming() {
+      setTimingLoading(true);
+      try {
+        let targetId = createdIntersectionId;
+        if (targetId == null) {
+          const inters = await intersectionsApi.list();
+          if (inters.length > 0) {
+            targetId = inters.sort((a, b) => b.time.localeCompare(a.time))[0].id;
+          }
+        }
+        if (targetId == null) return;
+        setTimingTargetId(targetId);
+
+        const [inter, streets] = await Promise.all([
+          intersectionsApi.get(targetId),
+          streetsApi.list(),
+        ]);
+
+        const approachDirs = streets
+          .filter(s => s.intersection_id === targetId && s.arm_direction !== 'unknown')
+          .map(s => s.arm_direction);
+        const approaches = [...new Set(approachDirs)];
+        setTimingApproaches(approaches);
+
+        if (inter.signal_status) setTimingStatus(inter.signal_status);
+        const cycle = inter.existing_cycle_length ?? 90;
+        setTimingCycle(String(cycle));
+
+        const defaultGreen = Math.round(cycle / Math.max(approaches.length, 1));
+        const splits: Record<string, string> = {};
+        for (const dir of approaches) {
+          splits[dir] = inter.existing_green_splits?.[dir] != null
+            ? String(inter.existing_green_splits[dir])
+            : String(defaultGreen);
+        }
+        setTimingGreenSplits(splits);
+      } catch {
+        toast.error('Failed to load intersection data');
+      } finally {
+        setTimingLoading(false);
+      }
+    }
+
+    initTiming();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, stepId]);
 
@@ -332,6 +391,28 @@ export function OnboardingWizard({ open, initialStep, onClose }: OnboardingWizar
       await goTo(nextStep);
     } else if (stepId === 'assign') {
       await createIntersectionAndAdvance();
+    } else if (stepId === 'timing') {
+      if (timingTargetId == null) { toast.error('No intersection found'); return; }
+      const cycle = timingStatus !== 'unsignalized' ? parseInt(timingCycle) || null : null;
+      const splits: Record<string, number> | null =
+        timingStatus !== 'unsignalized' && cycle != null
+          ? Object.fromEntries(
+              Object.entries(timingGreenSplits).map(([k, v]) => [k, parseInt(v) || 0]),
+            )
+          : null;
+      setCreating(true);
+      try {
+        await intersectionsApi.patchTiming(timingTargetId, {
+          signal_status: timingStatus,
+          existing_cycle_length: cycle,
+          existing_green_splits: splits,
+        });
+        await goTo(nextStep);
+      } catch (err: unknown) {
+        toast.error(err instanceof Error ? err.message : 'Failed to save timing');
+      } finally {
+        setCreating(false);
+      }
     } else {
       await goTo(nextStep);
     }
@@ -812,22 +893,181 @@ export function OnboardingWizard({ open, initialStep, onClose }: OnboardingWizar
 
           {/* regions step renders as a compact floating panel (early return above) */}
 
-          {/* ── Timing (placeholder — Issue #5) ────────────────────────────── */}
+          {/* ── Timing ───────────────────────────────────────────────────── */}
           {stepId === 'timing' && (
             <div className="flex flex-col gap-6">
               <div>
                 <h2 className="text-2xl font-semibold">Enter current signal timing</h2>
                 <p className="text-muted-foreground mt-2">
                   Enter the existing signal cycle length and green split per approach.
-                  A live phase diagram shows how the time is allocated so you can verify it
-                  before the system recommends improvements.
+                  The phase diagram updates live as you type.
                 </p>
               </div>
-              <div className="rounded-xl border border-dashed border-border bg-muted/20 p-12 flex flex-col items-center gap-3 text-center">
-                <p className="text-sm text-muted-foreground">
-                  Timing form and live Gantt diagram will be available here (Issue #5).
-                </p>
-              </div>
+
+              {timingLoading ? (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground py-4">
+                  <Loader2 className="size-4 animate-spin" />
+                  Loading intersection data…
+                </div>
+              ) : (
+                <>
+                  {/* Signal status toggle */}
+                  <div className="flex flex-col gap-2">
+                    <Label>Signal status</Label>
+                    <div className="flex gap-2 flex-wrap">
+                      {(['unsignalized', 'fixed_time', 'actuated'] as const).map(s => (
+                        <button
+                          key={s}
+                          type="button"
+                          onClick={() => setTimingStatus(s)}
+                          className={cn(
+                            'px-3 py-1.5 rounded-lg text-sm border transition-colors',
+                            timingStatus === s
+                              ? 'bg-primary text-primary-foreground border-primary'
+                              : 'border-border bg-background hover:bg-muted text-muted-foreground',
+                          )}
+                        >
+                          {s === 'unsignalized' ? 'Unsignalized' : s === 'fixed_time' ? 'Fixed time' : 'Actuated'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {timingStatus !== 'unsignalized' && (
+                    <>
+                      {/* Cycle length */}
+                      <div className="flex flex-col gap-2">
+                        <Label htmlFor="timing-cycle">Cycle length</Label>
+                        <div className="flex items-center gap-2">
+                          <Input
+                            id="timing-cycle"
+                            type="number"
+                            min={30}
+                            max={300}
+                            value={timingCycle}
+                            onChange={e => setTimingCycle(e.target.value)}
+                            className="w-28"
+                          />
+                          <span className="text-sm text-muted-foreground">seconds</span>
+                        </div>
+                      </div>
+
+                      {/* Green splits table */}
+                      {timingApproaches.length > 0 && (
+                        <div className="flex flex-col gap-2">
+                          <Label>Green time per approach</Label>
+                          <div className="rounded-lg border border-border overflow-hidden">
+                            <table className="w-full text-sm">
+                              <thead>
+                                <tr className="bg-muted/40 border-b border-border">
+                                  <th className="px-4 py-2 text-left font-medium text-muted-foreground">Approach</th>
+                                  <th className="px-4 py-2 text-left font-medium text-muted-foreground">Green (s)</th>
+                                  <th className="px-4 py-2 text-left font-medium text-muted-foreground">% of cycle</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {timingApproaches.map(dir => {
+                                  const cycleN = parseInt(timingCycle) || 90;
+                                  const green  = parseInt(timingGreenSplits[dir] ?? '0') || 0;
+                                  const pct    = cycleN > 0 ? Math.round((green / cycleN) * 100) : 0;
+                                  return (
+                                    <tr key={dir} className="border-b border-border last:border-0">
+                                      <td className="px-4 py-2 font-medium capitalize">
+                                        {dir.replace('bound', '')}
+                                      </td>
+                                      <td className="px-4 py-2">
+                                        <Input
+                                          type="number"
+                                          min={1}
+                                          max={Math.max(1, (parseInt(timingCycle) || 90) - 3)}
+                                          value={timingGreenSplits[dir] ?? ''}
+                                          onChange={e => setTimingGreenSplits(prev => ({
+                                            ...prev, [dir]: e.target.value,
+                                          }))}
+                                          className="h-7 w-20"
+                                        />
+                                      </td>
+                                      <td className="px-4 py-2 text-muted-foreground tabular-nums">
+                                        {pct}%
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Live Gantt phase diagram */}
+                      {timingApproaches.length > 0 && (
+                        <div className="flex flex-col gap-2">
+                          <Label>Phase diagram</Label>
+                          <div className="rounded-lg border border-border bg-muted/10 p-4 flex flex-col gap-2">
+                            {timingApproaches.map(dir => {
+                              const cycleN  = parseInt(timingCycle) || 90;
+                              const yellowS = 3;
+                              const greenS  = Math.min(
+                                Math.max(0, parseInt(timingGreenSplits[dir] ?? '0') || 0),
+                                cycleN - yellowS,
+                              );
+                              const redS    = Math.max(0, cycleN - greenS - yellowS);
+                              const gPct    = (greenS  / cycleN) * 100;
+                              const yPct    = (yellowS / cycleN) * 100;
+                              const rPct    = (redS    / cycleN) * 100;
+                              return (
+                                <div key={dir} className="flex items-center gap-3">
+                                  <span className="w-16 text-xs text-muted-foreground capitalize shrink-0 text-right">
+                                    {dir.replace('bound', '')}
+                                  </span>
+                                  <div className="flex-1 flex h-7 rounded overflow-hidden text-[10px] font-medium">
+                                    <div
+                                      style={{ width: `${gPct}%` }}
+                                      className="bg-emerald-500 flex items-center justify-center text-white shrink-0"
+                                    >
+                                      {greenS > 6 ? `${greenS}s` : ''}
+                                    </div>
+                                    <div
+                                      style={{ width: `${yPct}%` }}
+                                      className="bg-amber-400 shrink-0"
+                                    />
+                                    <div
+                                      style={{ width: `${rPct}%` }}
+                                      className="bg-rose-500/70 flex items-center justify-center text-white shrink-0"
+                                    >
+                                      {redS > 6 ? `${redS}s` : ''}
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                            <div className="flex items-center gap-4 mt-1 pt-2 border-t border-border/50">
+                              <div className="w-16 shrink-0" />
+                              <div className="flex gap-4 text-[10px] text-muted-foreground">
+                                <span className="flex items-center gap-1">
+                                  <span className="inline-block size-2.5 rounded-sm bg-emerald-500" />Green
+                                </span>
+                                <span className="flex items-center gap-1">
+                                  <span className="inline-block size-2.5 rounded-sm bg-amber-400" />Yellow (3s)
+                                </span>
+                                <span className="flex items-center gap-1">
+                                  <span className="inline-block size-2.5 rounded-sm bg-rose-500/70" />Red
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {timingApproaches.length === 0 && (
+                        <p className="text-sm text-muted-foreground">
+                          No approaches found. Complete the camera direction step first.
+                        </p>
+                      )}
+                    </>
+                  )}
+                </>
+              )}
             </div>
           )}
 
