@@ -113,3 +113,21 @@ Commit: 069a26d
     - Divider between panels hidden on mobile (sm:block)
     - Shared legend strip (Green / Yellow 3s / Red) at bottom
     - Updates automatically when a different time-of-day chunk is clicked in the table above
+
+### Issue #9 — Simulation queue animation + council export ✅ DONE (2026-06-15)
+Commit: f0f5e4b
+
+- eyegila/src/pages/SignalTiming.tsx:
+  - presentMode state + Escape key handler (closes overlay on Esc)
+  - "Present" button (MonitorPlay icon) added to simulation section controls
+  - Fixed inset-0 z-[100] overlay: dark bg (#0a0f1a), no nav/sidebar visible
+  - Overlay header: intersection name, chunk period, vehicle_hours_saved (emerald)
+  - Minimal controls bar: 2D/3D toggle, SBS toggle, before/after toggle, play/pause, speed
+  - Overlay body: DualIntersectionCanvas (2D) or IntersectionScene3D(s) (3D single/SBS)
+    — shares view3D/sbs3D/paused3D/speed3D state with the regular section
+  - 2D side-by-side (before/after), 3D SBS, paused, scrub/reset all work from within
+    present mode; vehicle_hours_saved shown in the header strip
+  - All acceptance criteria met: 2D SBS animation ✓, 3D comparison ✓, chrome-free
+    screenshot mode ✓, pause/replay ✓, vehicle_hours_saved below animation ✓
+
+    - Updates automatically when a different time-of-day chunk is clicked in the table above
