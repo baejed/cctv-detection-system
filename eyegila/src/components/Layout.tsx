@@ -1,8 +1,11 @@
+import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { SetupGuide } from '@/components/SetupGuide';
+import { OnboardingWizard } from '@/components/OnboardingWizard';
+import { onboardingApi } from '@/services/onboarding';
+import { intersectionsApi } from '@/services/intersections';
 import { useAuth } from '@/hooks/useAuth';
 import { useSSE, type SSEStatus } from '@/hooks/useSSE';
-import type { AggregationRow } from '@/types';
+import type { AggregationRow, Intersection } from '@/types';
 import {
   Sidebar, SidebarContent, SidebarFooter, SidebarHeader,
   SidebarMenu, SidebarMenuItem, SidebarMenuButton,
@@ -13,21 +16,16 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
-  LayoutDashboard, BarChart3, Camera, MapPin,
-  Video, Lightbulb, Users, LogOut,
-  Wifi, WifiOff, Loader2, BookOpen,
+  BarChart3, MapPin, Users, LogOut,
+  Wifi, WifiOff, Loader2, BookOpen, Rocket,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const NAV_ITEMS = [
-  { to: '/',                label: 'Dashboard',       icon: LayoutDashboard, end: true },
-  { to: '/reports',         label: 'Reports',          icon: BarChart3 },
-  { to: '/cameras',         label: 'Cameras',          icon: Camera },
-  { to: '/intersections',   label: 'Intersections',    icon: MapPin },
-  { to: '/videos',          label: 'Videos',           icon: Video },
-  { to: '/recommendations', label: 'Recommendations',  icon: Lightbulb },
-  { to: '/users',           label: 'Users',            icon: Users },
-  { to: '/manual',          label: 'Manual',           icon: BookOpen },
+  { to: '/',        label: 'Intersections', icon: MapPin,    end: true },
+  { to: '/reports', label: 'Reports',       icon: BarChart3           },
+  { to: '/users',   label: 'Users',         icon: Users               },
+  { to: '/manual',  label: 'Manual',        icon: BookOpen            },
 ];
 
 function SSEIndicator({ status }: { status: SSEStatus }) {
@@ -61,14 +59,33 @@ function SSEIndicator({ status }: { status: SSEStatus }) {
 export function Layout() {
   const { username, logout, token } = useAuth();
   const navigate = useNavigate();
-  // Bypass Vite proxy for SSE — proxy buffers chunked responses, events arrive late.
-  // Token passed as query param because EventSource can't send custom headers.
-  const SSE_URL = token
-    ? (import.meta.env.DEV
-        ? `http://${window.location.hostname}:8000/aggregation/stream?token=${token}`
-        : `/api/aggregation/stream?token=${token}`)
-    : null;
+  const SSE_URL = token ? `/api/aggregation/stream?token=${token}` : null;
   const { data: sseData, status: sseStatus } = useSSE<AggregationRow[]>(SSE_URL ?? '', !!SSE_URL);
+
+  const [wizardOpen,       setWizardOpen]       = useState(false);
+  const [savedStep,        setSavedStep]        = useState<string | null>(null);
+  const [intersectionList, setIntersectionList] = useState<Intersection[]>([]);
+
+  function fetchIntersections() {
+    intersectionsApi.list().then(setIntersectionList).catch(() => {});
+  }
+
+  useEffect(() => {
+    if (!token) return;
+    onboardingApi.getProgress()
+      .then(p => setSavedStep(p.step))
+      .catch(() => {});
+    fetchIntersections();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+
+  function openWizard() { setWizardOpen(true); }
+
+  function handleWizardClose(currentStep: string | null) {
+    setSavedStep(currentStep);
+    setWizardOpen(false);
+    fetchIntersections();
+  }
 
   async function handleLogout() {
     await logout();
@@ -105,7 +122,47 @@ export function Layout() {
                   </NavLink>
                 </SidebarMenuItem>
               ))}
+
+              <SidebarMenuItem>
+                <SidebarMenuButton onClick={openWizard} tooltip="Get Started">
+                  <Rocket />
+                  <span>Get Started</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
             </SidebarMenu>
+
+            {/* Setup progress indicator */}
+            {intersectionList.length > 0 && (() => {
+              const configured = intersectionList.filter(i => i.existing_cycle_length != null).length;
+              const total      = intersectionList.length;
+              const pct        = Math.round((configured / total) * 100);
+              return (
+                <div className="mx-3 mt-1 mb-2 rounded-md border border-border bg-muted/30 px-3 py-2.5 group-data-[collapsible=icon]:hidden">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+                      Setup Progress
+                    </span>
+                    <span className="text-[10px] font-semibold text-foreground">
+                      {configured}/{total}
+                    </span>
+                  </div>
+                  <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                    <div
+                      className={cn(
+                        'h-full rounded-full transition-all duration-500',
+                        pct === 100 ? 'bg-emerald-500' : 'bg-primary',
+                      )}
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                  <p className="text-[10px] text-muted-foreground mt-1">
+                    {configured === total
+                      ? 'All intersections configured'
+                      : `${total - configured} pending timing setup`}
+                  </p>
+                </div>
+              );
+            })()}
           </SidebarContent>
 
           <SidebarFooter className="border-t border-sidebar-border p-3">
@@ -136,11 +193,16 @@ export function Layout() {
           </header>
 
           <main className="flex-1 overflow-y-auto p-6">
-            <Outlet context={{ sseData, sseStatus }} />
+            <Outlet context={{ sseData, sseStatus, onOpenWizard: openWizard }} />
           </main>
         </div>
       </div>
-      <SetupGuide />
+
+      <OnboardingWizard
+        open={wizardOpen}
+        initialStep={savedStep}
+        onClose={handleWizardClose}
+      />
     </SidebarProvider>
   );
 }

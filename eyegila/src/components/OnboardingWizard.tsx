@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -7,6 +7,7 @@ import { toast } from 'sonner';
 import { onboardingApi } from '@/services/onboarding';
 import { cctvsApi } from '@/services/cctvs';
 import { intersectionsApi } from '@/services/intersections';
+import { recommendationsApi } from '@/services/recommendations';
 import { streetsApi } from '@/services/streets';
 import { request } from '@/services/api';
 import type { ArmDirection, Region } from '@/types';
@@ -18,6 +19,7 @@ import { cn } from '@/lib/utils';
 import {
   X, ArrowRight, ArrowLeft, Check,
   Loader2, ScanSearch, Plus, Wifi, Server, RefreshCw, ExternalLink,
+  BarChart3,
 } from 'lucide-react';
 
 // Leaflet default icon fix (works once per module load)
@@ -84,6 +86,7 @@ export interface OnboardingWizardProps {
 }
 
 export function OnboardingWizard({ open, initialStep, onClose }: OnboardingWizardProps) {
+  const navigate = useNavigate();
   const [stepId, setStepId]   = useState<WizardStepId>('welcome');
   const [saving, setSaving]   = useState(false);
   const [creating, setCreating] = useState(false);
@@ -123,6 +126,12 @@ export function OnboardingWizard({ open, initialStep, onClose }: OnboardingWizar
   const [timingCycle, setTimingCycle]             = useState('90');
   const [timingGreenSplits, setTimingGreenSplits] = useState<Record<string, string>>({});
   const [timingLoading, setTimingLoading]         = useState(false);
+
+  // ── Collecting step state ──────────────────────────────────────────────────
+  const [collectingTargetId, setCollectingTargetId]         = useState<number | null>(null);
+  const [collectingHasRec, setCollectingHasRec]             = useState(false);
+  const [collectingLastDetection, setCollectingLastDetection] = useState<string | null>(null);
+  const [collectingLoading, setCollectingLoading]           = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -244,6 +253,40 @@ export function OnboardingWizard({ open, initialStep, onClose }: OnboardingWizar
     }
 
     initTiming();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, stepId]);
+
+  // Initialise collecting step when entering it
+  useEffect(() => {
+    if (!open || stepId !== 'collecting') return;
+
+    async function initCollecting() {
+      setCollectingLoading(true);
+      try {
+        let targetId = createdIntersectionId ?? timingTargetId ?? regionTargetId;
+        if (targetId == null) {
+          const inters = await intersectionsApi.list();
+          if (inters.length > 0) {
+            targetId = inters.sort((a, b) => b.time.localeCompare(a.time))[0].id;
+          }
+        }
+        if (targetId == null) return;
+        setCollectingTargetId(targetId);
+
+        const [recs, health] = await Promise.all([
+          recommendationsApi.list(),
+          recommendationsApi.dataHealth(targetId).catch(() => null),
+        ]);
+        setCollectingHasRec(recs.some(r => r.intersection_id === targetId));
+        setCollectingLastDetection(health?.last_detection_at ?? null);
+      } catch {
+        // silent — show placeholder state
+      } finally {
+        setCollectingLoading(false);
+      }
+    }
+
+    initCollecting();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, stepId]);
 
@@ -1081,15 +1124,102 @@ export function OnboardingWizard({ open, initialStep, onClose }: OnboardingWizar
                   hours of data to run a MUTCD warrant analysis and generate timing recommendations.
                 </p>
               </div>
-              <div className="rounded-lg border border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950/20 p-8 flex flex-col items-center gap-4 text-center">
-                <p className="text-sm text-emerald-700 dark:text-emerald-400 font-semibold">
-                  Detection is running in the background
-                </p>
-                <p className="text-xs text-muted-foreground max-w-md">
-                  You can close this wizard and use the app normally. When enough data is collected,
-                  run a warrant analysis from the Intersections page to see results.
-                </p>
-              </div>
+
+              {collectingLoading ? (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="size-4 animate-spin" />
+                  Checking status…
+                </div>
+              ) : collectingHasRec ? (
+                /* Results are ready */
+                <div className="rounded-lg border border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/30 p-6 flex flex-col gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="size-10 rounded-full bg-emerald-100 dark:bg-emerald-900 flex items-center justify-center shrink-0">
+                      <BarChart3 className="size-5 text-emerald-600 dark:text-emerald-400" />
+                    </div>
+                    <div>
+                      <p className="font-semibold text-emerald-700 dark:text-emerald-300">
+                        Analysis results are ready
+                      </p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        Warrant analysis has been generated for this intersection.
+                      </p>
+                    </div>
+                  </div>
+                  <Button
+                    size="sm"
+                    className="self-start"
+                    onClick={() => {
+                      handleClose();
+                      navigate('/');
+                    }}
+                  >
+                    View results on Intersections page
+                    <ArrowRight className="size-4 ml-2" />
+                  </Button>
+                </div>
+              ) : (
+                /* Still collecting */
+                <div className="rounded-lg border border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950/20 p-6 flex flex-col gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="size-10 rounded-full bg-emerald-100 dark:bg-emerald-900 flex items-center justify-center shrink-0 animate-pulse">
+                      <Wifi className="size-5 text-emerald-600 dark:text-emerald-400" />
+                    </div>
+                    <div>
+                      <p className="font-semibold text-emerald-700 dark:text-emerald-300 text-sm">
+                        Detection is running in the background
+                      </p>
+                      {collectingLastDetection ? (
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          Last detection: {new Date(collectingLastDetection).toLocaleString()}
+                        </p>
+                      ) : (
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          No detections recorded yet — check camera feeds are live.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Come back after 8+ hours of traffic. Then go to the Intersections page
+                    and click <strong>Run analysis</strong> to generate warrant results and
+                    timing recommendations.
+                  </p>
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        if (collectingTargetId != null) {
+                          // Re-check status
+                          setCollectingLoading(true);
+                          Promise.all([
+                            recommendationsApi.list(),
+                            recommendationsApi.dataHealth(collectingTargetId).catch(() => null),
+                          ]).then(([recs, health]) => {
+                            setCollectingHasRec(recs.some(r => r.intersection_id === collectingTargetId));
+                            setCollectingLastDetection(health?.last_detection_at ?? null);
+                          }).catch(() => {}).finally(() => setCollectingLoading(false));
+                        }
+                      }}
+                    >
+                      <RefreshCw className="size-3 mr-1.5" />
+                      Refresh status
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => {
+                        handleClose();
+                        navigate('/');
+                      }}
+                    >
+                      Go to Intersections
+                      <ExternalLink className="size-3 ml-1.5" />
+                    </Button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
