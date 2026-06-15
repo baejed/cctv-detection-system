@@ -37,3 +37,20 @@ Commit: db4d0a5
     stores createdIntersectionId for downstream steps; shows toast on success
   - creating spinner shown in footer Next button while API calls in flight
   - Existing IntersectionSetupWizard modal is still available for direct use elsewhere
+
+### Issue #4 — Draw regions step (guided overlay) ✅ DONE (2026-06-15)
+Commit: 4f705fe
+
+- eyegila/src/components/OnboardingWizard.tsx:
+  - 'regions' step now renders as a compact floating guide panel (fixed top-4 right-4 z-50 w-80)
+    instead of the full-screen takeover, so CameraDetail is accessible beneath it
+  - loadRegionStatus(intersectionId): fetches cctvsApi.list() + /regions/, cross-references
+    to produce {id, name, hasRegions}[] for every camera in the intersection
+  - Entering 'regions' step: auto-resolves target intersection — uses createdIntersectionId
+    from the wizard session, or falls back to the most-recently created intersection when
+    the wizard is resumed after a close
+  - Each camera row shows ✓/○ status badge + "Open ↗" link to /cameras/:id
+  - Refresh button re-calls loadRegionStatus() without leaving the current page
+  - Next button is disabled until regionCams.every(c => c.hasRegions); green banner
+    "All cameras have regions — ready to continue!" shown when satisfied
+  - Back → returns to 'assign' step (full-screen wizard); Next → advances to 'timing'
