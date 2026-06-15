@@ -1,0 +1,734 @@
+import { useState, useEffect, useCallback } from 'react';
+import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
+import { toast } from 'sonner';
+import { onboardingApi } from '@/services/onboarding';
+import { cctvsApi } from '@/services/cctvs';
+import { intersectionsApi } from '@/services/intersections';
+import { streetsApi } from '@/services/streets';
+import type { ArmDirection } from '@/types';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { cn } from '@/lib/utils';
+import {
+  X, ArrowRight, ArrowLeft, Check,
+  Loader2, ScanSearch, Plus, Wifi, Server,
+} from 'lucide-react';
+
+// Leaflet default icon fix (works once per module load)
+delete (L.Icon.Default.prototype as unknown as Record<string, unknown>)._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
+  iconUrl:       'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+  shadowUrl:     'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+});
+
+const TAGUM_CENTER: [number, number] = [7.4478, 125.8057];
+
+const DIRECTIONS: { value: ArmDirection; label: string }[] = [
+  { value: 'northbound', label: 'Northbound (N)' },
+  { value: 'southbound', label: 'Southbound (S)' },
+  { value: 'eastbound',  label: 'Eastbound (E)'  },
+  { value: 'westbound',  label: 'Westbound (W)'  },
+  { value: 'unknown',    label: 'Unknown'         },
+];
+
+const DEFAULT_DIR_ORDER: ArmDirection[] = ['northbound', 'southbound', 'eastbound', 'westbound', 'unknown'];
+
+const WIZARD_STEPS = [
+  { id: 'welcome',    label: 'Preview'       },
+  { id: 'discover',  label: 'Find cameras'  },
+  { id: 'name',      label: 'Name & pin'    },
+  { id: 'assign',    label: 'Directions'    },
+  { id: 'regions',   label: 'Draw regions'  },
+  { id: 'timing',    label: 'Enter timing'  },
+  { id: 'collecting',label: 'Collecting'    },
+] as const;
+
+type WizardStepId = typeof WIZARD_STEPS[number]['id'];
+
+const STEP_IDS = WIZARD_STEPS.map(s => s.id);
+
+function isValidStepId(s: string | null): s is WizardStepId {
+  return s !== null && (STEP_IDS as readonly string[]).includes(s);
+}
+
+interface FoundCamera {
+  key: string;
+  address: string;
+  rtsp_url: string;
+  selected: boolean;
+}
+
+interface WizardCamera {
+  key: string;
+  rtsp_url: string;
+  name: string;
+  direction: ArmDirection;
+}
+
+function MapClickPicker({ onPick }: { onPick: (lat: number, lng: number) => void }) {
+  useMapEvents({ click: e => onPick(e.latlng.lat, e.latlng.lng) });
+  return null;
+}
+
+export interface OnboardingWizardProps {
+  open: boolean;
+  initialStep: string | null;
+  onClose: (currentStep: string | null) => void;
+}
+
+export function OnboardingWizard({ open, initialStep, onClose }: OnboardingWizardProps) {
+  const [stepId, setStepId]   = useState<WizardStepId>('welcome');
+  const [saving, setSaving]   = useState(false);
+  const [creating, setCreating] = useState(false);
+
+  // ── Discover step state ────────────────────────────────────────────────────
+  const [found, setFound]         = useState<FoundCamera[]>([]);
+  const [scanning, setScanning]   = useState(false);
+  const [nvrScanning, setNvrScanning] = useState(false);
+  const [showNvr, setShowNvr]     = useState(false);
+  const [nvrHost, setNvrHost]     = useState('');
+  const [nvrUser, setNvrUser]     = useState('admin');
+  const [nvrPass, setNvrPass]     = useState('');
+  const [manualUrl, setManualUrl] = useState('');
+  const [existingRtsp, setExistingRtsp] = useState<Set<string>>(new Set());
+
+  // ── Name step state ────────────────────────────────────────────────────────
+  const [interName, setInterName] = useState('');
+  const [lat, setLat]             = useState('');
+  const [lng, setLng]             = useState('');
+
+  // ── Assign step state ─────────────────────────────────────────────────────
+  const [cameras, setCameras]     = useState<WizardCamera[]>([]);
+
+  // ── Created intersection ───────────────────────────────────────────────────
+  const [createdIntersectionId, setCreatedIntersectionId] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (open) {
+      setStepId(isValidStepId(initialStep) ? initialStep : 'welcome');
+    }
+  }, [open, initialStep]);
+
+  // Pre-fetch existing camera RTSP URLs so we can filter duplicates
+  useEffect(() => {
+    if (!open) return;
+    cctvsApi.list().then(cams => {
+      setExistingRtsp(new Set(cams.map(c => c.rtsp_url)));
+    }).catch(() => {});
+  }, [open]);
+
+  const stepIndex = WIZARD_STEPS.findIndex(s => s.id === stepId);
+
+  const goTo = useCallback(async (newId: WizardStepId) => {
+    setSaving(true);
+    try {
+      await onboardingApi.setProgress(newId);
+      setStepId(newId);
+    } finally {
+      setSaving(false);
+    }
+  }, []);
+
+  // ── Discover helpers ───────────────────────────────────────────────────────
+
+  async function scanNetwork() {
+    setScanning(true);
+    try {
+      const results = await cctvsApi.discover();
+      if (results.length === 0) {
+        toast.info('No ONVIF cameras found on the network. Try NVR scan or add manually.');
+      }
+      setFound(prev => {
+        const existingKeys = new Set(prev.map(f => f.address));
+        const fresh = results
+          .filter(r => !existingKeys.has(r.address) && !existingRtsp.has(r.rtsp_url ?? ''))
+          .map((r, i) => ({
+            key:      `onvif-${r.address}-${i}`,
+            address:  r.address,
+            rtsp_url: r.rtsp_url ?? `rtsp://${r.address}:554/stream1`,
+            selected: true,
+          }));
+        return [...prev, ...fresh];
+      });
+    } catch {
+      toast.error('Network scan failed');
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  async function scanNvr() {
+    if (!nvrHost) return;
+    setNvrScanning(true);
+    try {
+      const result = await cctvsApi.scanNvr({
+        host: nvrHost, username: nvrUser, password: nvrPass,
+        max_channels: 16, subtype: 1,
+      });
+      if (!result.reachable) {
+        toast.error(`NVR at ${nvrHost} is not reachable`);
+        return;
+      }
+      setFound(prev => {
+        const existingUrls = new Set(prev.map(f => f.rtsp_url));
+        const fresh = result.channels
+          .filter(ch => !existingUrls.has(ch.rtsp_url) && !existingRtsp.has(ch.rtsp_url))
+          .map(ch => ({
+            key:      `nvr-${nvrHost}-ch${ch.channel}`,
+            address:  `${nvrHost} Ch${ch.channel}`,
+            rtsp_url: ch.rtsp_url,
+            selected: true,
+          }));
+        return [...prev, ...fresh];
+      });
+      toast.success(`Found ${result.channels.length} channels on NVR`);
+    } catch {
+      toast.error('NVR scan failed');
+    } finally {
+      setNvrScanning(false);
+    }
+  }
+
+  function addManual() {
+    if (!manualUrl.trim()) return;
+    if (existingRtsp.has(manualUrl.trim())) {
+      toast.info('This camera is already in the system');
+      return;
+    }
+    setFound(prev => [...prev, {
+      key:      `manual-${Date.now()}`,
+      address:  'Manual entry',
+      rtsp_url: manualUrl.trim(),
+      selected: true,
+    }]);
+    setManualUrl('');
+  }
+
+  function toggleCamera(key: string) {
+    setFound(prev => prev.map(f => f.key === key ? { ...f, selected: !f.selected } : f));
+  }
+
+  function updateRtsp(key: string, url: string) {
+    setFound(prev => prev.map(f => f.key === key ? { ...f, rtsp_url: url } : f));
+  }
+
+  function updateCameraField(key: string, field: 'name' | 'direction', value: string) {
+    setCameras(prev => prev.map(c => c.key === key ? { ...c, [field]: value } : c));
+  }
+
+  // ── Create intersection (assign → regions) ─────────────────────────────────
+
+  async function createIntersectionAndAdvance() {
+    setCreating(true);
+    try {
+      const inter = await intersectionsApi.create({
+        name:      interName.trim(),
+        latitude:  parseFloat(lat) || TAGUM_CENTER[0],
+        longitude: parseFloat(lng) || TAGUM_CENTER[1],
+      });
+
+      const uniqueDirs = [...new Set(cameras.map(c => c.direction))];
+      await Promise.all([
+        ...uniqueDirs.map(dir =>
+          streetsApi.create({
+            intersection_id: inter.id,
+            name: dir.charAt(0).toUpperCase() + dir.slice(1),
+            arm_direction: dir as ArmDirection,
+          })
+        ),
+        ...cameras.map(c =>
+          cctvsApi.create({ intersection_id: inter.id, name: c.name, rtsp_url: c.rtsp_url })
+        ),
+      ]);
+
+      setCreatedIntersectionId(inter.id);
+      toast.success(`${interName} created`);
+      await goTo('regions');
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Failed to create intersection');
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  // ── Step-aware Next handler ────────────────────────────────────────────────
+
+  async function handleNext() {
+    const nextStep = WIZARD_STEPS[stepIndex + 1].id;
+
+    if (stepId === 'discover') {
+      const selected = found.filter(f => f.selected);
+      if (selected.length === 0) { toast.error('Select at least one camera'); return; }
+      await goTo(nextStep);
+    } else if (stepId === 'name') {
+      if (!interName.trim()) { toast.error('Enter an intersection name'); return; }
+      // Prepare cameras array from selected found cameras
+      const selected = found.filter(f => f.selected);
+      setCameras(selected.map((f, i) => ({
+        key:       f.key,
+        rtsp_url:  f.rtsp_url,
+        name:      `Camera ${i + 1}`,
+        direction: DEFAULT_DIR_ORDER[i] ?? 'unknown',
+      })));
+      await goTo(nextStep);
+    } else if (stepId === 'assign') {
+      await createIntersectionAndAdvance();
+    } else {
+      await goTo(nextStep);
+    }
+  }
+
+  async function handleClose() {
+    try { await onboardingApi.setProgress(stepId); } catch {}
+    onClose(stepId);
+  }
+
+  if (!open) return null;
+
+  const canGoBack    = stepIndex > 0;
+  const isLast       = stepIndex === WIZARD_STEPS.length - 1;
+  const selectedCount = found.filter(f => f.selected).length;
+  const busy         = saving || creating;
+
+  return (
+    <div className="fixed inset-0 z-50 bg-background flex flex-col">
+      {/* Header */}
+      <div className="flex items-center justify-between px-8 py-4 border-b border-border shrink-0">
+        <div className="flex items-center gap-3">
+          <img src="/logo.png" alt="EyeGila" className="size-7 rounded-md object-contain" />
+          <span className="font-bold text-lg tracking-tight">EyeGila Setup</span>
+        </div>
+        <button
+          type="button"
+          onClick={handleClose}
+          className="p-2 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+          aria-label="Close wizard — progress is saved"
+        >
+          <X className="size-5" />
+        </button>
+      </div>
+
+      {/* Step indicators */}
+      <div className="flex items-center justify-center gap-0.5 px-8 py-3 border-b border-border overflow-x-auto shrink-0">
+        {WIZARD_STEPS.map((step, idx) => {
+          const isCurrent = step.id === stepId;
+          const isDone    = idx < stepIndex;
+          return (
+            <div key={step.id} className="flex items-center shrink-0">
+              <div className={cn(
+                'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all select-none',
+                isCurrent && 'bg-primary text-primary-foreground',
+                isDone    && 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400',
+                !isCurrent && !isDone && 'text-muted-foreground',
+              )}>
+                <span className={cn(
+                  'flex items-center justify-center size-4 rounded-full text-[10px] font-bold shrink-0',
+                  isCurrent && 'bg-white/20',
+                  isDone    && 'bg-emerald-500/20',
+                  !isCurrent && !isDone && 'bg-muted/60',
+                )}>
+                  {isDone ? <Check className="size-2.5" /> : idx + 1}
+                </span>
+                <span className="hidden sm:inline">{step.label}</span>
+              </div>
+              {idx < WIZARD_STEPS.length - 1 && (
+                <div className={cn('h-px w-3 shrink-0', isDone ? 'bg-emerald-400/40' : 'bg-border')} />
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Step content */}
+      <div className="flex-1 overflow-y-auto">
+        <div className="max-w-2xl mx-auto px-8 py-10">
+
+          {/* ── Welcome ─────────────────────────────────────────────────────── */}
+          {stepId === 'welcome' && (
+            <div className="flex flex-col gap-6">
+              <div>
+                <h2 className="text-2xl font-semibold">Welcome to EyeGila</h2>
+                <p className="text-muted-foreground mt-2">
+                  This wizard guides you through setting up traffic monitoring. Below is a preview
+                  of the warrant evidence chart, timing comparison, and simulation you'll see once
+                  your cameras are collecting data.
+                </p>
+              </div>
+              <div className="rounded-xl border border-border bg-muted/30 p-12 flex flex-col items-center gap-4 text-center">
+                <p className="text-sm text-muted-foreground">
+                  Demo preview will appear here once warrant chart (Issue #7), timing comparison
+                  (Issue #8), and simulation (Issue #9) are implemented.
+                </p>
+              </div>
+              <p className="text-sm text-muted-foreground">
+                Click <strong>Next</strong> to start connecting your cameras.
+              </p>
+            </div>
+          )}
+
+          {/* ── Discover ─────────────────────────────────────────────────────── */}
+          {stepId === 'discover' && (
+            <div className="flex flex-col gap-6">
+              <div>
+                <h2 className="text-2xl font-semibold">Find your cameras</h2>
+                <p className="text-muted-foreground mt-2">
+                  Scan the local network for ONVIF cameras, query an NVR/DVR, or add a camera
+                  by pasting its RTSP URL directly.
+                </p>
+              </div>
+
+              {/* ONVIF scan */}
+              <div className="flex flex-col gap-2">
+                <p className="text-sm text-muted-foreground">
+                  Scan the local network for ONVIF cameras (takes ~3 seconds).
+                </p>
+                <Button
+                  onClick={scanNetwork}
+                  disabled={scanning}
+                  className="w-full sm:w-auto"
+                  size="lg"
+                >
+                  {scanning
+                    ? <Loader2 className="size-4 mr-2 animate-spin" />
+                    : <ScanSearch className="size-4 mr-2" />}
+                  {scanning ? 'Scanning network…' : 'Scan Network'}
+                </Button>
+              </div>
+
+              {/* NVR scan toggle */}
+              <div className="flex flex-col gap-2">
+                <button
+                  type="button"
+                  className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors w-fit"
+                  onClick={() => setShowNvr(v => !v)}
+                >
+                  <Server className="size-3.5" />
+                  {showNvr ? 'Hide NVR form' : 'Scan NVR / DVR instead'}
+                </button>
+                {showNvr && (
+                  <div className="rounded-lg border border-border bg-muted/30 p-4 flex flex-col gap-3">
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="col-span-3 sm:col-span-1 flex flex-col gap-1">
+                        <Label className="text-xs">NVR IP</Label>
+                        <Input
+                          placeholder="192.168.1.100"
+                          value={nvrHost}
+                          onChange={e => setNvrHost(e.target.value)}
+                          className="h-8 text-sm"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <Label className="text-xs">Username</Label>
+                        <Input
+                          placeholder="admin"
+                          value={nvrUser}
+                          onChange={e => setNvrUser(e.target.value)}
+                          className="h-8 text-sm"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <Label className="text-xs">Password</Label>
+                        <Input
+                          type="password"
+                          value={nvrPass}
+                          onChange={e => setNvrPass(e.target.value)}
+                          className="h-8 text-sm"
+                        />
+                      </div>
+                    </div>
+                    <Button
+                      size="sm"
+                      onClick={scanNvr}
+                      disabled={nvrScanning || !nvrHost}
+                      className="w-fit"
+                    >
+                      {nvrScanning
+                        ? <Loader2 className="size-3.5 mr-1.5 animate-spin" />
+                        : <Server className="size-3.5 mr-1.5" />}
+                      Scan NVR
+                    </Button>
+                  </div>
+                )}
+              </div>
+
+              {/* Found cameras list */}
+              {found.length > 0 && (
+                <div className="flex flex-col gap-2">
+                  <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                    {found.length} camera{found.length !== 1 ? 's' : ''} found — select which to add
+                  </p>
+                  <div className="flex flex-col gap-2">
+                    {found.map(cam => (
+                      <label
+                        key={cam.key}
+                        className={cn(
+                          'flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition-colors',
+                          cam.selected
+                            ? 'border-primary/60 bg-primary/5'
+                            : 'border-border bg-muted/20',
+                        )}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={cam.selected}
+                          onChange={() => toggleCamera(cam.key)}
+                          className="mt-0.5 accent-primary"
+                        />
+                        <div className="flex-1 flex flex-col gap-1.5 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <Wifi className="size-3.5 text-emerald-500 shrink-0" />
+                            <span className="text-sm font-medium truncate">{cam.address}</span>
+                          </div>
+                          <Input
+                            value={cam.rtsp_url}
+                            onChange={e => updateRtsp(cam.key, e.target.value)}
+                            onClick={e => e.stopPropagation()}
+                            placeholder="rtsp://..."
+                            className="h-7 text-xs font-mono"
+                          />
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Manual entry */}
+              <div className="flex flex-col gap-1.5">
+                <p className="text-xs text-muted-foreground">Or add a camera by RTSP URL directly:</p>
+                <div className="flex gap-2">
+                  <Input
+                    placeholder="rtsp://192.168.1.200:554/stream1"
+                    value={manualUrl}
+                    onChange={e => setManualUrl(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && addManual()}
+                    className="font-mono text-sm"
+                  />
+                  <Button variant="outline" onClick={addManual} disabled={!manualUrl.trim()}>
+                    <Plus className="size-4" />
+                  </Button>
+                </div>
+              </div>
+
+              {selectedCount > 0 && (
+                <p className="text-xs text-muted-foreground">
+                  {selectedCount} camera{selectedCount !== 1 ? 's' : ''} selected — click Next to continue.
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* ── Name ────────────────────────────────────────────────────────── */}
+          {stepId === 'name' && (
+            <div className="flex flex-col gap-6">
+              <div>
+                <h2 className="text-2xl font-semibold">Name your intersection</h2>
+                <p className="text-muted-foreground mt-2">
+                  Give the intersection a name (e.g. "Magugpo Junction") and pin its location
+                  on the map so reports are tied to the right place.
+                </p>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="inter-name" className="text-sm font-medium">Intersection name</Label>
+                <Input
+                  id="inter-name"
+                  autoFocus
+                  autoComplete="off"
+                  placeholder="e.g. Magugpo Junction, City Hall…"
+                  value={interName}
+                  onChange={e => setInterName(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && !busy && handleNext()}
+                  className="text-base h-11"
+                />
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <p className="text-xs text-muted-foreground">
+                  Pin the location on the map (optional — click to place):
+                </p>
+                <div
+                  className="rounded-lg overflow-hidden border border-border"
+                  style={{ height: 240, isolation: 'isolate' }}
+                >
+                  <MapContainer
+                    center={lat && lng ? [parseFloat(lat), parseFloat(lng)] : TAGUM_CENTER}
+                    zoom={14}
+                    style={{ height: '100%' }}
+                  >
+                    <TileLayer
+                      attribution="&copy; OpenStreetMap"
+                      url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                    />
+                    <MapClickPicker onPick={(la, lo) => {
+                      setLat(la.toFixed(6));
+                      setLng(lo.toFixed(6));
+                    }} />
+                    {lat && lng && <Marker position={[parseFloat(lat), parseFloat(lng)]} />}
+                  </MapContainer>
+                </div>
+                {lat && lng && (
+                  <p className="text-xs text-muted-foreground font-mono">{lat}, {lng}</p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ── Assign ──────────────────────────────────────────────────────── */}
+          {stepId === 'assign' && (
+            <div className="flex flex-col gap-6">
+              <div>
+                <h2 className="text-2xl font-semibold">Assign approach directions</h2>
+                <p className="text-muted-foreground mt-2">
+                  Tell the system which direction each camera faces — Northbound, Southbound,
+                  Eastbound, or Westbound. This determines how volumes are reported per approach.
+                </p>
+              </div>
+
+              <div className="flex flex-col gap-3">
+                {cameras.map((cam, i) => (
+                  <div
+                    key={cam.key}
+                    className="rounded-lg border border-border bg-muted/20 p-4 flex flex-col gap-3"
+                  >
+                    <p className="text-xs text-muted-foreground font-mono truncate">{cam.rtsp_url}</p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="flex flex-col gap-1.5">
+                        <Label className="text-xs">Camera name</Label>
+                        <Input
+                          value={cam.name}
+                          onChange={e => updateCameraField(cam.key, 'name', e.target.value)}
+                          placeholder={`Camera ${i + 1}`}
+                          className="h-8 text-sm"
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1.5">
+                        <Label className="text-xs">Approach direction</Label>
+                        <Select
+                          value={cam.direction}
+                          onValueChange={v => updateCameraField(cam.key, 'direction', v)}
+                        >
+                          <SelectTrigger className="h-8 text-sm">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {DIRECTIONS.map(d => (
+                              <SelectItem key={d.value} value={d.value}>{d.label}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {creating && (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="size-4 animate-spin" />
+                  Creating intersection and cameras…
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Regions (placeholder — Issue #4) ────────────────────────────── */}
+          {stepId === 'regions' && (
+            <div className="flex flex-col gap-6">
+              <div>
+                <h2 className="text-2xl font-semibold">Draw detection regions</h2>
+                <p className="text-muted-foreground mt-2">
+                  Draw a polygon on each camera's live frame to mark the counting zone for each
+                  approach. Vehicles crossing the polygon are counted.
+                </p>
+              </div>
+              {createdIntersectionId != null && (
+                <div className="rounded-lg border border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950/20 p-4 text-sm text-emerald-700 dark:text-emerald-400">
+                  Intersection #{createdIntersectionId} created. Open each camera's detail page to draw regions.
+                </div>
+              )}
+              <div className="rounded-xl border border-dashed border-border bg-muted/20 p-12 flex flex-col items-center gap-3 text-center">
+                <p className="text-sm text-muted-foreground">
+                  Guided region-drawing overlay will be available here (Issue #4).
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* ── Timing (placeholder — Issue #5) ────────────────────────────── */}
+          {stepId === 'timing' && (
+            <div className="flex flex-col gap-6">
+              <div>
+                <h2 className="text-2xl font-semibold">Enter current signal timing</h2>
+                <p className="text-muted-foreground mt-2">
+                  Enter the existing signal cycle length and green split per approach.
+                  A live phase diagram shows how the time is allocated so you can verify it
+                  before the system recommends improvements.
+                </p>
+              </div>
+              <div className="rounded-xl border border-dashed border-border bg-muted/20 p-12 flex flex-col items-center gap-3 text-center">
+                <p className="text-sm text-muted-foreground">
+                  Timing form and live Gantt diagram will be available here (Issue #5).
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* ── Collecting ───────────────────────────────────────────────────── */}
+          {stepId === 'collecting' && (
+            <div className="flex flex-col gap-6">
+              <div>
+                <h2 className="text-2xl font-semibold">Cameras are collecting data</h2>
+                <p className="text-muted-foreground mt-2">
+                  Your cameras are now counting vehicles. The system needs at least 8 qualifying
+                  hours of data to run a MUTCD warrant analysis and generate timing recommendations.
+                </p>
+              </div>
+              <div className="rounded-lg border border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950/20 p-8 flex flex-col items-center gap-4 text-center">
+                <p className="text-sm text-emerald-700 dark:text-emerald-400 font-semibold">
+                  Detection is running in the background
+                </p>
+                <p className="text-xs text-muted-foreground max-w-md">
+                  You can close this wizard and use the app normally. When enough data is collected,
+                  run a warrant analysis from the Intersections page to see results.
+                </p>
+              </div>
+            </div>
+          )}
+
+        </div>
+      </div>
+
+      {/* Footer navigation */}
+      <div className="flex items-center justify-between px-8 py-4 border-t border-border shrink-0">
+        <Button
+          variant="outline"
+          onClick={() => canGoBack && goTo(WIZARD_STEPS[stepIndex - 1].id)}
+          disabled={!canGoBack || busy}
+        >
+          <ArrowLeft className="size-4 mr-2" />
+          Back
+        </Button>
+        <span className="text-xs text-muted-foreground">
+          Step {stepIndex + 1} of {WIZARD_STEPS.length}
+        </span>
+        {isLast ? (
+          <Button onClick={handleClose} disabled={busy}>
+            Finish
+          </Button>
+        ) : (
+          <Button onClick={handleNext} disabled={busy}>
+            {creating ? <Loader2 className="size-4 mr-2 animate-spin" /> : null}
+            Next
+            <ArrowRight className="size-4 ml-2" />
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}

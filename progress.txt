@@ -1,153 +1,39 @@
-## Warrant Model Integration — Progress
+## Onboarding & Visualization — Progress
 
-Source: docs/superpowers/plans/2026-05-13-warrant-model-integration.md
-        docs/superpowers/plans/2026-05-14-recommendations-page-revamp.md
-        docs/superpowers/plans/2026-05-14-recommendations-ui-surfacing.md
+Source: docs/onboarding-issues.md
 
-### Warrant MLP Integration ✅ DONE (prior to 2026-05-18)
+### Issue #1 — Wizard shell + "Get Started" entry + per-user progress ✅ DONE (prior session)
 
-- server/ml/: WarrantMLP nn.Module, load_warrant_model(), predict_warrants(), WarrantArtifacts
-- warrant_model.pt + warrant_scaler.pkl shipped in server/ml/
-- server/main.py: lifespan loads artifacts into app.state.warrant_artifacts once at startup
-- server/routers/recommendations.py: replaced rule-based MUTCD thresholds with model-driven
-  _compute_features_from_rows() / _compute_features() / _analyze() pipeline
-- Features: major_volume, minor_volume, peds, vpm, phf from most-recent-complete-hour
-- Alembic migration 0004: adds major_volume, minor_volume, peds, vpm, phf,
-  recommended_confidence, hour_start to recommendations + ix_recommendations_intersection_generated
-- Insert-not-replace on regenerate; GET / returns DISTINCT ON latest per intersection
-- GET /recommendations/history/{id}?limit= endpoint (clamped to 200)
-- _rec_to_response() helper; all endpoints return structured metric fields
-- tests/test_recommendations.py: 8 unit (predict_warrants + feature extraction) + 6 integration
+- OnboardingWizard.tsx: full-page takeover with 7 steps, step indicators, back/next nav
+- "Get Started" in Layout sidebar (Rocket icon, always visible)
+- "Get Started" on empty Intersections empty-state (onOpenWizard from outlet context)
+- server/routers/onboarding.py: GET/PATCH /onboarding/progress per-user
+- alembic/versions/0015_user_wizard_step.py: wizard_step column on users table
+- eyegila/src/services/onboarding.ts: getProgress / setProgress
 
-### Recommendations Page Revamp ✅ DONE (prior to 2026-05-18)
+### Issue #7 — Warrant evidence 24-hour bar chart ✅ DONE (2026-06-15)
+Commit: db4d0a5
 
-- eyegila/src/components/recommendations/: SummaryStrip, FilterBar, RecommendationsTable,
-  LatestTab, HistoryTab, DetailSheet, statusBucket.ts
-- eyegila/src/pages/Recommendations.tsx: rewritten around sortable table + right-side drawer
-- Table: status badge, W1/W2/W4 prob cells, WL1/WL2/WL3 pills, Major, Peds, Timing, Generated
-- DetailSheet: Latest tab (probability bars, feature grid, notes editor) +
-  History tab (recharts trend chart + collapsible run list)
-- FilterBar: status chips, warrant chips + min-prob slider, name search
-- SummaryStrip: warranted/borderline/not-warranted/no-data counts
+- eyegila/src/components/recommendations/LatestTab.tsx:
+  - buildHourlyBuckets(): groups AggregationRow[] by hour into vehicleCounts + pedCounts arrays
+  - WarrantChart component: Recharts BarChart with Cell-colored bars (emerald = qualifying,
+    muted = non-qualifying), ReferenceLine at MUTCD threshold, qualifying hrs counter
+  - useEffect fetches last 24h hourly aggregation data alongside existing health check
+  - W1 vehicle chart (≥400 veh/hr, 8 qualifying hours target) always shown
+  - W4 pedestrian chart (≥100 ped/hr) shown only when pedestrian data present
+  - Empty-state fallback: dashed box "No detection data for last 24 hours"
+  - Existing probability bars + threshold table retained below chart
 
-### UI Surfacing + Diagnostic Logging ✅ DONE (prior to 2026-05-18)
+### Issue #3 — ONVIF discovery + camera grouping + direction assignment ✅ DONE (2026-06-15)
 
-- eyegila/src/pages/Intersections.tsx: warrant status badge per intersection row
-- eyegila/src/pages/Dashboard.tsx: warrant badge on intersection cards; warrant card hydrated
-  with W1/W2/W4 met/confidence and "View details" vs "Run warrant analysis" link
-- server/routers/recommendations.py: structured logging (analyze + history endpoints)
-- eyegila/src/pages/Recommendations.tsx: DEBUG-gated console logging on load/regenerate
-
----
-
-## Signal Timing & Simulation — Progress
-
-Source: docs/issues-signal-timing.md
-Execution order: Issues 1, 2, 3 (parallel) → Issue 4 → Issues 5, 6 (parallel) → Issue 7
-
----
-
-### Issue 1 — Signal status + existing timing baseline ✅ DONE (2026-05-18)
-Commit: 31ebe5f
-
-- Added signal_status (unsignalized/fixed_time/actuated), existing_cycle_length,
-  existing_green_splits columns to Intersection model
-- Alembic migration 0005_signal_status_baseline
-- PATCH /intersections/{id}/timing endpoint
-- IntersectionResponse computes effective_green_splits (stored or equal-split default)
-- Frontend: Signal Timing modal on Intersections page (status + cycle + JSON splits form)
-- Integration tests: round-trip, equal-split default, invalid status, 404
-
----
-
-### Issue 2 — PCE configuration layer ✅ DONE (2026-05-18)
-Commit: 681e54f
-
-- DPWH_DEFAULTS: motorcycle=0.33, pedicab/tricycle=1.5, car=1.0, jeepney=1.5, bicycle=0.5, bus/truck=2.5
-- pce_overrides + pce_calibrated_values tables (migration 0006)
-- server/pce.py: resolve_pce() (3-tier), calibrate_pce() (7-day ±25% scale, clamped)
-- server/routers/pce.py: GET/POST/DELETE overrides + POST calibrate endpoints
-- Frontend: PCE modal with tier badges (default/calibrated/override), override form, recalibrate button
-- Tests: unit (priority order, calibration clamp), integration (CRUD, override precedence)
-
-### Issue 3 — Time-of-day plan configuration ✅ DONE (2026-05-18)
-Commit: 355f74c
-
-- TodChunk model: tod_chunks table, start_minutes/end_minutes (Integer, 0–1440)
-- Alembic migration 0007: creates table, seeds 5 default chunks for existing intersections
-- server/tod.py: TOD_DEFAULTS, seed_tod_chunks(), get_active_chunk(), validate_chunks(), minutes↔HH:MM helpers
-- POST /intersections/ seeds 5 default chunks on creation
-- GET /intersections/{id}/tod-chunks, PUT /intersections/{id}/tod-chunks/{chunk_id}
-- GET /intersections/{id}/tod-chunks/active?ts= returns active chunk for a given timestamp
-- Validation: chunks must be contiguous, cover 00:00–24:00, start < end
-- Frontend: Clock "TOD" button + inline-edit modal on Intersections page
-- Tests: 8 unit tests (conversion, validation, active lookup) + 6 integration tests
-
-### Issue 4 — Webster's formula engine + timing recommendations ✅ DONE (2026-05-18)
-Commit: 77d3fea
-
-- TimingRecommendation model + migration 0008 (timing_recommendations table)
-- Intersection gains 4 DPWH-default timing config columns (lost_time_per_phase=4,
-  all_red_clearance=3, min_cycle_length=40, max_cycle_length=120)
-- server/webster.py: compute_timing() (Webster's formula, Y≥0.9 clamp, proportional
-  green splits), _pcu_flow_per_street() (7-day rolling PCU/hr per TOD chunk),
-  generate_timing_for_recommendation() (per-chunk + overall rows)
-- server/routers/timing.py: GET /timing-recommendations/{intersection_id}
-- recommendations.py: timing generation triggered in POST generate/{id} and
-  generate-all; list endpoint LEFT JOINs for timing_cycle/timing_chunk fields
-- Frontend: Timing column in RecommendationsTable ("90s (PM Peak)")
-- tests/test_timing.py: 10 unit + 6 integration tests
-
-### Issue 5 — Local warrant layer (W-Local 1/2/3) ✅ DONE (2026-05-18)
-Commit: 700123f
-
-- server/local_warrants.py: pure helpers (_compute_w_local_1/2/3) + DB-backed
-  evaluate_w_local_1/2/3/evaluate_all; configurable thresholds with DPWH defaults
-  (W-Local 1: 60% moto/pedicab ratio, W-Local 2: 70% peak concentration,
-  W-Local 3: 30 PCU/hr min per approach → signal_off)
-- Alembic migration 0009: w_local_1/2/3 threshold columns on intersections,
-  w_local_* result columns on recommendations, signal_off on timing_recommendations
-- PATCH /intersections/{id}/local-warrant-config for per-intersection threshold config
-- evaluate_all() called in generate/generate-all; signal_off_chunks forwarded to
-  generate_timing_for_recommendation to mark affected timing rows
-- RecommendationResponse + list endpoint expose all 6 W-Local fields
-- TimingChunkResponse exposes signal_off flag
-- Frontend: WL1/WL2/WL3 pill columns in RecommendationsTable (met/not-met styling,
-  sortable, with tooltip description of each warrant)
-- Tests: 11 unit tests (pure function logic, edge cases) + 6 integration tests
-
-### Issue 6 — Analytical delay simulation + Signal Timing page ✅ DONE (2026-05-18)
-Commit: bcc121b
-
-- server/simulation.py: compute_uniform_delay (Webster's uniform delay d=C(1-λ)²/(2(1-x))),
-  compute_hcm_gap_delay (HCM 6th ed. TWSC gap-acceptance potential capacity + control delay),
-  _queue_series_signalized/_unsignalized (per-minute queue, 60-minute window),
-  generate_simulation() (before/after per TOD chunk)
-- common/models.py: SimulationResult model (delay_before/after, volume_pcu_hr,
-  vehicle_hours_saved, queue_series_before/after JSON) + relationships
-- Alembic migration 0010: simulation_results table with indexes
-- server/routers/simulation.py: GET /simulation/{intersection_id} → per-chunk + daily summary
-- recommendations.py: generate_simulation() called in both generate/{id} and generate-all
-- eyegila/src/services/simulation.ts: simulationApi.get()
-- eyegila/src/pages/SignalTiming.tsx: per-chunk delay table (before/after/improvement/vehicle-hours),
-  daily summary strip, 60-min queue-length time-series chart with before/after toggle + chunk
-  selector (Recharts LineChart, dashed=before, solid=after, one color per approach)
-- eyegila/src/App.tsx: /timing/:id route
-- RecommendationsTable.tsx: BarChart2 icon button linking to /timing/:id when timing exists
-- tests/test_simulation.py: 11 unit tests (delay formulas, capping, queue series) + 6 integration tests
-
-### Issue 7 — Top-down 2D canvas simulation ✅ DONE (2026-05-18)
-Commit: d3c8aa4
-
-- eyegila/src/services/timing.ts: timingApi.list() — wraps GET /timing-recommendations/{id}
-- eyegila/src/components/IntersectionCanvas.tsx: HTML Canvas API component (no external deps)
-  - Top-down 4-leg intersection (N/E/S/W arms), dark road theme with dashed center lines + stop lines
-  - Per-approach colored queue bars grow from stop line outward during red, clear during green
-  - Signal dots cycle green/red through 4-phase rotation using Webster's splits (After mode);
-    show amber/yellow for Before mode or signal_off chunks
-  - Play/pause + reset controls; speed multiplier 1×/5×/10× (60/300/600 sim-sec per real-sec)
-  - Before/After toggle — switches queue series; After shows signal cycling, Before shows static amber
-  - RAF loop permanent (empty deps); all animation state in refs (no stale closure risk)
-  - Responsive via ResizeObserver (5:3 aspect ratio); resets on chunk change
-- eyegila/src/pages/SignalTiming.tsx: co-fetches timingApi.list() alongside simulationApi.get();
-  adds canvas section below queue chart for the active TOD chunk
+- eyegila/src/components/OnboardingWizard.tsx:
+  - Replaced placeholder stubs for discover/name/assign steps with real working UI
+  - discover step: ONVIF scan button, NVR/DVR form (collapsible), manual RTSP URL entry,
+    camera checklist with inline RTSP edit; existing cameras filtered out via cctvsApi.list()
+  - name step: intersection name input + Leaflet map click-to-pin (same map as IntersectionSetupWizard)
+  - assign step: per-camera name + direction (N/S/E/W) selects with default direction order
+  - handleNext() validates per step (≥1 camera, non-empty name) before advancing
+  - On assign → regions: creates intersection, streets (one per unique direction), cameras via API;
+    stores createdIntersectionId for downstream steps; shows toast on success
+  - creating spinner shown in footer Next button while API calls in flight
+  - Existing IntersectionSetupWizard modal is still available for direct use elsewhere
