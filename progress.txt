@@ -94,3 +94,22 @@ Commit: 38cbf62
     - Shows "X/Y" configured count; "configured" = existing_cycle_length is set
     - Proportional progress bar (emerald at 100%, primary otherwise)
     - Subtitle: "All intersections configured" or "N pending timing setup"
+
+### Issue #8 — Timing comparison visualization ✅ DONE (2026-06-15)
+Commit: 069a26d
+
+- eyegila/src/pages/SignalTiming.tsx:
+  - ARM_SHORT constant: direction → single-letter abbreviation (N/S/E/W)
+  - YELLOW_S = 3: fixed intergreen constant shared across both gantt components
+  - GanttBar component: single approach row — label + stacked green/yellow/red bar;
+    green and red seconds rendered inline when bar is wide enough; full value on hover title
+  - GanttDiagram component: title + cycle length header + stack of GanttBars
+  - Phase comparison section (after per-chunk table, before queue chart):
+    - Left panel: "Current timing" using intersection.existing_cycle_length +
+      existing_green_splits (keyed by arm_direction); falls back to dashed placeholder
+      prompting wizard entry when no timing has been saved yet
+    - Right panel: "Recommended (Webster)" in emerald using activeTiming.cycle_length +
+      green_splits (keyed by street_id string); always shown when activeTiming exists
+    - Divider between panels hidden on mobile (sm:block)
+    - Shared legend strip (Green / Yellow 3s / Red) at bottom
+    - Updates automatically when a different time-of-day chunk is clicked in the table above
