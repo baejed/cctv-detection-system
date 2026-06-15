@@ -54,3 +54,20 @@ Commit: 4f705fe
   - Next button is disabled until regionCams.every(c => c.hasRegions); green banner
     "All cameras have regions — ready to continue!" shown when satisfied
   - Back → returns to 'assign' step (full-screen wizard); Next → advances to 'timing'
+
+### Issue #5 — Enter current timing + live phase diagram ✅ DONE (2026-06-15)
+Commit: 4a147a8
+
+- eyegila/src/components/OnboardingWizard.tsx:
+  - Timing step state: timingTargetId, timingApproaches, timingStatus, timingCycle,
+    timingGreenSplits, timingLoading
+  - useEffect on entering 'timing' step: resolves intersection (createdIntersectionId or
+    most-recent), fetches intersection + streets, derives approach directions (excluding
+    'unknown'), pre-fills existing timing data if present, defaults green splits to
+    equal division of cycle length
+  - handleNext() 'timing' branch: PATCHes /intersections/{id}/timing with signal_status,
+    existing_cycle_length, existing_green_splits (keyed by arm_direction string)
+  - UI: signal status toggle (unsignalized / fixed_time / actuated); cycle length input;
+    per-approach green-seconds table with live % column; CSS Gantt phase diagram —
+    proportional green/yellow(3s)/red bars per approach, updates on every keystroke;
+    legend row; loading spinner while fetching
