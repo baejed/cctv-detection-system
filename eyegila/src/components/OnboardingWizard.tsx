@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -7,7 +8,8 @@ import { onboardingApi } from '@/services/onboarding';
 import { cctvsApi } from '@/services/cctvs';
 import { intersectionsApi } from '@/services/intersections';
 import { streetsApi } from '@/services/streets';
-import type { ArmDirection } from '@/types';
+import { request } from '@/services/api';
+import type { ArmDirection, Region } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -15,7 +17,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { cn } from '@/lib/utils';
 import {
   X, ArrowRight, ArrowLeft, Check,
-  Loader2, ScanSearch, Plus, Wifi, Server,
+  Loader2, ScanSearch, Plus, Wifi, Server, RefreshCw, ExternalLink,
 } from 'lucide-react';
 
 // Leaflet default icon fix (works once per module load)
@@ -108,6 +110,12 @@ export function OnboardingWizard({ open, initialStep, onClose }: OnboardingWizar
   // ── Created intersection ───────────────────────────────────────────────────
   const [createdIntersectionId, setCreatedIntersectionId] = useState<number | null>(null);
 
+  // ── Regions step state ────────────────────────────────────────────────────
+  interface RegionCamStatus { id: number; name: string; hasRegions: boolean }
+  const [regionCams, setRegionCams]       = useState<RegionCamStatus[]>([]);
+  const [regionLoading, setRegionLoading] = useState(false);
+  const [regionTargetId, setRegionTargetId] = useState<number | null>(null);
+
   useEffect(() => {
     if (open) {
       setStepId(isValidStepId(initialStep) ? initialStep : 'welcome');
@@ -133,6 +141,52 @@ export function OnboardingWizard({ open, initialStep, onClose }: OnboardingWizar
       setSaving(false);
     }
   }, []);
+
+  // ── Regions helpers ────────────────────────────────────────────────────────
+
+  const loadRegionStatus = useCallback(async (intersectionId: number) => {
+    setRegionLoading(true);
+    try {
+      const [allCams, allRegions] = await Promise.all([
+        cctvsApi.list(),
+        request<Region[]>('/regions/'),
+      ]);
+      const camsWithRegions = new Set(allRegions.map(r => r.cctv_id));
+      setRegionCams(
+        allCams
+          .filter(c => c.intersection_id === intersectionId)
+          .map(c => ({ id: c.id, name: c.name, hasRegions: camsWithRegions.has(c.id) })),
+      );
+    } catch {
+      toast.error('Failed to load camera status');
+    } finally {
+      setRegionLoading(false);
+    }
+  }, []);
+
+  // Initialise region step when entering it
+  useEffect(() => {
+    if (!open || stepId !== 'regions') return;
+
+    async function init() {
+      let targetId = createdIntersectionId;
+      if (targetId == null) {
+        // Wizard was closed and resumed — use the most recently created intersection
+        try {
+          const inters = await intersectionsApi.list();
+          if (inters.length > 0) {
+            targetId = inters.sort((a, b) => b.time.localeCompare(a.time))[0].id;
+          }
+        } catch {}
+      }
+      if (targetId == null) return;
+      setRegionTargetId(targetId);
+      await loadRegionStatus(targetId);
+    }
+
+    init();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, stepId]);
 
   // ── Discover helpers ───────────────────────────────────────────────────────
 
@@ -289,6 +343,125 @@ export function OnboardingWizard({ open, initialStep, onClose }: OnboardingWizar
   }
 
   if (!open) return null;
+
+  // ── Regions guide panel (compact floating overlay) ─────────────────────────
+  if (stepId === 'regions') {
+    const allDone = regionCams.length > 0 && regionCams.every(c => c.hasRegions);
+    return (
+      <div className="fixed top-4 right-4 z-50 w-80 bg-card border border-border rounded-xl shadow-xl flex flex-col overflow-hidden">
+        {/* Panel header */}
+        <div className="flex items-center gap-2 px-4 py-3 border-b border-border bg-muted/40 shrink-0">
+          <img src="/logo.png" alt="EyeGila" className="size-5 rounded-md object-contain" />
+          <span className="font-semibold text-sm flex-1">Draw Detection Regions</span>
+          <button
+            type="button"
+            onClick={handleClose}
+            className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+            aria-label="Pause wizard"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+
+        {/* Step pill */}
+        <div className="px-4 pt-3 pb-0">
+          <span className="text-[11px] text-muted-foreground font-medium">Step {stepIndex + 1} of {WIZARD_STEPS.length}</span>
+        </div>
+
+        {/* Instructions */}
+        <p className="px-4 py-2 text-xs text-muted-foreground leading-relaxed">
+          Open each camera below and draw a counting polygon on the live video frame.
+          Click the first point again (green dot) to close the polygon and save the region.
+        </p>
+
+        {/* Camera list */}
+        <div className="px-4 pb-3 flex flex-col gap-2">
+          {regionLoading ? (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground py-2">
+              <Loader2 className="size-4 animate-spin" />
+              <span>Loading cameras…</span>
+            </div>
+          ) : regionCams.length === 0 ? (
+            <p className="text-xs text-muted-foreground py-2">
+              No cameras found. Go back and complete the camera setup steps.
+            </p>
+          ) : (
+            regionCams.map(cam => (
+              <div key={cam.id} className={cn(
+                'flex items-center gap-2 rounded-lg border px-3 py-2',
+                cam.hasRegions
+                  ? 'border-emerald-500/30 bg-emerald-50 dark:bg-emerald-950/20'
+                  : 'border-border bg-muted/20',
+              )}>
+                <div className={cn(
+                  'size-5 rounded-full flex items-center justify-center shrink-0',
+                  cam.hasRegions ? 'bg-emerald-500/20' : 'bg-muted',
+                )}>
+                  {cam.hasRegions
+                    ? <Check className="size-3 text-emerald-600" />
+                    : <span className="text-[10px] text-muted-foreground">○</span>}
+                </div>
+                <span className={cn(
+                  'text-xs flex-1 truncate',
+                  cam.hasRegions ? 'text-emerald-700 dark:text-emerald-400' : '',
+                )}>
+                  {cam.name}
+                </span>
+                <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" asChild>
+                  <Link to={`/cameras/${cam.id}`}>
+                    Open
+                    <ExternalLink className="size-2.5 ml-1" />
+                  </Link>
+                </Button>
+              </div>
+            ))
+          )}
+        </div>
+
+        {allDone && (
+          <div className="mx-4 mb-3 rounded-lg bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-900 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-400 font-medium">
+            All cameras have regions — ready to continue!
+          </div>
+        )}
+
+        {/* Footer */}
+        <div className="flex items-center gap-2 px-4 py-3 border-t border-border">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => goTo(WIZARD_STEPS[stepIndex - 1].id)}
+            disabled={saving || regionLoading}
+            className="h-7 px-2.5 text-xs"
+          >
+            <ArrowLeft className="size-3.5 mr-1" />
+            Back
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => regionTargetId != null && loadRegionStatus(regionTargetId)}
+            disabled={regionLoading}
+            className="h-7 px-2.5 text-xs"
+          >
+            {regionLoading
+              ? <Loader2 className="size-3.5 mr-1 animate-spin" />
+              : <RefreshCw className="size-3.5 mr-1" />}
+            Refresh
+          </Button>
+          <div className="flex-1" />
+          <Button
+            size="sm"
+            onClick={handleNext}
+            disabled={saving || regionLoading || !allDone}
+            className="h-7 px-2.5 text-xs"
+          >
+            Next
+            <ArrowRight className="size-3.5 ml-1" />
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   const canGoBack    = stepIndex > 0;
   const isLast       = stepIndex === WIZARD_STEPS.length - 1;
@@ -637,28 +810,7 @@ export function OnboardingWizard({ open, initialStep, onClose }: OnboardingWizar
             </div>
           )}
 
-          {/* ── Regions (placeholder — Issue #4) ────────────────────────────── */}
-          {stepId === 'regions' && (
-            <div className="flex flex-col gap-6">
-              <div>
-                <h2 className="text-2xl font-semibold">Draw detection regions</h2>
-                <p className="text-muted-foreground mt-2">
-                  Draw a polygon on each camera's live frame to mark the counting zone for each
-                  approach. Vehicles crossing the polygon are counted.
-                </p>
-              </div>
-              {createdIntersectionId != null && (
-                <div className="rounded-lg border border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950/20 p-4 text-sm text-emerald-700 dark:text-emerald-400">
-                  Intersection #{createdIntersectionId} created. Open each camera's detail page to draw regions.
-                </div>
-              )}
-              <div className="rounded-xl border border-dashed border-border bg-muted/20 p-12 flex flex-col items-center gap-3 text-center">
-                <p className="text-sm text-muted-foreground">
-                  Guided region-drawing overlay will be available here (Issue #4).
-                </p>
-              </div>
-            </div>
-          )}
+          {/* regions step renders as a compact floating panel (early return above) */}
 
           {/* ── Timing (placeholder — Issue #5) ────────────────────────────── */}
           {stepId === 'timing' && (
