@@ -2,22 +2,32 @@ import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer, Legend,
+  Tooltip, ResponsiveContainer,
 } from 'recharts';
 import { simulationApi, type SimulationChunk, type SimulationResponse } from '@/services/simulation';
 import { timingApi, type TimingChunk } from '@/services/timing';
 import { aggregationApi } from '@/services/aggregation';
+import { streetsApi } from '@/services/streets';
+import { intersectionsApi } from '@/services/intersections';
 import { DualIntersectionCanvas, type VehicleType, type TypeFractions } from '@/components/IntersectionCanvas';
-import type { AggregationRow } from '@/types';
+import { IntersectionSignal3D } from '@/components/TrafficSignal3D';
+import { IntersectionScene3D } from '@/components/IntersectionScene3D';
+import type { AggregationRow, Street, Intersection } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
-import { ArrowLeft, TrendingDown, Printer } from 'lucide-react';
+import { ArrowLeft, TrendingDown, Printer, Play, Pause, Columns2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const APPROACH_COLORS = ['#6366f1', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6', '#06b6d4'];
+
+const ARM_SHORT: Record<string, string> = {
+  northbound: 'N', southbound: 'S', eastbound: 'E', westbound: 'W', unknown: '?',
+};
+
+const YELLOW_S = 3;
 
 const OBJECT_TO_VEHICLE: Record<string, VehicleType> = {
   motorcycle: 'MC', pedicab: 'MC', tricycle: 'MC', bicycle: 'MC',
@@ -84,87 +94,103 @@ function deltaClass(before: number, after: number): string {
   return after < before ? 'text-emerald-600' : after > before ? 'text-rose-600' : '';
 }
 
-function buildQueueData(
-  series: Record<string, number[]> | null,
-  label: 'Before' | 'After',
-): { minute: number; [key: string]: number }[] {
-  if (!series) return [];
-  const streetIds = Object.keys(series);
-  const len = Math.max(...streetIds.map(k => series[k].length), 0);
-  return Array.from({ length: len }, (_, i) => {
-    const row: { minute: number; [key: string]: number } = { minute: i + 1 };
-    for (const sid of streetIds) {
-      row[`${label}_${sid}`] = series[sid][i] ?? 0;
-    }
-    return row;
-  });
-}
+function ChunkQueueChart({ chunk }: { chunk: SimulationChunk }) {
+  const before = chunk.queue_series_before ?? {};
+  const after  = chunk.queue_series_after  ?? {};
+  const len = Math.max(
+    ...Object.values(before).map(s => s.length),
+    ...Object.values(after).map(s => s.length),
+    0,
+  );
+  if (len === 0) return <p className="text-xs text-muted-foreground py-4 text-center">No queue data</p>;
 
-function mergeQueueData(
-  before: Record<string, number[]> | null,
-  after: Record<string, number[]> | null,
-): { minute: number; [key: string]: number }[] {
-  const beforeRows = buildQueueData(before, 'Before');
-  const afterRows  = buildQueueData(after,  'After');
-  const len = Math.max(beforeRows.length, afterRows.length);
-  return Array.from({ length: len }, (_, i) => ({
-    ...beforeRows[i],
-    ...afterRows[i],
+  const data = Array.from({ length: len }, (_, i) => ({
     minute: i + 1,
+    current: Object.values(before).reduce((s, arr) => s + (arr[i] ?? 0), 0),
+    webster: Object.values(after).reduce((s, arr)  => s + (arr[i] ?? 0), 0),
   }));
-}
-
-function ChunkQueueChart({ chunk, showBefore, showAfter }: {
-  chunk: SimulationChunk;
-  showBefore: boolean;
-  showAfter: boolean;
-}) {
-  const data = mergeQueueData(chunk.queue_series_before, chunk.queue_series_after);
-  if (!data.length) {
-    return <p className="text-xs text-muted-foreground py-4 text-center">No queue data available</p>;
-  }
-
-  const beforeKeys = showBefore && chunk.queue_series_before
-    ? Object.keys(chunk.queue_series_before).map(sid => `Before_${sid}`)
-    : [];
-  const afterKeys = showAfter && chunk.queue_series_after
-    ? Object.keys(chunk.queue_series_after).map(sid => `After_${sid}`)
-    : [];
-  const allKeys = [...beforeKeys, ...afterKeys];
 
   return (
-    <ResponsiveContainer width="100%" height={200}>
-      <LineChart data={data} margin={{ left: 0, right: 8, top: 4, bottom: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
-        <XAxis
-          dataKey="minute"
-          tick={{ fontSize: 11 }}
-          tickFormatter={v => `${v}m`}
-          label={{ value: 'Minute', position: 'insideBottomRight', offset: -4, fontSize: 11 }}
+    <>
+      <ResponsiveContainer width="100%" height={160}>
+        <LineChart data={data} margin={{ left: 0, right: 8, top: 4, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+          <XAxis dataKey="minute" tick={{ fontSize: 11 }} tickFormatter={v => `${v}m`} />
+          <YAxis tick={{ fontSize: 11 }} width={32} />
+          <Tooltip
+            contentStyle={{ fontSize: 11 }}
+            formatter={(v, name) => [`${Number(v).toFixed(1)} veh`, name === 'current' ? 'Current timing' : 'Webster timing']}
+          />
+          <Line type="monotone" dataKey="current" stroke="#94a3b8" strokeWidth={1.5} strokeDasharray="4 2" dot={false} />
+          <Line type="monotone" dataKey="webster" stroke="#10b981" strokeWidth={2} dot={false} />
+        </LineChart>
+      </ResponsiveContainer>
+      <div className="flex items-center gap-4 mt-1">
+        <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <span className="inline-block w-5 border-t-2 border-dashed border-[#94a3b8]" />
+          Current timing (total queue)
+        </span>
+        <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <span className="inline-block w-5 border-t-2 border-[#10b981]" />
+          Webster timing (total queue)
+        </span>
+      </div>
+    </>
+  );
+}
+
+function GanttBar({ label, greenSec, cycleLength }: { label: string; greenSec: number; cycleLength: number }) {
+  const redSec = Math.max(0, cycleLength - greenSec - YELLOW_S);
+  const greenPct = (greenSec / cycleLength) * 100;
+  const yellowPct = (YELLOW_S / cycleLength) * 100;
+  const redPct = (redSec / cycleLength) * 100;
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-[11px] text-muted-foreground w-24 shrink-0 truncate" title={label}>{label}</span>
+      <div className="flex flex-1 rounded overflow-hidden h-5">
+        <div
+          style={{ width: `${greenPct}%` }}
+          className="bg-emerald-500 flex items-center justify-center text-[10px] text-white font-medium"
+          title={`Green: ${greenSec.toFixed(0)}s`}
+        >
+          {greenPct > 10 ? `${greenSec.toFixed(0)}s` : ''}
+        </div>
+        <div
+          style={{ width: `${yellowPct}%` }}
+          className="bg-amber-400"
+          title={`Yellow: ${YELLOW_S}s`}
         />
-        <YAxis tick={{ fontSize: 11 }} width={36} label={{ value: 'Queue', angle: -90, position: 'insideLeft', fontSize: 11 }} />
-        <Tooltip
-          contentStyle={{ fontSize: 11 }}
-          formatter={(v, name) => [`${Number(v).toFixed(1)} veh`, String(name ?? '').replace('_', ' Approach ')]}
-        />
-        <Legend wrapperStyle={{ fontSize: 11 }} />
-        {allKeys.map((key, idx) => {
-          const isBefore = key.startsWith('Before_');
-          return (
-            <Line
-              key={key}
-              type="monotone"
-              dataKey={key}
-              stroke={APPROACH_COLORS[idx % APPROACH_COLORS.length]}
-              strokeWidth={1.5}
-              strokeDasharray={isBefore ? '4 2' : undefined}
-              dot={false}
-              name={key.replace('Before_', 'Before A').replace('After_', 'After A')}
-            />
-          );
-        })}
-      </LineChart>
-    </ResponsiveContainer>
+        <div
+          style={{ width: `${redPct}%` }}
+          className="bg-rose-400/40 flex items-center justify-center text-[10px] text-rose-700 dark:text-rose-300"
+          title={`Red: ${redSec.toFixed(0)}s`}
+        >
+          {redPct > 15 ? `${redSec.toFixed(0)}s` : ''}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GanttDiagram({
+  title,
+  cycleLength,
+  approaches,
+  titleClassName,
+}: {
+  title: string;
+  cycleLength: number;
+  approaches: { label: string; greenSec: number }[];
+  titleClassName?: string;
+}) {
+  return (
+    <div className="flex-1 min-w-0">
+      <p className={cn('text-xs font-semibold text-center', titleClassName ?? 'text-foreground')}>{title}</p>
+      <p className="text-[10px] text-muted-foreground text-center mb-3">{cycleLength}s cycle</p>
+      <div className="space-y-2">
+        {approaches.map(a => <GanttBar key={a.label} {...a} cycleLength={cycleLength} />)}
+      </div>
+    </div>
   );
 }
 
@@ -175,12 +201,17 @@ export function SignalTimingPage() {
 
   const [data, setData] = useState<SimulationResponse | null>(null);
   const [timingData, setTimingData] = useState<TimingChunk[]>([]);
+  const [streets, setStreets] = useState<Street[]>([]);
+  const [intersection, setIntersection] = useState<Intersection | null>(null);
   const [typeMix, setTypeMix] = useState<Record<string, TypeFractions>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedChunk, setSelectedChunk] = useState<string | null>(null);
-  const [showBefore, setShowBefore] = useState(true);
-  const [showAfter, setShowAfter] = useState(true);
+  const [view3D, setView3D] = useState(false);
+  const [show3DBefore, setShow3DBefore] = useState(false);
+  const [sbs3D, setSbs3D] = useState(false);
+  const [paused3D, setPaused3D] = useState(false);
+  const [speed3D, setSpeed3D] = useState<1 | 2 | 4>(1);
 
   useEffect(() => {
     if (!intersectionId) return;
@@ -201,10 +232,14 @@ export function SignalTimingPage() {
         intersection_id: intersectionId,
         bucket: 'hour',
       }).catch(() => []),
+      streetsApi.list().catch(() => [] as Street[]),
+      intersectionsApi.get(intersectionId).catch(() => null),
     ])
-      .then(([sim, tim, agg]) => {
+      .then(([sim, tim, agg, allStreets, inter]) => {
         setData(sim);
         setTimingData(tim);
+        setStreets(allStreets.filter(s => s.intersection_id === intersectionId));
+        setIntersection(inter);
         if (sim.chunks.length > 0) {
           // Pick the highest-volume chunk so the chart shows real queue data by default
           const peak = [...sim.chunks].sort((a, b) => b.volume_pcu_hr - a.volume_pcu_hr)[0];
@@ -323,71 +358,57 @@ export function SignalTimingPage() {
             </div>
           </div>
 
-          {/* Per-chunk table */}
+          {/* Per-chunk table — click a row to select it for the chart / simulation */}
           <div className="rounded-lg border border-border overflow-hidden">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Chunk</TableHead>
-                  <TableHead className="text-right">Delay before</TableHead>
-                  <TableHead className="text-center">LOS</TableHead>
-                  <TableHead className="text-right">Delay after</TableHead>
-                  <TableHead className="text-center">LOS</TableHead>
-                  <TableHead className="text-right">v/c (worst)</TableHead>
+                  <TableHead>Period</TableHead>
+                  <TableHead className="text-right">Before delay</TableHead>
+                  <TableHead className="text-right">After delay</TableHead>
                   <TableHead className="text-right">Improvement</TableHead>
-                  <TableHead className="text-right">Flow (PCU/hr)</TableHead>
                   <TableHead className="text-right">Veh-hrs saved</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {data.chunks.map(chunk => {
                   const improvement = chunk.delay_before - chunk.delay_after;
-                  const pct = chunk.delay_before > 0
-                    ? Math.round((improvement / chunk.delay_before) * 100)
-                    : 0;
+                  const pct = chunk.delay_before > 0 ? Math.round((improvement / chunk.delay_before) * 100) : 0;
                   return (
                     <TableRow
                       key={chunk.chunk_name}
-                      className={cn(
-                        'cursor-pointer',
-                        selectedChunk === chunk.chunk_name && 'bg-muted/50',
-                      )}
+                      className={cn('cursor-pointer', selectedChunk === chunk.chunk_name && 'bg-muted/50')}
                       onClick={() => setSelectedChunk(chunk.chunk_name)}
                     >
                       <TableCell className="font-medium">{chunk.chunk_name}</TableCell>
-                      <TableCell className="text-right tabular-nums">{fmt(chunk.delay_before)}</TableCell>
-                      <TableCell className="text-center"><LosBadge grade={chunk.los_before} /></TableCell>
-                      <TableCell className={cn('text-right tabular-nums', deltaClass(chunk.delay_before, chunk.delay_after))}>
-                        {fmt(chunk.delay_after)}
+                      <TableCell className="text-right tabular-nums">
+                        <span className="mr-1.5">{fmt(chunk.delay_before)}</span>
+                        <LosBadge grade={chunk.los_before} />
                       </TableCell>
-                      <TableCell className="text-center"><LosBadge grade={chunk.los_after} /></TableCell>
-                      <TableCell className="text-right tabular-nums text-muted-foreground">
-                        {chunk.vc_ratio_before != null
-                          ? `${fmtVc(chunk.vc_ratio_before)} → ${fmtVc(chunk.vc_ratio_after)}`
-                          : '—'}
+                      <TableCell className={cn('text-right tabular-nums', deltaClass(chunk.delay_before, chunk.delay_after))}>
+                        <span className="mr-1.5">{fmt(chunk.delay_after)}</span>
+                        <LosBadge grade={chunk.los_after} />
                       </TableCell>
                       <TableCell className={cn('text-right tabular-nums', improvement > 0 ? 'text-emerald-600' : 'text-muted-foreground')}>
                         {improvement > 0 ? `−${improvement.toFixed(1)}s (${pct}%)` : '—'}
                       </TableCell>
-                      <TableCell className="text-right tabular-nums">{chunk.volume_pcu_hr.toFixed(0)}</TableCell>
                       <TableCell className={cn('text-right tabular-nums', chunk.vehicle_hours_saved > 0 && 'text-emerald-600')}>
-                        {chunk.vehicle_hours_saved > 0 ? chunk.vehicle_hours_saved.toFixed(2) : '—'}
+                        {chunk.vehicle_hours_saved > 0 ? `${chunk.vehicle_hours_saved.toFixed(2)} vh` : '—'}
                       </TableCell>
                     </TableRow>
                   );
                 })}
-                {/* Daily summary row */}
                 <TableRow className="bg-muted/30 font-semibold border-t-2 border-border">
-                  <TableCell>Daily total</TableCell>
-                  <TableCell className="text-right tabular-nums">{fmt(data.daily_summary.avg_delay_before)}</TableCell>
-                  <TableCell className="text-center"><LosBadge grade={data.daily_summary.los_before} /></TableCell>
-                  <TableCell className={cn('text-right tabular-nums', deltaClass(data.daily_summary.avg_delay_before, data.daily_summary.avg_delay_after))}>
-                    {fmt(data.daily_summary.avg_delay_after)}
+                  <TableCell>Daily avg</TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    <span className="mr-1.5">{fmt(data.daily_summary.avg_delay_before)}</span>
+                    <LosBadge grade={data.daily_summary.los_before} />
                   </TableCell>
-                  <TableCell className="text-center"><LosBadge grade={data.daily_summary.los_after} /></TableCell>
-                  <TableCell className="text-right text-muted-foreground">—</TableCell>
+                  <TableCell className={cn('text-right tabular-nums', deltaClass(data.daily_summary.avg_delay_before, data.daily_summary.avg_delay_after))}>
+                    <span className="mr-1.5">{fmt(data.daily_summary.avg_delay_after)}</span>
+                    <LosBadge grade={data.daily_summary.los_after} />
+                  </TableCell>
                   <TableCell className="text-right text-muted-foreground">avg</TableCell>
-                  <TableCell className="text-right tabular-nums">{data.daily_summary.total_volume_pcu_hr.toFixed(0)}</TableCell>
                   <TableCell className={cn('text-right tabular-nums', data.daily_summary.total_vehicle_hours_saved > 0 && 'text-emerald-600')}>
                     {data.daily_summary.total_vehicle_hours_saved.toFixed(2)} vh
                   </TableCell>
@@ -396,77 +417,223 @@ export function SignalTimingPage() {
             </Table>
           </div>
 
-          {/* Queue time-series chart */}
-          {activeChunk && (
-            <div className="rounded-lg border border-border bg-card p-5 print:hidden">
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <h2 className="text-sm font-semibold">Queue length — {activeChunk.chunk_name}</h2>
-                  <p className="text-xs text-muted-foreground mt-0.5">Vehicles queued per approach over a simulated 60-minute window</p>
-                </div>
-                <div className="flex gap-2">
-                  <Button
-                    size="sm"
-                    variant={showBefore ? 'default' : 'outline'}
-                    className="h-7 text-xs"
-                    onClick={() => setShowBefore(v => !v)}
-                  >
-                    Before
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant={showAfter ? 'default' : 'outline'}
-                    className="h-7 text-xs"
-                    onClick={() => setShowAfter(v => !v)}
-                  >
-                    After
-                  </Button>
-                </div>
+          {/* Phase comparison — Current vs Recommended */}
+          {activeTiming && streets.length > 0 && (
+            <div className="rounded-lg border border-border bg-card p-5 print:break-inside-avoid">
+              <h2 className="text-sm font-semibold mb-4">Phase comparison — {activeTiming.chunk_name}</h2>
+              <div className="flex gap-6 flex-col sm:flex-row">
+                {intersection?.existing_cycle_length && intersection?.existing_green_splits ? (
+                  <GanttDiagram
+                    title="Current timing"
+                    cycleLength={intersection.existing_cycle_length}
+                    approaches={streets
+                      .filter(s => s.arm_direction !== 'unknown')
+                      .map(s => ({
+                        label: `${ARM_SHORT[s.arm_direction] ?? '?'} — ${s.name}`,
+                        greenSec: (intersection.existing_green_splits as Record<string, number>)[s.arm_direction] ?? 0,
+                      }))}
+                  />
+                ) : (
+                  <div className="flex-1 flex items-center justify-center py-8 rounded-md border border-dashed border-border text-xs text-muted-foreground text-center px-4">
+                    No current timing entered.{' '}
+                    <span className="font-medium">Use the wizard to add your existing cycle length and splits.</span>
+                  </div>
+                )}
+                <div className="w-px bg-border hidden sm:block shrink-0" />
+                <GanttDiagram
+                  title="Recommended (Webster)"
+                  cycleLength={activeTiming.cycle_length}
+                  approaches={streets
+                    .filter(s => s.arm_direction !== 'unknown')
+                    .map(s => ({
+                      label: `${ARM_SHORT[s.arm_direction] ?? '?'} — ${s.name}`,
+                      greenSec: activeTiming.green_splits[String(s.id)] ?? 0,
+                    }))}
+                  titleClassName="text-emerald-600"
+                />
               </div>
-
-              {/* Chunk selector tabs */}
-              <div className="flex flex-wrap gap-1.5 mb-4">
-                {data.chunks.map(c => (
-                  <button
-                    key={c.chunk_name}
-                    onClick={() => setSelectedChunk(c.chunk_name)}
-                    className={cn(
-                      'px-2.5 py-1 text-xs rounded-md border transition-colors',
-                      selectedChunk === c.chunk_name
-                        ? 'bg-primary text-primary-foreground border-primary'
-                        : 'border-border text-muted-foreground hover:border-foreground hover:text-foreground',
-                    )}
-                  >
-                    {c.chunk_name}
-                  </button>
-                ))}
+              <div className="flex items-center gap-4 mt-4 pt-3 border-t border-border">
+                <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                  <span className="inline-block w-3 h-2.5 rounded-sm bg-emerald-500" /> Green
+                </span>
+                <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                  <span className="inline-block w-3 h-2.5 rounded-sm bg-amber-400" /> Yellow (3s)
+                </span>
+                <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                  <span className="inline-block w-3 h-2.5 rounded-sm bg-rose-400/40" /> Red
+                </span>
               </div>
-
-              <ChunkQueueChart chunk={activeChunk} showBefore={showBefore} showAfter={showAfter} />
-
-              <p className="text-xs text-muted-foreground mt-2">
-                Dashed lines = before timing · Solid lines = proposed timing · Each color = one approach
-              </p>
             </div>
           )}
 
-          {/* 2D canvas intersection simulation */}
+          {/* Queue time-series chart */}
           {activeChunk && (
             <div className="rounded-lg border border-border bg-card p-5 print:hidden">
-              <div className="mb-4">
-                <h2 className="text-sm font-semibold">
-                  Intersection simulation — {activeChunk.chunk_name}
-                </h2>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  Top-down canvas · queue bars grow during red, clear on green · 60-minute window
-                </p>
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <h2 className="text-sm font-semibold">Total queue — {activeChunk.chunk_name}</h2>
+                  <p className="text-xs text-muted-foreground mt-0.5">Combined vehicles queued across all approaches · 60-min simulation</p>
+                </div>
+                {/* Chunk selector tabs */}
+                <div className="flex flex-wrap gap-1 shrink-0">
+                  {data.chunks.map(c => (
+                    <button
+                      key={c.chunk_name}
+                      onClick={() => setSelectedChunk(c.chunk_name)}
+                      className={cn(
+                        'px-2.5 py-1 text-xs rounded-md border transition-colors',
+                        selectedChunk === c.chunk_name
+                          ? 'bg-primary text-primary-foreground border-primary'
+                          : 'border-border text-muted-foreground hover:border-foreground hover:text-foreground',
+                      )}
+                    >
+                      {c.chunk_name}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <DualIntersectionCanvas
-                chunk={activeChunk}
-                timing={activeTiming}
-                signalStatus={data.signal_status}
-                typeMix={typeMix}
-              />
+              <ChunkQueueChart chunk={activeChunk} />
+            </div>
+          )}
+
+          {/* Intersection simulation — 2D / 3D toggle */}
+          {activeChunk && (
+            <div className="rounded-lg border border-border bg-card p-5 print:hidden">
+              <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
+                <div>
+                  <h2 className="text-sm font-semibold">
+                    Intersection simulation — {activeChunk.chunk_name}
+                  </h2>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {view3D ? 'drag to orbit · scroll to zoom' : 'top-down · queue bars grow on red, clear on green'}
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap shrink-0">
+                  {/* 2D / 3D */}
+                  <div className="flex rounded-md border border-border overflow-hidden">
+                    <button className={cn('px-3 py-1 text-xs font-medium transition-colors', !view3D ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted')} onClick={() => setView3D(false)}>2D</button>
+                    <button className={cn('px-3 py-1 text-xs font-medium transition-colors border-l border-border', view3D ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted')} onClick={() => setView3D(true)}>3D</button>
+                  </div>
+
+                  {view3D && (
+                    <>
+                      {/* Side-by-side */}
+                      <button
+                        title="Side by side"
+                        onClick={() => setSbs3D(v => !v)}
+                        className={cn('flex items-center gap-1 px-2.5 py-1 text-xs rounded-md border transition-colors',
+                          sbs3D ? 'bg-primary text-primary-foreground border-primary' : 'border-border text-muted-foreground hover:bg-muted')}
+                      >
+                        <Columns2 className="size-3" />
+                        Side by side
+                      </button>
+
+                      {/* Before / After — only when not SBS */}
+                      {!sbs3D && (
+                        <div className="flex rounded-md border border-border overflow-hidden">
+                          <button className={cn('px-3 py-1 text-xs font-medium transition-colors', show3DBefore ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted')} onClick={() => setShow3DBefore(true)}>Before</button>
+                          <button className={cn('px-3 py-1 text-xs font-medium transition-colors border-l border-border', !show3DBefore ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted')} onClick={() => setShow3DBefore(false)}>After</button>
+                        </div>
+                      )}
+
+                      {/* Play / Pause */}
+                      <button
+                        onClick={() => setPaused3D(v => !v)}
+                        className="flex items-center gap-1 px-2.5 py-1 text-xs rounded-md border border-border text-muted-foreground hover:bg-muted transition-colors"
+                        title={paused3D ? 'Resume' : 'Pause'}
+                      >
+                        {paused3D ? <Play className="size-3" /> : <Pause className="size-3" />}
+                        {paused3D ? 'Play' : 'Pause'}
+                      </button>
+
+                      {/* Speed */}
+                      <div className="flex rounded-md border border-border overflow-hidden">
+                        {([1, 2, 4] as const).map(s => (
+                          <button
+                            key={s}
+                            onClick={() => setSpeed3D(s)}
+                            className={cn('px-2.5 py-1 text-xs font-medium transition-colors border-l first:border-l-0 border-border',
+                              speed3D === s ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted')}
+                          >
+                            {s}×
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {!view3D && (
+                <DualIntersectionCanvas
+                  chunk={activeChunk}
+                  timing={activeTiming}
+                  signalStatus={data.signal_status}
+                  typeMix={typeMix}
+                />
+              )}
+
+              {view3D && activeTiming && !sbs3D && (
+                <IntersectionScene3D
+                  timing={activeTiming}
+                  streets={streets}
+                  signalOff={activeTiming.signal_off}
+                  volumePcuHr={activeChunk.volume_pcu_hr}
+                  typeMix={typeMix}
+                  showBefore={show3DBefore}
+                  signalStatus={data.signal_status}
+                  existingCycleS={intersection?.existing_cycle_length ?? null}
+                  existingGreenSplits={intersection?.existing_green_splits ?? null}
+                  paused={paused3D}
+                  speed={speed3D}
+                />
+              )}
+
+              {view3D && activeTiming && sbs3D && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <p className="text-xs text-muted-foreground text-center mb-1.5">Current timing (before)</p>
+                    <IntersectionScene3D
+                      timing={activeTiming}
+                      streets={streets}
+                      signalOff={activeTiming.signal_off}
+                      volumePcuHr={activeChunk.volume_pcu_hr}
+                      typeMix={typeMix}
+                      showBefore={true}
+                      signalStatus={data.signal_status}
+                      existingCycleS={intersection?.existing_cycle_length ?? null}
+                      existingGreenSplits={intersection?.existing_green_splits ?? null}
+                      paused={paused3D}
+                      speed={speed3D}
+                      height={340}
+                    />
+                  </div>
+                  <div>
+                    <p className="text-xs text-emerald-600 text-center mb-1.5">Webster timing (after)</p>
+                    <IntersectionScene3D
+                      timing={activeTiming}
+                      streets={streets}
+                      signalOff={activeTiming.signal_off}
+                      volumePcuHr={activeChunk.volume_pcu_hr}
+                      typeMix={typeMix}
+                      showBefore={false}
+                      signalStatus={data.signal_status}
+                      existingCycleS={intersection?.existing_cycle_length ?? null}
+                      existingGreenSplits={intersection?.existing_green_splits ?? null}
+                      paused={paused3D}
+                      speed={speed3D}
+                      height={340}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {view3D && !activeTiming && (
+                <div className="flex items-center justify-center h-48 text-xs text-muted-foreground">
+                  No timing data for this chunk — regenerate recommendation to enable 3D view.
+                </div>
+              )}
             </div>
           )}
 
