@@ -18,7 +18,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
-import { ArrowLeft, TrendingDown, Printer, Play, Pause, Columns2 } from 'lucide-react';
+import { ArrowLeft, TrendingDown, Printer, Play, Pause, Columns2, MonitorPlay, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const APPROACH_COLORS = ['#6366f1', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6', '#06b6d4'];
@@ -212,6 +212,13 @@ export function SignalTimingPage() {
   const [sbs3D, setSbs3D] = useState(false);
   const [paused3D, setPaused3D] = useState(false);
   const [speed3D, setSpeed3D] = useState<1 | 2 | 4>(1);
+  const [presentMode, setPresentMode] = useState(false);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setPresentMode(false); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, []);
 
   useEffect(() => {
     if (!intersectionId) return;
@@ -562,6 +569,16 @@ export function SignalTimingPage() {
                       </div>
                     </>
                   )}
+
+                  {/* Present mode button */}
+                  <button
+                    title="Present / council view — hides all chrome"
+                    onClick={() => setPresentMode(true)}
+                    className="flex items-center gap-1 px-2.5 py-1 text-xs rounded-md border border-border text-muted-foreground hover:bg-muted transition-colors"
+                  >
+                    <MonitorPlay className="size-3" />
+                    Present
+                  </button>
                 </div>
               </div>
 
@@ -692,6 +709,161 @@ export function SignalTimingPage() {
             </div>
           )}
         </>
+      )}
+
+      {/* Present / council mode overlay — hides all nav chrome for clean screenshots */}
+      {presentMode && activeChunk && data && (
+        <div className="fixed inset-0 z-[100] bg-[#0a0f1a] flex flex-col">
+          {/* Minimal header */}
+          <div className="flex items-center justify-between px-6 py-3 shrink-0">
+            <div className="flex items-center gap-3">
+              <span className="text-base font-semibold text-white">{data.intersection_name}</span>
+              <span className="text-[11px] text-white/40 font-mono">{activeChunk.chunk_name}</span>
+            </div>
+            <div className="flex items-center gap-6">
+              {activeChunk.vehicle_hours_saved > 0 && (
+                <div className="text-right">
+                  <p className="text-[10px] text-white/40 uppercase tracking-wide">Vehicle-hours saved</p>
+                  <p className="text-xl font-semibold tabular-nums text-emerald-400">
+                    {activeChunk.vehicle_hours_saved.toFixed(2)} vh
+                  </p>
+                </div>
+              )}
+              <button
+                onClick={() => setPresentMode(false)}
+                className="text-white/40 hover:text-white transition-colors p-1"
+                title="Exit present mode (Esc)"
+              >
+                <X className="size-5" />
+              </button>
+            </div>
+          </div>
+
+          {/* Minimal controls */}
+          <div className="flex items-center gap-2 px-6 pb-2 shrink-0">
+            <div className="flex rounded-md border border-white/20 overflow-hidden text-xs">
+              <button
+                className={cn('px-3 py-1 font-medium transition-colors', !view3D ? 'bg-white/20 text-white' : 'text-white/40 hover:bg-white/10')}
+                onClick={() => setView3D(false)}
+              >2D</button>
+              <button
+                className={cn('px-3 py-1 font-medium transition-colors border-l border-white/20', view3D ? 'bg-white/20 text-white' : 'text-white/40 hover:bg-white/10')}
+                onClick={() => setView3D(true)}
+              >3D</button>
+            </div>
+            {view3D && activeTiming && (
+              <>
+                <button
+                  onClick={() => setSbs3D(v => !v)}
+                  className={cn('flex items-center gap-1 px-2.5 py-1 text-xs rounded-md border transition-colors',
+                    sbs3D ? 'bg-white/20 text-white border-white/30' : 'border-white/20 text-white/40 hover:bg-white/10')}
+                >
+                  <Columns2 className="size-3" /> Side by side
+                </button>
+                {!sbs3D && (
+                  <div className="flex rounded-md border border-white/20 overflow-hidden text-xs">
+                    <button
+                      className={cn('px-3 py-1 font-medium transition-colors', show3DBefore ? 'bg-white/20 text-white' : 'text-white/40 hover:bg-white/10')}
+                      onClick={() => setShow3DBefore(true)}
+                    >Before</button>
+                    <button
+                      className={cn('px-3 py-1 font-medium transition-colors border-l border-white/20', !show3DBefore ? 'bg-white/20 text-white' : 'text-white/40 hover:bg-white/10')}
+                      onClick={() => setShow3DBefore(false)}
+                    >After</button>
+                  </div>
+                )}
+                <button
+                  onClick={() => setPaused3D(v => !v)}
+                  className="flex items-center gap-1 px-2.5 py-1 text-xs rounded-md border border-white/20 text-white/40 hover:bg-white/10 transition-colors"
+                >
+                  {paused3D ? <Play className="size-3" /> : <Pause className="size-3" />}
+                  {paused3D ? 'Play' : 'Pause'}
+                </button>
+                <div className="flex rounded-md border border-white/20 overflow-hidden">
+                  {([1, 2, 4] as const).map(s => (
+                    <button
+                      key={s}
+                      onClick={() => setSpeed3D(s)}
+                      className={cn('px-2.5 py-1 text-xs font-medium transition-colors border-l first:border-l-0 border-white/20',
+                        speed3D === s ? 'bg-white/20 text-white' : 'text-white/40 hover:bg-white/10')}
+                    >{s}×</button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Simulation body */}
+          <div className="flex-1 overflow-hidden px-4 pb-4">
+            {!view3D && (
+              <DualIntersectionCanvas
+                chunk={activeChunk}
+                timing={activeTiming}
+                signalStatus={data.signal_status}
+                typeMix={typeMix}
+              />
+            )}
+            {view3D && activeTiming && !sbs3D && (
+              <IntersectionScene3D
+                timing={activeTiming}
+                streets={streets}
+                signalOff={activeTiming.signal_off}
+                volumePcuHr={activeChunk.volume_pcu_hr}
+                typeMix={typeMix}
+                showBefore={show3DBefore}
+                signalStatus={data.signal_status}
+                existingCycleS={intersection?.existing_cycle_length ?? null}
+                existingGreenSplits={intersection?.existing_green_splits ?? null}
+                paused={paused3D}
+                speed={speed3D}
+                height={window.innerHeight - 140}
+              />
+            )}
+            {view3D && activeTiming && sbs3D && (
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <p className="text-[11px] text-white/40 text-center mb-1.5">Current timing (before)</p>
+                  <IntersectionScene3D
+                    timing={activeTiming}
+                    streets={streets}
+                    signalOff={activeTiming.signal_off}
+                    volumePcuHr={activeChunk.volume_pcu_hr}
+                    typeMix={typeMix}
+                    showBefore={true}
+                    signalStatus={data.signal_status}
+                    existingCycleS={intersection?.existing_cycle_length ?? null}
+                    existingGreenSplits={intersection?.existing_green_splits ?? null}
+                    paused={paused3D}
+                    speed={speed3D}
+                    height={window.innerHeight - 160}
+                  />
+                </div>
+                <div>
+                  <p className="text-[11px] text-emerald-400 text-center mb-1.5">Webster timing (after)</p>
+                  <IntersectionScene3D
+                    timing={activeTiming}
+                    streets={streets}
+                    signalOff={activeTiming.signal_off}
+                    volumePcuHr={activeChunk.volume_pcu_hr}
+                    typeMix={typeMix}
+                    showBefore={false}
+                    signalStatus={data.signal_status}
+                    existingCycleS={intersection?.existing_cycle_length ?? null}
+                    existingGreenSplits={intersection?.existing_green_splits ?? null}
+                    paused={paused3D}
+                    speed={speed3D}
+                    height={window.innerHeight - 160}
+                  />
+                </div>
+              </div>
+            )}
+            {view3D && !activeTiming && (
+              <div className="flex items-center justify-center h-48 text-xs text-white/30">
+                No timing data for this chunk — regenerate recommendation to enable 3D view.
+              </div>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );
