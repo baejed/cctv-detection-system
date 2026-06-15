@@ -1,13 +1,116 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
+import {
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
+  ReferenceLine, Cell,
+} from 'recharts';
 import { type RecommendationResponse, type DataHealthResponse, recommendationsApi } from '@/services/recommendations';
+import { aggregationApi } from '@/services/aggregation';
+import type { AggregationRow } from '@/types';
 import { Progress } from '@/components/ui/progress';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Loader2, RefreshCw, Pencil, Check, X, BarChart2, Wifi, WifiOff, AlertTriangle } from 'lucide-react';
 import { cn } from '@/lib/utils';
+
+const W1_MAJOR_THRESHOLD = 400;
+const W4_PEDS_THRESHOLD  = 100;
+
+interface HourlyBucket { hour: number; label: string; volume: number; peds: number; }
+
+function buildHourlyBuckets(rows: AggregationRow[]): HourlyBucket[] {
+  const vehicleCounts: number[] = Array(24).fill(0);
+  const pedCounts:     number[] = Array(24).fill(0);
+  const PED_TYPES = new Set(['pedestrian', 'person', 'ped']);
+
+  for (const row of rows) {
+    const h = new Date(row.window_start).getHours();
+    if (PED_TYPES.has(row.object_type)) {
+      pedCounts[h] += row.count;
+    } else {
+      vehicleCounts[h] += row.count;
+    }
+  }
+
+  return Array.from({ length: 24 }, (_, h) => ({
+    hour: h,
+    label: h === 0 ? '12a' : h < 12 ? `${h}a` : h === 12 ? '12p' : `${h - 12}p`,
+    volume: vehicleCounts[h],
+    peds:   pedCounts[h],
+  }));
+}
+
+interface WarrantChartProps {
+  buckets: HourlyBucket[];
+  threshold: number;
+  dataKey: 'volume' | 'peds';
+  thresholdLabel: string;
+  qualifyingTarget: number;
+}
+
+function WarrantChart({ buckets, threshold, dataKey, thresholdLabel, qualifyingTarget }: WarrantChartProps) {
+  const qualifying = buckets.filter(b => b[dataKey] >= threshold).length;
+  const hasAnyData = buckets.some(b => b[dataKey] > 0);
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center justify-between text-[10px]">
+        <span className="text-muted-foreground">24-hour volume · threshold {thresholdLabel}</span>
+        <span className={cn(
+          'font-medium tabular-nums',
+          qualifying >= qualifyingTarget ? 'text-emerald-600' : 'text-muted-foreground',
+        )}>
+          {qualifying}/{qualifyingTarget} qualifying hrs
+        </span>
+      </div>
+
+      {hasAnyData ? (
+        <ResponsiveContainer width="100%" height={80}>
+          <BarChart data={buckets} margin={{ top: 4, right: 0, left: -28, bottom: 0 }} barCategoryGap="10%">
+            <XAxis
+              dataKey="label"
+              tick={{ fontSize: 8, fill: 'currentColor' }}
+              tickLine={false}
+              axisLine={false}
+              interval={5}
+            />
+            <YAxis
+              tick={{ fontSize: 8, fill: 'currentColor' }}
+              tickLine={false}
+              axisLine={false}
+              width={32}
+            />
+            <Tooltip
+              contentStyle={{ fontSize: 11, padding: '4px 8px' }}
+              formatter={(v: number) => [v, dataKey === 'peds' ? 'peds/hr' : 'veh/hr']}
+              labelFormatter={(_: unknown, payload: {payload?: HourlyBucket}[]) => {
+                const b = payload?.[0]?.payload;
+                return b ? `Hour ${b.hour}:00` : '';
+              }}
+            />
+            <ReferenceLine y={threshold} stroke="#10b981" strokeDasharray="3 3" strokeWidth={1.5}>
+              <label style={{ fontSize: 8, fill: '#10b981' }} position="right" value={thresholdLabel} />
+            </ReferenceLine>
+            <Bar dataKey={dataKey} radius={[2, 2, 0, 0]}>
+              {buckets.map((b, i) => (
+                <Cell
+                  key={i}
+                  fill={b[dataKey] >= threshold ? '#10b981' : 'hsl(var(--muted-foreground) / 0.25)'}
+                />
+              ))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      ) : (
+        <div className="h-20 rounded-md border border-dashed border-border bg-muted/20 flex items-center justify-center text-[10px] text-muted-foreground">
+          No detection data for last 24 hours
+        </div>
+      )}
+    </div>
+  );
+}
 
 interface Props {
   rec: RecommendationResponse;
@@ -28,6 +131,7 @@ export function LatestTab({ rec, onRegenerate, regenerating, onNotesSaved }: Pro
   const [draft, setDraft] = useState(rec.notes ?? '');
   const [saving, setSaving] = useState(false);
   const [health, setHealth] = useState<DataHealthResponse | null>(null);
+  const [hourlyBuckets, setHourlyBuckets] = useState<HourlyBucket[] | null>(null);
 
   useEffect(() => {
     setEditing(false);
@@ -38,6 +142,17 @@ export function LatestTab({ rec, onRegenerate, regenerating, onNotesSaved }: Pro
     recommendationsApi.dataHealth(rec.intersection_id)
       .then(setHealth)
       .catch(() => null);
+
+    const end = new Date();
+    const start = new Date(end.getTime() - 24 * 3600 * 1000);
+    aggregationApi.history({
+      intersection_id: rec.intersection_id,
+      start: start.toISOString(),
+      end: end.toISOString(),
+      bucket: 'hour',
+    })
+      .then(rows => setHourlyBuckets(buildHourlyBuckets(rows)))
+      .catch(() => setHourlyBuckets([]));
   }, [rec.intersection_id]);
 
   async function save() {
@@ -142,8 +257,30 @@ export function LatestTab({ rec, onRegenerate, regenerating, onNotesSaved }: Pro
 
       <Separator />
 
-      <div>
-        <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-2">Warrant evidence (DPWH thresholds)</div>
+      <div className="flex flex-col gap-3">
+        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Warrant evidence (DPWH thresholds)</div>
+
+        {hourlyBuckets !== null && (
+          <div className="flex flex-col gap-3">
+            <WarrantChart
+              buckets={hourlyBuckets}
+              threshold={W1_MAJOR_THRESHOLD}
+              dataKey="volume"
+              thresholdLabel="≥400 veh/hr"
+              qualifyingTarget={8}
+            />
+            {hourlyBuckets.some(b => b.peds > 0) && (
+              <WarrantChart
+                buckets={hourlyBuckets}
+                threshold={W4_PEDS_THRESHOLD}
+                dataKey="peds"
+                thresholdLabel="≥100 ped/hr (W4)"
+                qualifyingTarget={8}
+              />
+            )}
+          </div>
+        )}
+
         <table className="w-full text-xs">
           <thead>
             <tr className="border-b border-border">
@@ -159,8 +296,8 @@ export function LatestTab({ rec, onRegenerate, regenerating, onNotesSaved }: Pro
             <WarrantRow label="W4 — Pedestrians"  threshold={100} measured={rec.peds}         unit="/hr" />
           </tbody>
         </table>
-        <p className="text-[10px] text-muted-foreground mt-1.5">
-          DPWH Traffic Signal Manual Vol. 1 · Based on last-hour counts
+        <p className="text-[10px] text-muted-foreground">
+          DPWH Traffic Signal Manual Vol. 1 · Last-hour snapshot vs 24-hour hourly trend above
         </p>
       </div>
 
