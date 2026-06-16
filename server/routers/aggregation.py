@@ -1,12 +1,12 @@
 # server/routers/aggregation.py
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from common.database import SessionLocal
 from common import models
-from server.utils import get_current_user, get_user_from_token
+from server.utils import get_bearer_token, get_current_user, get_user_from_token
 from sqlalchemy import text
 from datetime import datetime
-from typing import Optional, Literal
+from typing import Annotated, Optional, Literal
 import asyncio
 import json
 import os
@@ -61,10 +61,26 @@ async def aggregation_pusher():
             db.close()
 
 
+async def _stream_token(
+    request: Request,
+    token: str = Query(default=""),
+) -> str:
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        resolved = auth_header[7:]
+    elif token:
+        resolved = token
+    else:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if not get_user_from_token(resolved):
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return resolved
+
+
 @router.get("/stream")
-async def stream_aggregation(token: str = Query(...)):
-    if not get_user_from_token(token):
-        raise HTTPException(status_code=401, detail="Unauthorized")
+async def stream_aggregation(
+    token: Annotated[str, Depends(_stream_token)],
+):
     queue: asyncio.Queue = asyncio.Queue()
     connected_clients.append(queue)
 

@@ -18,7 +18,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
-import { ArrowLeft, TrendingDown, Printer, Play, Pause, Columns2, MonitorPlay, X } from 'lucide-react';
+import { ArrowLeft, TrendingDown, Printer, Play, Pause, Columns2, MonitorPlay, TrendingUp, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const APPROACH_COLORS = ['#6366f1', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6', '#06b6d4'];
@@ -284,6 +284,23 @@ export function SignalTimingPage() {
             Print / Export PDF
           </Button>
         )}
+        <div className="flex rounded-md border border-border overflow-hidden shrink-0">
+          <button
+            type="button"
+            onClick={() => navigate(`/intersections/${id}`)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <MonitorPlay className="size-3" />
+            Live
+          </button>
+          <button
+            type="button"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border-l border-border bg-foreground text-background"
+          >
+            <TrendingUp className="size-3" />
+            Timing
+          </button>
+        </div>
       </div>
 
       {/* Print header — only visible when printing */}
@@ -523,52 +540,50 @@ export function SignalTimingPage() {
                     <button className={cn('px-3 py-1 text-xs font-medium transition-colors border-l border-border', view3D ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted')} onClick={() => setView3D(true)}>3D</button>
                   </div>
 
+                  {/* Side-by-side — 3D only */}
                   {view3D && (
-                    <>
-                      {/* Side-by-side */}
-                      <button
-                        title="Side by side"
-                        onClick={() => setSbs3D(v => !v)}
-                        className={cn('flex items-center gap-1 px-2.5 py-1 text-xs rounded-md border transition-colors',
-                          sbs3D ? 'bg-primary text-primary-foreground border-primary' : 'border-border text-muted-foreground hover:bg-muted')}
-                      >
-                        <Columns2 className="size-3" />
-                        Side by side
-                      </button>
-
-                      {/* Before / After — only when not SBS */}
-                      {!sbs3D && (
-                        <div className="flex rounded-md border border-border overflow-hidden">
-                          <button className={cn('px-3 py-1 text-xs font-medium transition-colors', show3DBefore ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted')} onClick={() => setShow3DBefore(true)}>Before</button>
-                          <button className={cn('px-3 py-1 text-xs font-medium transition-colors border-l border-border', !show3DBefore ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted')} onClick={() => setShow3DBefore(false)}>After</button>
-                        </div>
-                      )}
-
-                      {/* Play / Pause */}
-                      <button
-                        onClick={() => setPaused3D(v => !v)}
-                        className="flex items-center gap-1 px-2.5 py-1 text-xs rounded-md border border-border text-muted-foreground hover:bg-muted transition-colors"
-                        title={paused3D ? 'Resume' : 'Pause'}
-                      >
-                        {paused3D ? <Play className="size-3" /> : <Pause className="size-3" />}
-                        {paused3D ? 'Play' : 'Pause'}
-                      </button>
-
-                      {/* Speed */}
-                      <div className="flex rounded-md border border-border overflow-hidden">
-                        {([1, 2, 4] as const).map(s => (
-                          <button
-                            key={s}
-                            onClick={() => setSpeed3D(s)}
-                            className={cn('px-2.5 py-1 text-xs font-medium transition-colors border-l first:border-l-0 border-border',
-                              speed3D === s ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted')}
-                          >
-                            {s}×
-                          </button>
-                        ))}
-                      </div>
-                    </>
+                    <button
+                      title="Side by side"
+                      onClick={() => setSbs3D(v => !v)}
+                      className={cn('flex items-center gap-1 px-2.5 py-1 text-xs rounded-md border transition-colors',
+                        sbs3D ? 'bg-primary text-primary-foreground border-primary' : 'border-border text-muted-foreground hover:bg-muted')}
+                    >
+                      <Columns2 className="size-3" />
+                      Side by side
+                    </button>
                   )}
+
+                  {/* Before / After — 3D single-view only */}
+                  {view3D && !sbs3D && (
+                    <div className="flex rounded-md border border-border overflow-hidden">
+                      <button className={cn('px-3 py-1 text-xs font-medium transition-colors', show3DBefore ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted')} onClick={() => setShow3DBefore(true)}>Before</button>
+                      <button className={cn('px-3 py-1 text-xs font-medium transition-colors border-l border-border', !show3DBefore ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted')} onClick={() => setShow3DBefore(false)}>After</button>
+                    </div>
+                  )}
+
+                  {/* Play / Pause — shared for both 2D and 3D */}
+                  <button
+                    onClick={() => setPaused3D(v => !v)}
+                    className="flex items-center gap-1 px-2.5 py-1 text-xs rounded-md border border-border text-muted-foreground hover:bg-muted transition-colors"
+                    title={paused3D ? 'Resume' : 'Pause'}
+                  >
+                    {paused3D ? <Play className="size-3" /> : <Pause className="size-3" />}
+                    {paused3D ? 'Play' : 'Pause'}
+                  </button>
+
+                  {/* Speed — shared for both 2D and 3D */}
+                  <div className="flex rounded-md border border-border overflow-hidden">
+                    {([1, 2, 4] as const).map(s => (
+                      <button
+                        key={s}
+                        onClick={() => setSpeed3D(s)}
+                        className={cn('px-2.5 py-1 text-xs font-medium transition-colors border-l first:border-l-0 border-border',
+                          speed3D === s ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted')}
+                      >
+                        {s}×
+                      </button>
+                    ))}
+                  </div>
 
                   {/* Present mode button */}
                   <button
@@ -588,6 +603,8 @@ export function SignalTimingPage() {
                   timing={activeTiming}
                   signalStatus={data.signal_status}
                   typeMix={typeMix}
+                  paused={paused3D}
+                  speed={speed3D}
                 />
               )}
 
@@ -801,6 +818,8 @@ export function SignalTimingPage() {
                 timing={activeTiming}
                 signalStatus={data.signal_status}
                 typeMix={typeMix}
+                paused={paused3D}
+                speed={speed3D}
               />
             )}
             {view3D && activeTiming && !sbs3D && (

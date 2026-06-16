@@ -42,8 +42,21 @@ from common.models import (
     Region,
     RegionPoint,
     Street,
+    TodChunk,
 )
-from server.tod import seed_tod_chunks
+
+_TOD_DEFAULTS = [
+    ("Early Morning", 0,    360),
+    ("AM Peak",       360,  540),
+    ("Midday",        540,  720),
+    ("PM Peak",       720,  1080),
+    ("Night",         1080, 1440),
+]
+
+def seed_tod_chunks(db, intersection_id: int) -> None:
+    for name, start, end in _TOD_DEFAULTS:
+        db.add(TodChunk(intersection_id=intersection_id, name=name,
+                        start_minutes=start, end_minutes=end))
 
 OBJECT_TYPES = ["tricycle", "motorcycle", "car", "truck", "pedicab", "pedestrian"]
 

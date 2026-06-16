@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { OnboardingWizard } from '@/components/OnboardingWizard';
 import { onboardingApi } from '@/services/onboarding';
@@ -17,41 +17,36 @@ import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
   BarChart3, MapPin, Users, LogOut,
-  Wifi, WifiOff, Loader2, BookOpen, Rocket,
+  Wifi, WifiOff, Loader2, BookOpen, ServerCrash, Video,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const NAV_ITEMS = [
   { to: '/',        label: 'Intersections', icon: MapPin,    end: true },
   { to: '/reports', label: 'Reports',       icon: BarChart3           },
+  { to: '/videos',  label: 'Videos',        icon: Video               },
   { to: '/users',   label: 'Users',         icon: Users               },
   { to: '/manual',  label: 'Manual',        icon: BookOpen            },
 ];
 
+const SSE_INDICATOR: Record<SSEStatus, { icon: React.ReactNode; label: string; color: string; tip: string }> = {
+  connected:     { icon: <Wifi className="size-3 text-emerald-500 sse-pulse" />, label: 'Live',          color: 'text-emerald-500', tip: 'Live data stream connected'       },
+  connecting:    { icon: <Loader2 className="size-3 text-amber-500 animate-spin" />, label: 'Connecting', color: 'text-amber-500',   tip: 'Reconnecting to data stream…'     },
+  disconnected:  { icon: <WifiOff className="size-3 text-destructive" />,        label: 'Offline',       color: 'text-destructive',  tip: 'Stream dropped — retrying…'       },
+  server_offline:{ icon: <ServerCrash className="size-3 text-destructive" />,    label: 'Server offline',color: 'text-destructive',  tip: 'Server unreachable — retrying…'   },
+};
+
 function SSEIndicator({ status }: { status: SSEStatus }) {
+  const { icon, label, color, tip } = SSE_INDICATOR[status];
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <div className="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs text-muted-foreground">
-          {status === 'connected' ? (
-            <Wifi className="size-3 text-emerald-500 sse-pulse" />
-          ) : status === 'connecting' ? (
-            <Loader2 className="size-3 text-amber-500 animate-spin" />
-          ) : (
-            <WifiOff className="size-3 text-destructive" />
-          )}
-          <span className={cn(
-            status === 'connected'  && 'text-emerald-500',
-            status === 'connecting' && 'text-amber-500',
-            status === 'disconnected' && 'text-destructive',
-          )}>
-            {status === 'connected' ? 'Live' : status === 'connecting' ? 'Connecting' : 'Offline'}
-          </span>
+          {icon}
+          <span className={cn(color)}>{label}</span>
         </div>
       </TooltipTrigger>
-      <TooltipContent side="bottom">
-        SSE stream: {status}
-      </TooltipContent>
+      <TooltipContent side="bottom">{tip}</TooltipContent>
     </Tooltip>
   );
 }
@@ -59,7 +54,7 @@ function SSEIndicator({ status }: { status: SSEStatus }) {
 export function Layout() {
   const { username, logout, token } = useAuth();
   const navigate = useNavigate();
-  const SSE_URL = token ? `/api/aggregation/stream?token=${token}` : null;
+  const SSE_URL = token ? '/api/aggregation/stream' : null;
   const { data: sseData, status: sseStatus } = useSSE<AggregationRow[]>(SSE_URL ?? '', !!SSE_URL);
 
   const [wizardOpen,       setWizardOpen]       = useState(false);
@@ -123,21 +118,18 @@ export function Layout() {
                 </SidebarMenuItem>
               ))}
 
-              <SidebarMenuItem>
-                <SidebarMenuButton onClick={openWizard} tooltip="Get Started">
-                  <Rocket />
-                  <span>Get Started</span>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
             </SidebarMenu>
 
-            {/* Setup progress indicator */}
+            {/* Setup progress indicator — click to open wizard */}
             {intersectionList.length > 0 && (() => {
               const configured = intersectionList.filter(i => i.existing_cycle_length != null).length;
               const total      = intersectionList.length;
               const pct        = Math.round((configured / total) * 100);
               return (
-                <div className="mx-3 mt-1 mb-2 rounded-md border border-border bg-muted/30 px-3 py-2.5 group-data-[collapsible=icon]:hidden">
+                <button
+                  onClick={openWizard}
+                  className="mx-3 mt-1 mb-2 rounded-md border border-border bg-muted/30 px-3 py-2.5 group-data-[collapsible=icon]:hidden w-[calc(100%-1.5rem)] text-left hover:bg-muted/50 transition-colors"
+                >
                   <div className="flex items-center justify-between mb-1.5">
                     <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
                       Setup Progress
@@ -160,7 +152,7 @@ export function Layout() {
                       ? 'All intersections configured'
                       : `${total - configured} pending timing setup`}
                   </p>
-                </div>
+                </button>
               );
             })()}
           </SidebarContent>

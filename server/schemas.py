@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, model_validator, field_validator
 from datetime import datetime
 from typing import Any, Literal, Optional
 
@@ -37,6 +37,7 @@ class IntersectionUpdate(BaseModel):
     name: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+    crossing_width_m: Optional[float] = None
 
 
 class SignalTimingUpdate(BaseModel):
@@ -60,6 +61,7 @@ class IntersectionResponse(IntersectionBase):
     w_local_1_threshold: float = 0.6
     w_local_2_threshold: float = 0.7
     w_local_3_min_pcu: float = 30.0
+    crossing_width_m: float = 12.0
     time: datetime
     model_config = ConfigDict(from_attributes=True)
 
@@ -78,16 +80,21 @@ class StreetBase(BaseModel):
     name: str
 
 
+ARM_DIRECTIONS = Literal["northbound", "southbound", "eastbound", "westbound", "unknown"]
+
+
 class StreetCreate(StreetBase):
-    pass
+    arm_direction: ARM_DIRECTIONS = "unknown"
 
 
 class StreetUpdate(BaseModel):
     name: Optional[str] = None
+    arm_direction: Optional[ARM_DIRECTIONS] = None
 
 
 class StreetResponse(StreetBase):
     id: int
+    arm_direction: str = "unknown"
     time: datetime
     model_config = ConfigDict(from_attributes=True)
 
@@ -118,8 +125,8 @@ class CCTVResponse(CCTVBase):
 
 
 class DetectionBase(BaseModel):
-    cctv_id: int
-    type: str
+    cctv_id: Optional[int] = None  # nullable — video detections have no cctv
+    object_type: str
 
 
 class DetectionResponse(DetectionBase):
@@ -131,6 +138,13 @@ class DetectionResponse(DetectionBase):
 class RegionPointBase(BaseModel):
     x: float
     y: float
+
+    @field_validator('x', 'y')
+    @classmethod
+    def must_be_normalized(cls, v: float) -> float:
+        if not (0.0 <= v <= 1.0):
+            raise ValueError('must be between 0 and 1 (normalized coordinate)')
+        return v
 
 
 class RegionBase(BaseModel):

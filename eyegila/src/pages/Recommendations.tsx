@@ -6,6 +6,7 @@ import type { Intersection } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Loader2, RefreshCw, Lightbulb } from 'lucide-react';
+import { LoadingRobot } from '@/components/LoadingRobot';
 import { SummaryStrip } from '@/components/recommendations/SummaryStrip';
 import { FilterBar, type FilterState, ALL_STATUSES, ALL_WARRANTS } from '@/components/recommendations/FilterBar';
 import { RecommendationsTable, sortRows, type SortState } from '@/components/recommendations/RecommendationsTable';
@@ -155,7 +156,9 @@ export function RecommendationsPage() {
           <Button size="sm" variant="outline" onClick={load}>Retry</Button>
         </div>
       ) : loading ? (
-        <Skeleton className="h-64" />
+        <div className="flex justify-center py-16">
+          <LoadingRobot message="Fetching recommendations..." />
+        </div>
       ) : intersections.length === 0 ? (
         <div className="flex flex-col items-center gap-3 py-20 text-muted-foreground">
           <Lightbulb className="size-10 opacity-30" />

@@ -13,6 +13,8 @@ class User(Base):
     role     = Column(String(50),  nullable=False, default="viewer")
     time     = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
+    wizard_step        = Column(String(50),  nullable=True)
+
     sessions           = relationship("UserSession",      back_populates="user", cascade="all, delete")
     uploaded_videos    = relationship("Video",            back_populates="uploader",          foreign_keys="Video.uploaded_by")
     push_subscriptions = relationship("PushSubscription", back_populates="user", cascade="all, delete")
@@ -55,6 +57,7 @@ class Intersection(Base):
     w_local_1_threshold    = Column(Float, nullable=False, server_default="0.6")
     w_local_2_threshold    = Column(Float, nullable=False, server_default="0.7")
     w_local_3_min_pcu      = Column(Float, nullable=False, server_default="30.0")
+    crossing_width_m       = Column(Float, nullable=False, server_default="12.0")
     time                   = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     streets                = relationship("Street",              back_populates="intersection", cascade="all, delete")
@@ -74,6 +77,7 @@ class Street(Base):
     id              = Column(Integer, primary_key=True, autoincrement=True)
     intersection_id = Column(Integer, ForeignKey("intersections.id", ondelete="CASCADE"), nullable=False)
     name            = Column(String(255), nullable=False)
+    arm_direction   = Column(String(20),  nullable=False, server_default="unknown")
     time            = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     intersection = relationship("Intersection", back_populates="streets")

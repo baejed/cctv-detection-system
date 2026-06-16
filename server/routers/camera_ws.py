@@ -288,6 +288,8 @@ async def boxes_stream(cctv_id: int, request: Request, token: str = Query(...)):
 
 @router.websocket("/{cctv_id}/ws")
 async def camera_ws(websocket: WebSocket, cctv_id: int, token: str = "", overlay: bool = True):
+    # Accept before closing so the browser receives the close code in onclose.
+    await websocket.accept()
     if not get_user_from_token(token):
         await websocket.close(code=4001)
         return
@@ -302,8 +304,6 @@ async def camera_ws(websocket: WebSocket, cctv_id: int, token: str = "", overlay
         db.commit()
     finally:
         db.close()
-
-    await websocket.accept()
 
     frame_q: stdlib_queue.Queue = stdlib_queue.Queue(maxsize=2)
     stop_event = threading.Event()

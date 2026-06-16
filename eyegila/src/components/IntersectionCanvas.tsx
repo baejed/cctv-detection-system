@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Pause, Play, RotateCcw, Maximize2, Minimize2 } from 'lucide-react';
+import { RotateCcw, Maximize2, Minimize2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import type { SimulationChunk } from '@/services/simulation';
@@ -20,6 +20,7 @@ const BOX_UNITS = 52;
 const MAX_QUEUE = 15;
 const MAX_PHYSICS_DT = 0.1;
 const GAP_THRESHOLD_S = 6;
+const GAP_PHASE_S = 10; // each axis (N-S or E-W) gets this many sim-seconds of priority
 // Conflicting approach indices for gap-acceptance (perpendicular pairs)
 const CONFLICTS: number[][] = [[1, 3], [0, 2], [1, 3], [0, 2]];
 
@@ -99,17 +100,25 @@ function initClearing(v: Vehicle): void {
 
 // --- Gap acceptance ---
 
-function conflictingGapOk(approach: number, vehicles: Vehicle[]): boolean {
+// Alternates priority between N-S (approaches 0&2) and E-W (approaches 1&3) every
+// GAP_PHASE_S sim-seconds.  Without this, all four approaches stop, nobody blocks
+// anyone (speed=0), and all discharge simultaneously through the box.
+function conflictingGapOk(approach: number, vehicles: Vehicle[], gapTime: number): boolean {
+  // axis 0 = N-S (approach % 2 === 0); axis 1 = E-W (approach % 2 === 1)
+  const axisNow = Math.floor(gapTime / GAP_PHASE_S) % 2;
+  if (approach % 2 !== axisNow) return false;
+
   const conflicts = CONFLICTS[approach] ?? [];
   for (const ca of conflicts) {
-    // Only moving (non-stopped) queuing vehicles on the conflicting approach are threats
-    const cvs = vehicles.filter(
-      v => v.approach === ca && !v.clearing && v.distFromStop > 0 && v.currSpeed > 0,
-    );
+    const cvs = vehicles.filter(v => v.approach === ca && !v.clearing);
     if (cvs.length === 0) continue;
     cvs.sort((a, b) => a.distFromStop - b.distFromStop);
     const lead = cvs[0];
-    if (lead.distFromStop / lead.currSpeed < GAP_THRESHOLD_S) return false;
+    const leadLen = VEHICLE_PARAMS[lead.type].length;
+    // Lead is physically at/past the stop line — conflict zone occupied
+    if (lead.distFromStop < leadLen) return false;
+    // Lead approaching within threshold
+    if (lead.currSpeed > 0 && lead.distFromStop / lead.currSpeed < GAP_THRESHOLD_S) return false;
   }
   return true;
 }
@@ -121,6 +130,7 @@ function stepPhysics(
   dt: number,
   greenFlags: boolean[],
   gapMode: boolean,
+  gapTime = 0,
 ): void {
   // Move clearing vehicles along their waypoint path
   for (const v of vehicles) {
@@ -163,7 +173,7 @@ function stepPhysics(
   for (const [ap, apVehicles] of byApproach) {
     const queuing = apVehicles.sort((a, b) => a.distFromStop - b.distFromStop);
     const canProceed = gapMode
-      ? conflictingGapOk(ap, vehicles)
+      ? conflictingGapOk(ap, vehicles, gapTime)
       : (greenFlags[ap] ?? false);
 
     for (let k = 0; k < queuing.length; k++) {
@@ -636,7 +646,7 @@ export function IntersectionCanvas({
               mixPerApproach,
               step,
             );
-            stepPhysics(vehiclesRef.current, step, greenFlags, useGapMode);
+            stepPhysics(vehiclesRef.current, step, greenFlags, useGapMode, subT);
 
             subT += step;
             remaining -= step;
@@ -809,11 +819,15 @@ export function DualIntersectionCanvas({
   timing,
   signalStatus: _signalStatus,
   typeMix = {},
+  paused = false,
+  speed = 1,
 }: {
   chunk: SimulationChunk;
   timing: TimingChunk | null;
   signalStatus: string;
   typeMix?: Record<string, TypeFractions>;
+  paused?: boolean;
+  speed?: 1 | 2 | 4;
 }) {
   const wrapperRef        = useRef<HTMLDivElement>(null);
   const canvasBeforeRef   = useRef<HTMLCanvasElement>(null);
@@ -846,10 +860,12 @@ export function DualIntersectionCanvas({
   }, [chunk]);
   idsRef.current = ids;
 
-  const [playing, setPlaying]         = useState(false);
-  const [sps, setSps]                 = useState(6);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [liveQ, setLiveQ]             = useState({ before: 0, after: 0 });
+
+  // Sync external paused / speed props into refs used by the RAF loop
+  useEffect(() => { playingRef.current = !paused; }, [paused]);
+  useEffect(() => { spsRef.current = 60 * speed; }, [speed]);
 
   useEffect(() => {
     const series = (chunk.queue_series_after ?? chunk.queue_series_before) ?? {};
@@ -870,10 +886,9 @@ export function DualIntersectionCanvas({
     beforeSim.current  = createSimState();
     afterSim.current   = createSimState();
     simTRef.current    = 0;
-    playingRef.current = false;
-    setPlaying(false);
+    playingRef.current = !paused;
     setLiveQ({ before: 0, after: 0 });
-  }, [chunk.chunk_name]);
+  }, [chunk.chunk_name]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Canvas sizing — observe both containers
   useEffect(() => {
@@ -940,14 +955,14 @@ export function DualIntersectionCanvas({
               afterSim.current.nextId, idsRef.current,
               activeApproachesRef.current, spawnIntervalsRef.current, mix, step);
 
-            stepPhysics(beforeSim.current.vehicles, step, greenB, true);
-            stepPhysics(afterSim.current.vehicles,  step, greenA, gapAfter);
+            stepPhysics(beforeSim.current.vehicles, step, greenB, true,     subT);
+            stepPhysics(afterSim.current.vehicles,  step, greenA, gapAfter, subT);
 
             subT      += step;
             remaining -= step;
           }
           simTRef.current = Math.min(simTRef.current + dtSim, SIM_DURATION);
-          if (simTRef.current >= SIM_DURATION) { playingRef.current = false; setPlaying(false); }
+          if (simTRef.current >= SIM_DURATION) { playingRef.current = false; }
         }
         lastRtRef.current = now;
         if (idsRef.current.length > 0) {
@@ -973,19 +988,10 @@ export function DualIntersectionCanvas({
     beforeSim.current  = createSimState();
     afterSim.current   = createSimState();
     simTRef.current    = 0;
-    playingRef.current = false;
-    setPlaying(false);
+    playingRef.current = !paused;
     setLiveQ({ before: 0, after: 0 });
   };
 
-  const handlePlay  = () => {
-    if (simTRef.current >= SIM_DURATION) resetState();
-    lastRtRef.current  = performance.now();
-    playingRef.current = true;
-    setPlaying(true);
-  };
-  const handlePause      = () => { playingRef.current = false; setPlaying(false); };
-  const handleSpeed      = (v: number) => { spsRef.current = v; setSps(v); };
   const handleFullscreen = () => {
     if (!document.fullscreenElement) wrapperRef.current?.requestFullscreen();
     else document.exitFullscreen();
@@ -1060,37 +1066,11 @@ export function DualIntersectionCanvas({
         </div>
       </div>
 
-      {/* Controls */}
-      <div className="flex flex-wrap items-center gap-2">
-        {playing ? (
-          <Button size="sm" variant="outline" className="h-8 gap-1.5" onClick={handlePause}>
-            <Pause className="size-3.5" /> Pause
-          </Button>
-        ) : (
-          <Button size="sm" className="h-8 gap-1.5" onClick={handlePlay}>
-            <Play className="size-3.5" /> Play
-          </Button>
-        )}
-        <Button size="sm" variant="ghost" className="size-8 p-0" title="Reset" onClick={resetState}>
+      {/* Controls: reset + fullscreen only — play/pause and speed are in the parent strip */}
+      <div className="flex items-center gap-2">
+        <Button size="sm" variant="ghost" className="size-8 p-0" title="Reset simulation" onClick={resetState}>
           <RotateCcw className="size-3.5" />
         </Button>
-
-        <div className="h-5 w-px bg-border mx-0.5" />
-
-        {SPEEDS.map(sp => (
-          <Button
-            key={sp.label}
-            size="sm"
-            variant={sps === sp.sps ? 'default' : 'outline'}
-            className="h-8 px-2.5 text-xs"
-            onClick={() => handleSpeed(sp.sps)}
-          >
-            {sp.label}
-          </Button>
-        ))}
-
-        <div className="h-5 w-px bg-border mx-0.5" />
-
         <Button
           size="sm"
           variant="ghost"

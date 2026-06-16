@@ -26,10 +26,13 @@ export interface Intersection {
   time: string;
 }
 
+export type ArmDirection = 'northbound' | 'southbound' | 'eastbound' | 'westbound' | 'unknown';
+
 export interface Street {
   id: number;
   intersection_id: number;
   name: string;
+  arm_direction: ArmDirection;
   time: string;
 }
 

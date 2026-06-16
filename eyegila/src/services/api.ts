@@ -16,6 +16,11 @@ export function setUnauthorizedHandler(fn: () => void) {
   _onUnauthorized = fn;
 }
 
+/** Called by non-fetch connections (e.g. SSE) that detect a 401 out-of-band. */
+export function triggerUnauthorized() {
+  _onUnauthorized?.();
+}
+
 interface RequestOptions extends RequestInit {
   skipAuth?: boolean;
   // Allow overriding the token (e.g. admin key for /users/)

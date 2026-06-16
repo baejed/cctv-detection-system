@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from typing import Annotated, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from common.database import get_db
 from common import models
@@ -27,8 +27,7 @@ class TimingChunkResponse(BaseModel):
     measured_flows: Optional[dict] = None
     assumptions: Optional[dict] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 def _row_to_response(

@@ -1,7 +1,7 @@
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -27,8 +27,7 @@ class SimulationChunkResponse(BaseModel):
     queue_series_after: Optional[dict] = None
     generated_at: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class DailySummaryResponse(BaseModel):
@@ -81,6 +80,7 @@ def get_simulation(
     if not rows:
         raise HTTPException(status_code=404, detail="No simulation results found — run generate first")
 
+    status = intersection.signal_status or "unsignalized"
     before_signalized = status in ("fixed_time", "actuated")
     chunks = [
         SimulationChunkResponse(
@@ -106,7 +106,6 @@ def get_simulation(
     avg_before = sum(c.delay_before for c in chunks) / n if n else 0.0
     avg_after  = sum(c.delay_after  for c in chunks) / n if n else 0.0
 
-    status = intersection.signal_status or "unsignalized"
     existing_cycle = intersection.existing_cycle_length
     existing_splits = intersection.existing_green_splits
 

@@ -12,7 +12,8 @@ from typing import Annotated
 from bcrypt import checkpw
 from os import urandom
 
-SESSION_TTL_HOURS = int(os.getenv("SESSION_TTL_HOURS", "24"))
+SESSION_TTL_HOURS  = int(os.getenv("SESSION_TTL_HOURS", "24"))
+LOGIN_RATE_LIMIT   = os.getenv("LOGIN_RATE_LIMIT", "10/minute")
 
 
 router = APIRouter(
@@ -22,7 +23,7 @@ router = APIRouter(
 
 
 @router.post("/")
-@limiter.limit("10/minute")
+@limiter.limit(LOGIN_RATE_LIMIT)
 def login(
     request: Request,
     user: UserBase,

@@ -11,6 +11,5 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements.txt
 COPY common ./common
 COPY worker/ ./worker/
-COPY eyegila_v3.pt ./eyegila_v3.pt
 
 CMD ["rq", "worker", "video", "--url", "redis://redis:6379", "--path", "/app"]

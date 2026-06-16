@@ -1,912 +1,1061 @@
-import { useEffect, useState } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, useMapEvents } from 'react-leaflet';
-import L from 'leaflet';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import { Link, useOutletContext } from 'react-router-dom';
+import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import { toast } from 'sonner';
 import { intersectionsApi, type DetectTimingResult } from '@/services/intersections';
 import { streetsApi } from '@/services/streets';
+import { cctvsApi } from '@/services/cctvs';
 import { recommendationsApi, type RecommendationResponse } from '@/services/recommendations';
-import { pceApi, type PceValue } from '@/services/pce';
-import { todApi } from '@/services/tod';
-import type { Intersection, SignalStatus, Street, TodChunk } from '@/types';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import type { Intersection, Street, CCTV, SignalStatus, AggregationRow } from '@/types';
+import type { SSEStatus } from '@/hooks/useSSE';
+import { IntersectionSetupWizard } from '@/components/IntersectionSetupWizard';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Badge } from '@/components/ui/badge';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Skeleton } from '@/components/ui/skeleton';
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Separator } from '@/components/ui/separator';
-import { MapPin, Plus, Pencil, Trash2, ChevronRight, Loader2, TrafficCone, Clock, ScanSearch } from 'lucide-react';
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
+import { Separator } from '@/components/ui/separator';
+import {
+  Plus, Settings2, Trash2, WifiOff, RefreshCw, Wifi,
+  Loader2, TrendingUp, AlertTriangle, ScanSearch, ExternalLink,
+  Camera, Rocket, LayoutGrid, Map as MapIcon, Users, MapPin, MonitorPlay,
+} from 'lucide-react';
 import { statusBucket, BUCKET_LABEL, BUCKET_BADGE_CLASS } from '@/components/recommendations/statusBucket';
 import { cn } from '@/lib/utils';
 
-// Fix leaflet marker icons in Vite
-delete (L.Icon.Default.prototype as unknown as Record<string, unknown>)._getIconUrl;
-L.Icon.Default.mergeOptions({
-  iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
-  iconUrl:       'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
-  shadowUrl:     'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
-});
+// ── Map view ──────────────────────────────────────────────────────────────────
 
-const TAGUM_CENTER: [number, number] = [7.4478, 125.8057];
+const DEFAULT_CENTER: [number, number] = [7.4478, 125.8075];
 
-function MapClickPicker({ onPick }: { onPick: (lat: number, lng: number) => void }) {
-  useMapEvents({ click: e => onPick(e.latlng.lat, e.latlng.lng) });
+function densityColor(count: number): string {
+  if (count === 0)  return '#6b7280';
+  if (count < 50)   return '#22c55e';
+  if (count < 150)  return '#f59e0b';
+  if (count < 400)  return '#f97316';
+  return                   '#ef4444';
+}
+
+function densityLabel(count: number): string {
+  if (count === 0)  return 'No data';
+  if (count < 50)   return 'Low';
+  if (count < 150)  return 'Moderate';
+  if (count < 400)  return 'High';
+  return                   'Very High';
+}
+
+function MapAutoFit({ intersections }: { intersections: Intersection[] }) {
+  const map  = useMap();
+  const done = useRef(false);
+  useEffect(() => {
+    if (done.current) return;
+    const first = intersections.find(i => i.latitude && i.longitude);
+    if (first) { map.setView([first.latitude, first.longitude], 14); done.current = true; }
+  }, [intersections, map]);
   return null;
 }
 
-interface InterForm { name: string; latitude: string; longitude: string }
-const EMPTY_INTER: InterForm = { name: '', latitude: '', longitude: '' };
-
-interface TimingForm {
-  signal_status: SignalStatus;
-  existing_cycle_length: string;
-  existing_green_splits: string;
+interface DensityMapProps {
+  intersections:  Intersection[];
+  sseData:        AggregationRow[] | null;
+  onOpenSettings: (inter: Intersection) => void;
 }
-const EMPTY_TIMING: TimingForm = {
-  signal_status: 'unsignalized',
-  existing_cycle_length: '',
-  existing_green_splits: '',
-};
 
-const SIGNAL_STATUS_LABEL: Record<SignalStatus, string> = {
-  unsignalized: 'Unsignalized',
-  fixed_time:   'Fixed-time',
-  actuated:     'Actuated',
-};
+function DensityMap({ intersections, sseData, onOpenSettings }: DensityMapProps) {
+  const byInter = useMemo(() => {
+    const m = new Map<number, number>();
+    for (const r of sseData ?? []) m.set(r.intersection_id, (m.get(r.intersection_id) ?? 0) + r.count);
+    return m;
+  }, [sseData]);
 
-export function IntersectionsPage() {
-  const [intersections, setIntersections] = useState<Intersection[]>([]);
-  const [streets, setStreets] = useState<Street[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const maxTotal  = Math.max(1, ...byInter.values());
+  const mappable  = intersections.filter(i => i.latitude && i.longitude);
+  const center: [number, number] = mappable[0]
+    ? [mappable[0].latitude, mappable[0].longitude]
+    : DEFAULT_CENTER;
 
-  const [showInterModal, setShowInterModal] = useState(false);
-  const [editingInter, setEditingInter] = useState<Intersection | null>(null);
-  const [interForm, setInterForm] = useState<InterForm>(EMPTY_INTER);
-  const [savingInter, setSavingInter] = useState(false);
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-3 text-[11px] text-muted-foreground flex-wrap">
+        {(['No data:#6b7280', 'Low:#22c55e', 'Moderate:#f59e0b', 'High:#f97316', 'Very High:#ef4444']).map(entry => {
+          const [label, color] = entry.split(':');
+          return (
+            <span key={label} className="flex items-center gap-1">
+              <span className="size-2 rounded-full shrink-0" style={{ backgroundColor: color }} />
+              {label}
+            </span>
+          );
+        })}
+        <span className="ml-auto opacity-60">{sseData && sseData.length > 0 ? 'live' : 'no data'}</span>
+      </div>
+      <div className="overflow-hidden rounded-xl border border-border" style={{ height: 460, isolation: 'isolate' }}>
+        <MapContainer center={center} zoom={14} style={{ height: '100%', width: '100%' }} scrollWheelZoom>
+          <MapAutoFit intersections={intersections} />
+          <TileLayer
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          />
+          {mappable.map(inter => {
+            const total  = byInter.get(inter.id) ?? 0;
+            const color  = densityColor(total);
+            const radius = 12 + Math.round(20 * (total / maxTotal));
+            return (
+              <CircleMarker
+                key={inter.id}
+                center={[inter.latitude, inter.longitude]}
+                radius={radius}
+                pathOptions={{ color, fillColor: color, fillOpacity: 0.65, weight: 1.5 }}
+                eventHandlers={{ click: () => onOpenSettings(inter) }}
+              >
+                <Popup>
+                  <div className="text-xs min-w-[140px]">
+                    <p className="font-semibold mb-1">{inter.name}</p>
+                    <p style={{ color }}>{densityLabel(total)} · {total} detected today</p>
+                    <p className="text-muted-foreground mt-1 text-[10px]">Click to configure</p>
+                  </div>
+                </Popup>
+              </CircleMarker>
+            );
+          })}
+        </MapContainer>
+      </div>
+    </div>
+  );
+}
 
-  const [showStreetModal, setShowStreetModal] = useState(false);
-  const [streetParent, setStreetParent] = useState<Intersection | null>(null);
-  const [editingStreet, setEditingStreet] = useState<Street | null>(null);
-  const [streetName, setStreetName] = useState('');
-  const [savingStreet, setSavingStreet] = useState(false);
+// ── Settings ──────────────────────────────────────────────────────────────────
 
-  const [showTimingModal, setShowTimingModal] = useState(false);
-  const [timingTarget, setTimingTarget] = useState<Intersection | null>(null);
-  const [timingForm, setTimingForm] = useState<TimingForm>(EMPTY_TIMING);
-  const [savingTiming, setSavingTiming] = useState(false);
-  const [detectingTiming, setDetectingTiming] = useState(false);
-  const [detectResult, setDetectResult] = useState<DetectTimingResult | null>(null);
+const SIGNAL_STATUS_OPTIONS: { value: SignalStatus; label: string }[] = [
+  { value: 'unsignalized', label: 'Unsignalized' },
+  { value: 'fixed_time',   label: 'Fixed-time signal' },
+  { value: 'actuated',     label: 'Actuated signal' },
+];
 
-  const [showPceModal, setShowPceModal] = useState(false);
-  const [pceTarget, setPceTarget] = useState<Intersection | null>(null);
-  const [pceValues, setPceValues] = useState<PceValue[]>([]);
-  const [pceLoading, setPceLoading] = useState(false);
-  const [pceEditType, setPceEditType] = useState('');
-  const [pceEditValue, setPceEditValue] = useState('');
-  const [savingPce, setSavingPce] = useState(false);
+// ── Camera snapshot grid ─────────────────────────────────────────────────────
 
-  const [showTodModal, setShowTodModal] = useState(false);
-  const [todTarget, setTodTarget] = useState<Intersection | null>(null);
-  const [todChunks, setTodChunks] = useState<TodChunk[]>([]);
-  const [todLoading, setTodLoading] = useState(false);
-  const [todEditId, setTodEditId] = useState<number | null>(null);
-  const [todEditForm, setTodEditForm] = useState({ name: '', start_time: '', end_time: '' });
-  const [savingTod, setSavingTod] = useState(false);
+function CameraGrid({ cameras }: { cameras: CCTV[] }) {
+  const shown = cameras.slice(0, 4);
+  const extra = Math.max(0, cameras.length - 4);
 
-  const [recsById, setRecsById] = useState<Map<number, RecommendationResponse>>(new Map());
+  if (cameras.length === 0) {
+    return (
+      <div className="aspect-video rounded-lg bg-muted/20 border border-dashed border-border flex items-center justify-center">
+        <div className="flex flex-col items-center gap-1.5 opacity-40">
+          <Camera className="size-5" />
+          <span className="text-xs">No cameras</span>
+        </div>
+      </div>
+    );
+  }
 
-  async function load() {
+  return (
+    <div className={cn(
+      'grid gap-px rounded-lg overflow-hidden bg-border',
+      shown.length === 1 ? 'grid-cols-1' : 'grid-cols-2',
+    )}>
+      {shown.map((cam, idx) => {
+        const isLast = idx === shown.length - 1 && extra > 0;
+        return (
+          <Link
+            key={cam.id}
+            to={`/cameras/${cam.id}`}
+            className="relative group bg-black block"
+            style={{ aspectRatio: shown.length === 1 ? '16/9' : '3/2' }}
+          >
+            <img
+              src={cctvsApi.snapshotUrl(cam.id)}
+              alt={cam.name}
+              className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity"
+              onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
+            />
+            <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+              <span className="text-[10px] text-white font-medium bg-black/60 px-2 py-0.5 rounded">
+                Draw regions
+              </span>
+            </div>
+            {isLast && (
+              <div className="absolute inset-0 bg-black/60 flex items-center justify-center pointer-events-none">
+                <span className="text-white text-sm font-semibold">+{extra}</span>
+              </div>
+            )}
+            <div className="absolute bottom-1 left-1.5 flex items-center gap-1 pointer-events-none">
+              <span className={cn('size-1.5 rounded-full shrink-0',
+                cam.status === 'online'       ? 'bg-emerald-400' :
+                cam.status === 'reconnecting' ? 'bg-amber-400'   : 'bg-red-400',
+              )} />
+              <span className="text-[9px] text-white/70 leading-none truncate max-w-[4rem]">{cam.name}</span>
+            </div>
+          </Link>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Warrant badge ────────────────────────────────────────────────────────────
+
+function WarrantBadge({ rec }: { rec: RecommendationResponse | undefined }) {
+  if (!rec) {
+    return (
+      <Badge variant="outline" className="text-[10px] border-muted text-muted-foreground bg-muted/40">
+        No analysis yet
+      </Badge>
+    );
+  }
+  const b = statusBucket(rec);
+  return (
+    <Badge variant="outline" className={cn('text-[10px]', BUCKET_BADGE_CLASS[b])}>
+      {BUCKET_LABEL[b]}
+    </Badge>
+  );
+}
+
+// ── Intersection card ────────────────────────────────────────────────────────
+
+interface CardProps {
+  inter: Intersection;
+  cameras: CCTV[];
+  rec: RecommendationResponse | undefined;
+  streets: Street[];
+  liveCount: number;
+  onRefresh: () => void;
+  onOpenSettings: (inter: Intersection) => void;
+}
+
+function IntersectionCard({ inter, cameras, rec, streets, liveCount, onRefresh, onOpenSettings }: CardProps) {
+  const [generating, setGenerating] = useState(false);
+  const bucket = rec ? statusBucket(rec) : null;
+
+  async function generate() {
+    setGenerating(true);
     try {
-      const [ints, strs] = await Promise.all([intersectionsApi.list(), streetsApi.list()]);
-      setIntersections(ints);
-      setStreets(strs);
+      await recommendationsApi.generate(inter.id);
+      toast.success('Analysis complete');
+      onRefresh();
     } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : 'Failed to load');
+      toast.error(err instanceof Error ? err.message : 'Analysis failed');
     } finally {
-      setLoading(false);
+      setGenerating(false);
     }
   }
 
-  useEffect(() => { load(); }, []);
+  return (
+    <div className="rounded-xl border border-border bg-card flex flex-col gap-0 overflow-hidden">
+      {/* Header strip — coloured by warrant status */}
+      <div className={cn(
+        'h-1',
+        bucket === 'warranted'     && 'bg-emerald-500',
+        bucket === 'borderline'    && 'bg-amber-400',
+        bucket === 'not_warranted' && 'bg-muted',
+        (bucket === 'no_data' || !bucket) && 'bg-muted/40',
+      )} />
+
+      <div className="p-5 flex flex-col gap-4">
+        {/* Top row */}
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex flex-col gap-1 min-w-0">
+            <h3 className="font-semibold text-base leading-tight truncate">{inter.name}</h3>
+            <div className="flex items-center gap-2 flex-wrap">
+              <Badge variant="secondary" className="text-[10px]">
+                {inter.signal_status.replace('_', ' ')}
+              </Badge>
+              <WarrantBadge rec={rec} />
+            </div>
+          </div>
+          <button
+            onClick={() => onOpenSettings(inter)}
+            className="shrink-0 p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+            aria-label={`Settings for ${inter.name}`}
+          >
+            <Settings2 className="size-4" />
+          </button>
+        </div>
+
+        {/* Camera grid */}
+        <CameraGrid cameras={cameras} />
+        <div className="flex items-center justify-between -mt-2">
+          {cameras.length > 0 && (
+            <p className="text-xs text-muted-foreground">
+              {cameras.filter(c => c.status === 'online').length}/{cameras.length} online · click to draw regions
+            </p>
+          )}
+          {liveCount > 0 && (
+            <span className="flex items-center gap-1 text-xs text-emerald-600 font-medium ml-auto">
+              <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+              {liveCount} detected
+            </span>
+          )}
+        </div>
+
+        {/* Timing summary — only when warranted and timing exists */}
+        {bucket === 'warranted' && rec?.timing_cycle && (
+          <div className="rounded-lg bg-muted/40 px-3 py-2 flex items-center gap-2">
+            <TrendingUp className="size-3.5 text-emerald-500 shrink-0" />
+            <p className="text-xs">
+              Recommended <span className="font-semibold">{rec.timing_cycle}s cycle</span>
+              {rec.timing_chunk && (
+                <span className="text-muted-foreground"> · peak {rec.timing_chunk}</span>
+              )}
+            </p>
+          </div>
+        )}
+
+        {/* No streets warning */}
+        {streets.length === 0 && (
+          <div className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+            <AlertTriangle className="size-3.5 shrink-0" />
+            No approach directions set — open settings to configure
+          </div>
+        )}
+
+        {/* Actions */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <Link to={`/intersections/${inter.id}`}>
+            <Button size="sm" variant="outline" className="h-7 text-xs gap-1.5">
+              <MonitorPlay className="size-3" />
+              Live
+            </Button>
+          </Link>
+          <Link to={`/timing/${inter.id}`}>
+            <Button size="sm" variant="outline" className="h-7 text-xs gap-1.5">
+              <TrendingUp className="size-3" />
+              Signal Timing
+            </Button>
+          </Link>
+
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 text-xs gap-1.5"
+            onClick={generate}
+            disabled={generating}
+          >
+            {generating
+              ? <Loader2 className="size-3 animate-spin" />
+              : <RefreshCw className="size-3" />}
+            {generating ? 'Analysing…' : 'Run analysis'}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Settings sheet ───────────────────────────────────────────────────────────
+
+interface SettingsSheetProps {
+  inter: Intersection | null;
+  streets: Street[];
+  cameras: CCTV[];
+  rec: import('@/services/recommendations').RecommendationResponse | undefined;
+  open: boolean;
+  onClose: () => void;
+  onRefresh: () => void;
+}
+
+function SettingsSheet({ inter, streets, cameras, rec, open, onClose, onRefresh }: SettingsSheetProps) {
+  const [name, setName]   = useState('');
+  const [lat, setLat]     = useState('');
+  const [lng, setLng]     = useState('');
+  const [signalStatus, setSignalStatus] = useState<SignalStatus>('unsignalized');
+  const [cycleLen, setCycleLen]         = useState('');
+  const [saving, setSaving]             = useState(false);
+  const [detectingTiming, setDetectingTiming] = useState(false);
+  const [detectResult, setDetectResult]       = useState<DetectTimingResult | null>(null);
+  const [stagingDirs, setStagingDirs]   = useState<Record<number, string>>({});
+  const [newCamName, setNewCamName]   = useState('');
+  const [newCamRtsp, setNewCamRtsp]   = useState('');
+  const [addingCam, setAddingCam]     = useState(false);
+  const [addingStreet, setAddingStreet] = useState(false);
+  const [newStreetName, setNewStreetName] = useState('');
+  const [newStreetDir, setNewStreetDir]   = useState<string>('unknown');
 
   useEffect(() => {
-    let cancelled = false;
-    recommendationsApi.list()
-      .then(recs => {
-        if (cancelled) return;
-        setRecsById(new Map(recs.map(r => [r.intersection_id, r])));
-      })
-      .catch(() => { /* silent — page works without recs */ });
-    return () => { cancelled = true; };
-  }, []);
+    if (inter) {
+      setName(inter.name);
+      setLat(String(inter.latitude ?? ''));
+      setLng(String(inter.longitude ?? ''));
+      setSignalStatus(inter.signal_status ?? 'unsignalized');
+      setCycleLen(inter.existing_cycle_length != null ? String(inter.existing_cycle_length) : '');
+      setDetectResult(null);
+      setStagingDirs({});
+    }
+  }, [inter]);
 
-  function toggle(id: number) {
-    setExpanded(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  }
+  const hasUnsavedDirs = Object.keys(stagingDirs).length > 0;
 
-  async function saveInter() {
-    if (!interForm.name) return;
-    setSavingInter(true);
+  async function saveAll() {
+    if (!inter || !name.trim()) return;
+    setSaving(true);
     try {
-      const data = { name: interForm.name, latitude: parseFloat(interForm.latitude) || 0, longitude: parseFloat(interForm.longitude) || 0 };
-      if (editingInter) { await intersectionsApi.update(editingInter.id, data); toast.success('Updated'); }
-      else { await intersectionsApi.create(data); toast.success('Intersection added'); }
-      setShowInterModal(false); load();
-    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Save failed'); }
-    finally { setSavingInter(false); }
+      const dirUpdates = Object.entries(stagingDirs).map(([sid, dir]) =>
+        streetsApi.update(Number(sid), { arm_direction: dir as Street['arm_direction'] })
+      );
+      await Promise.all([
+        intersectionsApi.update(inter.id, { name: name.trim(), latitude: parseFloat(lat) || 0, longitude: parseFloat(lng) || 0 }),
+        intersectionsApi.patchTiming(inter.id, {
+          signal_status: signalStatus,
+          existing_cycle_length: cycleLen ? parseInt(cycleLen) : null,
+        }),
+        ...dirUpdates,
+      ]);
+      setStagingDirs({});
+      toast.success('Saved');
+      onRefresh();
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Save failed');
+    } finally {
+      setSaving(false);
+    }
   }
 
-  async function deleteInter(i: Intersection) {
-    try { await intersectionsApi.delete(i.id); toast.success('Deleted'); load(); }
-    catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Delete failed'); }
-  }
-
-  async function saveStreet() {
-    if (!streetName || !streetParent) return;
-    setSavingStreet(true);
-    try {
-      if (editingStreet) { await streetsApi.update(editingStreet.id, { name: streetName }); toast.success('Updated'); }
-      else { await streetsApi.create({ intersection_id: streetParent.id, name: streetName }); toast.success('Street added'); }
-      setShowStreetModal(false); load();
-    } catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Save failed'); }
-    finally { setSavingStreet(false); }
-  }
-
-  async function deleteStreet(s: Street) {
-    try { await streetsApi.delete(s.id); toast.success('Deleted'); load(); }
-    catch (err: unknown) { toast.error(err instanceof Error ? err.message : 'Delete failed'); }
-  }
-
-  function openTimingModal(inter: Intersection) {
-    setTimingTarget(inter);
-    setTimingForm({
-      signal_status: inter.signal_status ?? 'unsignalized',
-      existing_cycle_length: inter.existing_cycle_length != null ? String(inter.existing_cycle_length) : '',
-      existing_green_splits: inter.existing_green_splits ? JSON.stringify(inter.existing_green_splits, null, 2) : '',
-    });
-    setDetectResult(null);
-    setShowTimingModal(true);
-  }
-
-  async function detectFromCamera() {
-    if (!timingTarget) return;
+  async function detect() {
+    if (!inter) return;
     setDetectingTiming(true);
     try {
-      const result = await intersectionsApi.detectTiming(timingTarget.id);
+      const result = await intersectionsApi.detectTiming(inter.id);
       setDetectResult(result);
       if (result.estimated_cycle_s != null) {
-        setTimingForm(f => ({ ...f, existing_cycle_length: String(result.estimated_cycle_s) }));
-        toast.success(`Detected ~${result.estimated_cycle_s}s cycle (${result.confidence} confidence)`);
+        setCycleLen(String(result.estimated_cycle_s));
+        toast.success(`Detected ~${result.estimated_cycle_s}s cycle`);
       } else {
-        toast.info('Could not detect a cycle pattern — see note below.');
+        toast.info('Could not detect a cycle pattern');
       }
-    } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : 'Detection failed');
+    } catch {
+      toast.error('Detection failed');
     } finally {
       setDetectingTiming(false);
     }
   }
 
-  async function saveTiming() {
-    if (!timingTarget) return;
-    setSavingTiming(true);
+  async function deleteStreet(street: Street) {
+    try { await streetsApi.delete(street.id); onRefresh(); }
+    catch { toast.error('Delete failed'); }
+  }
+
+  async function addStreet() {
+    if (!inter || !newStreetName.trim()) return;
+    setAddingStreet(true);
     try {
-      let splits: Record<string, number> | null = null;
-      if (timingForm.existing_green_splits.trim()) {
-        splits = JSON.parse(timingForm.existing_green_splits);
-      }
-      await intersectionsApi.patchTiming(timingTarget.id, {
-        signal_status: timingForm.signal_status,
-        existing_cycle_length: timingForm.existing_cycle_length ? parseInt(timingForm.existing_cycle_length) : null,
-        existing_green_splits: splits,
-      });
-      toast.success('Signal timing saved');
-      setShowTimingModal(false);
-      load();
-    } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : 'Save failed');
-    } finally {
-      setSavingTiming(false);
-    }
+      await streetsApi.create({ intersection_id: inter.id, name: newStreetName.trim(), arm_direction: newStreetDir as Street['arm_direction'] });
+      setNewStreetName(''); setNewStreetDir('unknown');
+      onRefresh();
+    } catch { toast.error('Failed to add street'); }
+    finally { setAddingStreet(false); }
   }
 
-  async function openPceModal(inter: Intersection) {
-    setPceTarget(inter);
-    setPceEditType('');
-    setPceEditValue('');
-    setShowPceModal(true);
-    setPceLoading(true);
+  async function addCamera() {
+    if (!inter || !newCamRtsp.trim()) return;
+    setAddingCam(true);
     try {
-      const data = await pceApi.get(inter.id);
-      setPceValues(data.values);
-    } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : 'Failed to load PCE');
-    } finally {
-      setPceLoading(false);
-    }
+      await cctvsApi.create({ intersection_id: inter.id, name: newCamName || `Camera ${cameras.length + 1}`, rtsp_url: newCamRtsp.trim() });
+      setNewCamName(''); setNewCamRtsp('');
+      onRefresh();
+    } catch { toast.error('Failed to add camera'); }
+    finally { setAddingCam(false); }
   }
 
-  async function savePceOverride() {
-    if (!pceTarget || !pceEditType || !pceEditValue) return;
-    setSavingPce(true);
-    try {
-      const data = await pceApi.setOverride(pceTarget.id, pceEditType, parseFloat(pceEditValue));
-      setPceValues(data.values);
-      setPceEditType('');
-      setPceEditValue('');
-      toast.success('PCE override saved');
-    } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : 'Save failed');
-    } finally {
-      setSavingPce(false);
-    }
+  async function deleteCamera(cam: CCTV) {
+    try { await cctvsApi.delete(cam.id); onRefresh(); }
+    catch { toast.error('Delete failed'); }
   }
 
-  async function deletePceOverride(vehicleType: string) {
-    if (!pceTarget) return;
-    try {
-      const data = await pceApi.deleteOverride(pceTarget.id, vehicleType);
-      setPceValues(data.values);
-      toast.success('Override removed');
-    } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : 'Delete failed');
-    }
+  async function deleteIntersection() {
+    if (!inter) return;
+    try { await intersectionsApi.delete(inter.id); onRefresh(); onClose(); }
+    catch { toast.error('Delete failed'); }
   }
 
-  async function runCalibration() {
-    if (!pceTarget) return;
-    setSavingPce(true);
-    try {
-      const data = await pceApi.calibrate(pceTarget.id);
-      setPceValues(data.values);
-      toast.success('Calibration complete');
-    } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : 'Calibration failed');
-    } finally {
-      setSavingPce(false);
-    }
-  }
+  if (!inter) return null;
 
-  async function openTodModal(inter: Intersection) {
-    setTodTarget(inter);
-    setTodEditId(null);
-    setShowTodModal(true);
-    setTodLoading(true);
-    try {
-      const chunks = await todApi.list(inter.id);
-      setTodChunks(chunks);
-    } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : 'Failed to load TOD chunks');
-    } finally {
-      setTodLoading(false);
-    }
-  }
+  const DIRECTION_OPTIONS = [
+    { value: 'northbound', label: 'Northbound' },
+    { value: 'southbound', label: 'Southbound' },
+    { value: 'eastbound',  label: 'Eastbound'  },
+    { value: 'westbound',  label: 'Westbound'  },
+    { value: 'unknown',    label: 'Unknown'     },
+  ];
 
-  function startTodEdit(chunk: TodChunk) {
-    setTodEditId(chunk.id);
-    setTodEditForm({ name: chunk.name, start_time: chunk.start_time, end_time: chunk.end_time });
-  }
-
-  async function saveTodChunk() {
-    if (!todTarget || todEditId === null) return;
-    setSavingTod(true);
-    try {
-      const updated = await todApi.update(todTarget.id, todEditId, todEditForm);
-      setTodChunks(updated);
-      setTodEditId(null);
-      toast.success('TOD chunk saved');
-    } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : 'Save failed');
-    } finally {
-      setSavingTod(false);
-    }
-  }
-
-  const mapMarkers = intersections.filter(i => i.latitude && i.longitude);
+  const bucket = rec ? statusBucket(rec) : null;
+  const onlineCount = cameras.filter(c => c.status === 'online').length;
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold tracking-tight">Intersections</h1>
-        <Button size="sm" onClick={() => { setEditingInter(null); setInterForm(EMPTY_INTER); setShowInterModal(true); }}>
-          <Plus data-icon="inline-start" />
-          Add Intersection
-        </Button>
-      </div>
-
-      {/* Map */}
-      <Card className="overflow-hidden">
-        <CardHeader className="py-3">
-          <div className="flex items-center gap-2">
-            <MapPin className="size-4 text-muted-foreground" />
-            <CardTitle className="text-base">Map</CardTitle>
-            <Badge variant="secondary" className="ml-auto">{mapMarkers.length} pinned</Badge>
+    <Sheet open={open} onOpenChange={v => !v && onClose()}>
+      <SheetContent className="w-full sm:max-w-md overflow-y-auto flex flex-col gap-0 px-0 pt-0 pb-0">
+        {/* Fixed header */}
+        <div className="px-6 pt-6 pb-4 border-b border-border shrink-0">
+          <SheetHeader>
+            <SheetTitle className="text-base">{inter.name}</SheetTitle>
+          </SheetHeader>
+          {/* Summary strip */}
+          <div className="flex items-center gap-3 mt-3 flex-wrap">
+            {bucket && (
+              <Badge variant="outline" className={cn('text-[10px]', BUCKET_BADGE_CLASS[bucket])}>
+                {BUCKET_LABEL[bucket]}
+              </Badge>
+            )}
+            <Badge variant="secondary" className="text-[10px]">
+              {inter.signal_status.replace('_', ' ')}
+            </Badge>
+            <span className="text-xs text-muted-foreground">
+              {onlineCount}/{cameras.length} cameras online
+            </span>
+            {inter.existing_cycle_length && (
+              <span className="text-xs text-muted-foreground">
+                · {inter.existing_cycle_length}s cycle
+              </span>
+            )}
           </div>
-        </CardHeader>
-        <CardContent className="p-0">
-          <MapContainer center={TAGUM_CENTER} zoom={13} style={{ height: 300 }}>
-            <TileLayer attribution='&copy; OpenStreetMap' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-            {mapMarkers.map(i => (
-              <Marker key={i.id} position={[i.latitude, i.longitude]}>
-                <Popup>{i.name}</Popup>
-              </Marker>
-            ))}
-          </MapContainer>
-        </CardContent>
-      </Card>
+        </div>
 
-      {/* Intersection list */}
-      <Card>
-        <CardContent className="p-0">
-          {loading ? (
-            <div className="flex flex-col gap-2 p-4">
-              {[1, 2, 3].map(i => <Skeleton key={i} className="h-10 w-full" />)}
-            </div>
-          ) : intersections.length === 0 ? (
-            <div className="flex flex-col items-center gap-3 py-16 text-muted-foreground">
-              <MapPin className="size-10 opacity-30" />
-              <p className="text-sm">No intersections yet</p>
-            </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Coordinates</TableHead>
-                  <TableHead>Streets</TableHead>
-                  <TableHead className="w-32" />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {intersections.flatMap(inter => {
-                  const interStreets = streets.filter(s => s.intersection_id === inter.id);
-                  const isOpen = expanded.has(inter.id);
-                  return [
-                    <TableRow key={inter.id}>
-                      <TableCell>
-                        <button
-                          type="button"
-                          aria-expanded={isOpen}
-                          className="flex items-center gap-1.5 font-medium hover:text-primary transition-colors"
-                          onClick={() => toggle(inter.id)}
-                        >
-                          <ChevronRight className={`size-3.5 transition-transform ${isOpen ? 'rotate-90' : ''}`} aria-hidden="true" />
-                          {inter.name}
-                        </button>
-                      </TableCell>
-                      <TableCell className="font-mono text-xs text-muted-foreground">
-                        {inter.latitude?.toFixed(4)}, {inter.longitude?.toFixed(4)}
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-1.5">
-                          <Badge variant="secondary">{interStreets.length}</Badge>
-                          {(() => {
-                            const rec = recsById.get(inter.id);
-                            if (!rec) return null;
-                            const b = statusBucket(rec);
-                            return (
-                              <Badge variant="outline" className={cn('text-[10px]', BUCKET_BADGE_CLASS[b])}>
-                                {BUCKET_LABEL[b]}
-                              </Badge>
-                            );
-                          })()}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex gap-1 justify-end">
-                          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs"
-                            onClick={() => openPceModal(inter)}
-                            aria-label={`PCE settings for ${inter.name}`}>
-                            PCE
-                          </Button>
-                          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs"
-                            onClick={() => openTimingModal(inter)}
-                            aria-label={`Signal timing for ${inter.name}`}>
-                            <TrafficCone className="size-3 mr-1" aria-hidden="true" />
-                            Timing
-                          </Button>
-                          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs"
-                            onClick={() => openTodModal(inter)}
-                            aria-label={`Time-of-day plans for ${inter.name}`}>
-                            <Clock className="size-3 mr-1" aria-hidden="true" />
-                            TOD
-                          </Button>
-                          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs"
-                            onClick={() => { setStreetParent(inter); setEditingStreet(null); setStreetName(''); setShowStreetModal(true); }}>
-                            + Street
-                          </Button>
-                          <Button variant="ghost" size="icon" className="size-7" aria-label={`Edit ${inter.name}`}
-                            onClick={() => { setEditingInter(inter); setInterForm({ name: inter.name, latitude: String(inter.latitude ?? ''), longitude: String(inter.longitude ?? '') }); setShowInterModal(true); }}>
-                            <Pencil className="size-3.5" aria-hidden="true" />
-                          </Button>
-                          <AlertDialog>
-                            <AlertDialogTrigger asChild>
-                              <Button variant="ghost" size="icon" className="size-7 text-destructive hover:text-destructive" aria-label={`Delete ${inter.name}`}>
-                                <Trash2 className="size-3.5" aria-hidden="true" />
-                              </Button>
-                            </AlertDialogTrigger>
-                            <AlertDialogContent>
-                              <AlertDialogHeader>
-                                <AlertDialogTitle>Delete {inter.name}?</AlertDialogTitle>
-                                <AlertDialogDescription>Deletes all streets, cameras, regions, and detections for this intersection.</AlertDialogDescription>
-                              </AlertDialogHeader>
-                              <AlertDialogFooter>
-                                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                <AlertDialogAction onClick={() => deleteInter(inter)} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">Delete</AlertDialogAction>
-                              </AlertDialogFooter>
-                            </AlertDialogContent>
-                          </AlertDialog>
-                        </div>
-                      </TableCell>
-                    </TableRow>,
-                    isOpen && (
-                      <TableRow key={`${inter.id}-streets`} className="bg-muted/20">
-                        <TableCell colSpan={4} className="pl-8 py-3">
-                          {interStreets.length === 0 ? (
-                            <p className="text-xs text-muted-foreground">No streets -add approach directions above.</p>
-                          ) : (
-                            <div className="flex flex-col gap-1.5">
-                              {interStreets.map(s => (
-                                <div key={s.id} className="flex items-center justify-between rounded-md border border-border bg-card px-3 py-1.5 text-sm">
-                                  <span>{s.name}</span>
-                                  <div className="flex gap-1">
-                                    <Button variant="ghost" size="icon" className="size-6" aria-label={`Edit street ${s.name}`}
-                                      onClick={() => { setStreetParent(inter); setEditingStreet(s); setStreetName(s.name); setShowStreetModal(true); }}>
-                                      <Pencil className="size-3" aria-hidden="true" />
-                                    </Button>
-                                    <AlertDialog>
-                                      <AlertDialogTrigger asChild>
-                                        <Button variant="ghost" size="icon" className="size-6 text-destructive hover:text-destructive" aria-label={`Delete street ${s.name}`}>
-                                          <Trash2 className="size-3" aria-hidden="true" />
-                                        </Button>
-                                      </AlertDialogTrigger>
-                                      <AlertDialogContent>
-                                        <AlertDialogHeader>
-                                          <AlertDialogTitle>Delete street "{s.name}"?</AlertDialogTitle>
-                                        </AlertDialogHeader>
-                                        <AlertDialogFooter>
-                                          <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                          <AlertDialogAction onClick={() => deleteStreet(s)} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">Delete</AlertDialogAction>
-                                        </AlertDialogFooter>
-                                      </AlertDialogContent>
-                                    </AlertDialog>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </TableCell>
-                      </TableRow>
-                    ),
-                  ].filter(Boolean);
-                })}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
+        {/* Scrollable body */}
+        <div className="flex-1 overflow-y-auto px-6 py-5 flex flex-col gap-6">
 
-      {/* Intersection modal */}
-      <Dialog open={showInterModal} onOpenChange={setShowInterModal}>
-        <DialogContent className="sm:max-w-xl">
-          <DialogHeader>
-            <DialogTitle>{editingInter ? 'Edit Intersection' : 'Add Intersection'}</DialogTitle>
-          </DialogHeader>
-          <Separator />
-          <div className="flex flex-col gap-4 py-1">
+          {/* Basic info */}
+          <div className="flex flex-col gap-3">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Intersection</p>
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="inter-name">Name</Label>
-              <Input
-                id="inter-name"
-                name="intersection-name"
-                autoComplete="off"
-                autoFocus
-                value={interForm.name}
-                onChange={e => setInterForm({ ...interForm, name: e.target.value })}
-                placeholder="e.g. City Hall Intersection…"
-              />
+              <Label className="text-xs">Name</Label>
+              <Input value={name} onChange={e => setName(e.target.value)} className="h-8 text-sm" />
             </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="inter-lat">Latitude</Label>
-                <Input
-                  id="inter-lat"
-                  name="latitude"
-                  type="number"
-                  step="any"
-                  value={interForm.latitude}
-                  onChange={e => setInterForm({ ...interForm, latitude: e.target.value })}
-                  placeholder="7.4478"
-                />
+            <div className="grid grid-cols-2 gap-2">
+              <div className="flex flex-col gap-1">
+                <Label className="text-xs">Latitude</Label>
+                <Input value={lat} onChange={e => setLat(e.target.value)} className="h-8 text-sm font-mono" />
               </div>
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="inter-lng">Longitude</Label>
-                <Input
-                  id="inter-lng"
-                  name="longitude"
-                  type="number"
-                  step="any"
-                  value={interForm.longitude}
-                  onChange={e => setInterForm({ ...interForm, longitude: e.target.value })}
-                  placeholder="125.8057"
-                />
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <p className="text-xs text-muted-foreground">
-                Or click the map to pin the location:
-              </p>
-              {/* isolation: isolate contains Leaflet's z-index stack inside the dialog */}
-              <div className="rounded-lg overflow-hidden border border-border" style={{ height: 260, isolation: 'isolate' }}>
-                <MapContainer
-                  center={interForm.latitude && interForm.longitude
-                    ? [parseFloat(interForm.latitude), parseFloat(interForm.longitude)]
-                    : TAGUM_CENTER}
-                  zoom={14}
-                  style={{ height: '100%' }}
-                >
-                  <TileLayer attribution='&copy; OpenStreetMap' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-                  <MapClickPicker onPick={(lat, lng) => setInterForm({ ...interForm, latitude: lat.toFixed(6), longitude: lng.toFixed(6) })} />
-                  {interForm.latitude && interForm.longitude && (
-                    <Marker position={[parseFloat(interForm.latitude), parseFloat(interForm.longitude)]} />
-                  )}
-                </MapContainer>
+              <div className="flex flex-col gap-1">
+                <Label className="text-xs">Longitude</Label>
+                <Input value={lng} onChange={e => setLng(e.target.value)} className="h-8 text-sm font-mono" />
               </div>
             </div>
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowInterModal(false)}>Cancel</Button>
-            <Button onClick={saveInter} disabled={savingInter || !interForm.name}>
-              {savingInter && <Loader2 data-icon="inline-start" className="animate-spin" />}
-              {editingInter ? 'Save Changes' : 'Add Intersection'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
-      {/* Signal timing modal */}
-      <Dialog open={showTimingModal} onOpenChange={setShowTimingModal}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Signal Timing — {timingTarget?.name}</DialogTitle>
-          </DialogHeader>
           <Separator />
-          <div className="flex flex-col gap-4 py-1">
+
+          {/* Signal */}
+          <div className="flex flex-col gap-3">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Signal timing</p>
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="signal-status">Signal Status</Label>
-              <Select
-                value={timingForm.signal_status}
-                onValueChange={v => setTimingForm({ ...timingForm, signal_status: v as SignalStatus })}
-              >
-                <SelectTrigger id="signal-status">
-                  <SelectValue />
-                </SelectTrigger>
+              <Label className="text-xs">Signal status</Label>
+              <Select value={signalStatus} onValueChange={v => setSignalStatus(v as SignalStatus)}>
+                <SelectTrigger className="h-8 text-sm"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {(Object.keys(SIGNAL_STATUS_LABEL) as SignalStatus[]).map(s => (
-                    <SelectItem key={s} value={s}>{SIGNAL_STATUS_LABEL[s]}</SelectItem>
-                  ))}
+                  {SIGNAL_STATUS_OPTIONS.map(o => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
-
-            {(timingForm.signal_status === 'fixed_time' || timingForm.signal_status === 'actuated') && (
-              <div className="rounded-md border border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-900 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
-                <span className="font-semibold">Enter the current signal plan below.</span>{' '}
-                Without it, the before/after delay comparison uses an equal-split assumption
-                and the improvement numbers will be unreliable.
-                Read the cycle length and splits from the controller box or the DPWH signal design sheet.
+            {signalStatus !== 'unsignalized' && (
+              <div className="flex flex-col gap-1.5">
+                <Label className="text-xs">Current cycle length (seconds)</Label>
+                <div className="flex gap-2">
+                  <Input
+                    type="number" min={0} placeholder="e.g. 90"
+                    value={cycleLen} onChange={e => setCycleLen(e.target.value)}
+                    className="h-8 text-sm flex-1"
+                  />
+                  <Button size="sm" variant="outline" className="h-8 px-2 shrink-0" onClick={detect} disabled={detectingTiming} title="Detect from camera feed">
+                    {detectingTiming ? <Loader2 className="size-3.5 animate-spin" /> : <ScanSearch className="size-3.5" />}
+                  </Button>
+                </div>
+                {detectResult && (
+                  <p className="text-xs text-muted-foreground">{detectResult.confidence} confidence — {detectResult.note}</p>
+                )}
               </div>
             )}
+          </div>
 
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="cycle-length">
-                Existing Cycle Length (seconds)
-                {(timingForm.signal_status === 'fixed_time' || timingForm.signal_status === 'actuated') && (
-                  <span className="ml-1 text-rose-500">*</span>
-                )}
-              </Label>
-              <div className="flex gap-2">
-                <Input
-                  id="cycle-length"
-                  type="number"
-                  min={0}
-                  placeholder="e.g. 90"
-                  value={timingForm.existing_cycle_length}
-                  onChange={e => setTimingForm({ ...timingForm, existing_cycle_length: e.target.value })}
-                  className="flex-1"
-                />
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={detectFromCamera}
-                  disabled={detectingTiming}
-                  title="Estimate cycle length from camera detection patterns"
-                >
-                  {detectingTiming
-                    ? <Loader2 className="size-3.5 animate-spin" />
-                    : <ScanSearch className="size-3.5" />}
-                  <span className="ml-1.5">Detect</span>
-                </Button>
+          <Separator />
+
+          {/* Cameras */}
+          <div className="flex flex-col gap-3">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              Cameras ({cameras.length})
+            </p>
+            {cameras.length === 0 ? (
+              <p className="text-xs text-muted-foreground">No cameras added yet.</p>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {cameras.map(cam => (
+                  <div key={cam.id} className="rounded-lg border border-border bg-muted/10 overflow-hidden">
+                    {/* Thumbnail */}
+                    <div className="relative h-20 bg-black">
+                      <img
+                        src={cctvsApi.snapshotUrl(cam.id)}
+                        alt={cam.name}
+                        className="w-full h-full object-cover opacity-80"
+                        onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                      />
+                      <span className={cn('absolute top-1.5 left-1.5 size-2 rounded-full',
+                        cam.status === 'online' ? 'bg-emerald-400' :
+                        cam.status === 'reconnecting' ? 'bg-amber-400' : 'bg-red-400',
+                      )} />
+                    </div>
+                    <div className="px-3 py-2 flex items-center gap-2">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium truncate">{cam.name}</p>
+                        <p className="text-[10px] text-muted-foreground font-mono truncate">{cam.rtsp_url}</p>
+                      </div>
+                      <Link to={`/cameras/${cam.id}`} className="shrink-0" title="Draw detection regions">
+                        <Button size="sm" variant="ghost" className="h-7 px-2 text-[10px] gap-1">
+                          <ExternalLink className="size-3" />
+                          Regions
+                        </Button>
+                      </Link>
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <button className="shrink-0 p-1 text-muted-foreground hover:text-destructive transition-colors" aria-label={`Delete ${cam.name}`}>
+                            <Trash2 className="size-3.5" />
+                          </button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>Delete {cam.name}?</AlertDialogTitle>
+                            <AlertDialogDescription>This will remove the camera and stop detection.</AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Cancel</AlertDialogCancel>
+                            <AlertDialogAction onClick={() => deleteCamera(cam)} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">Delete</AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    </div>
+                  </div>
+                ))}
               </div>
-              {!timingForm.existing_cycle_length && (timingForm.signal_status === 'fixed_time' || timingForm.signal_status === 'actuated') ? (
-                <p className="text-xs text-rose-500">Required for an accurate before/after comparison.</p>
-              ) : (
-                <p className="text-xs text-muted-foreground">Cycle length in seconds from the existing controller.</p>
+            )}
+            <div className="flex flex-col gap-2 rounded-lg border border-dashed border-border p-3">
+              <p className="text-xs text-muted-foreground">Add camera</p>
+              <Input placeholder="Camera name (optional)" value={newCamName} onChange={e => setNewCamName(e.target.value)} className="h-8 text-sm" />
+              <Input placeholder="rtsp://..." value={newCamRtsp} onChange={e => setNewCamRtsp(e.target.value)} className="h-8 text-sm font-mono" />
+              <Button size="sm" variant="outline" className="w-fit" onClick={addCamera} disabled={addingCam || !newCamRtsp.trim()}>
+                {addingCam ? <Loader2 className="size-3.5 mr-1.5 animate-spin" /> : <Plus className="size-3.5 mr-1.5" />}
+                Add camera
+              </Button>
+            </div>
+          </div>
+
+          <Separator />
+
+          {/* Approach directions — staged, saved with the main Save button */}
+          <div className="flex flex-col gap-3">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Approach directions</p>
+              {hasUnsavedDirs && (
+                <span className="text-[10px] text-amber-600 font-medium">unsaved changes</span>
               )}
-              {detectResult && (
-                <div className={cn(
-                  'rounded-md border px-3 py-2 text-xs mt-1',
-                  detectResult.confidence === 'high'
-                    ? 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:bg-emerald-950/20 dark:border-emerald-900 dark:text-emerald-300'
-                    : detectResult.confidence === 'medium'
-                    ? 'border-amber-200 bg-amber-50 text-amber-800 dark:bg-amber-950/20 dark:border-amber-900 dark:text-amber-300'
-                    : 'border-border bg-muted/40 text-muted-foreground',
-                )}>
-                  <span className="font-semibold capitalize">{detectResult.confidence} confidence</span>
-                  {' — '}
-                  {detectResult.note}
+            </div>
+            {streets.length === 0 ? (
+              <p className="text-xs text-muted-foreground">No approaches configured yet.</p>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {streets.map(s => {
+                  const effectiveDir = stagingDirs[s.id] ?? s.arm_direction;
+                  const isDirty = stagingDirs[s.id] !== undefined && stagingDirs[s.id] !== s.arm_direction;
+                  return (
+                    <div key={s.id} className={cn('flex items-center gap-2 rounded-md border px-3 py-2',
+                      isDirty ? 'border-amber-400 bg-amber-50 dark:bg-amber-950/20' : 'border-border',
+                    )}>
+                      <span className="text-sm flex-1 truncate">{s.name}</span>
+                      <Select value={effectiveDir} onValueChange={v => setStagingDirs(prev => ({ ...prev, [s.id]: v }))}>
+                        <SelectTrigger className="h-7 w-36 text-xs"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          {DIRECTION_OPTIONS.map(o => <SelectItem key={o.value} value={o.value} className="text-xs">{o.label}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <button className="text-muted-foreground hover:text-destructive transition-colors" aria-label={`Delete ${s.name}`}>
+                            <Trash2 className="size-3.5" />
+                          </button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader><AlertDialogTitle>Delete "{s.name}"?</AlertDialogTitle></AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Cancel</AlertDialogCancel>
+                            <AlertDialogAction onClick={() => deleteStreet(s)} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">Delete</AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            <div className="flex items-center gap-2 rounded-lg border border-dashed border-border p-3">
+              <Input placeholder="Street name" value={newStreetName} onChange={e => setNewStreetName(e.target.value)} className="h-7 text-xs flex-1" />
+              <Select value={newStreetDir} onValueChange={setNewStreetDir}>
+                <SelectTrigger className="h-7 w-32 text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {DIRECTION_OPTIONS.map(o => <SelectItem key={o.value} value={o.value} className="text-xs">{o.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <Button size="sm" variant="outline" className="h-7 shrink-0" onClick={addStreet} disabled={addingStreet || !newStreetName.trim()}>
+                {addingStreet ? <Loader2 className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />}
+              </Button>
+            </div>
+          </div>
+
+          <Separator />
+
+          {/* Single save button */}
+          <Button onClick={saveAll} disabled={saving} className="w-full">
+            {saving && <Loader2 className="size-4 mr-2 animate-spin" />}
+            Save all changes
+          </Button>
+
+          <Separator />
+
+          {/* Danger zone */}
+          <div className="flex flex-col gap-2">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Danger zone</p>
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="destructive" size="sm" className="w-fit">
+                  <Trash2 className="size-3.5 mr-1.5" />
+                  Delete intersection
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete {inter.name}?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    Permanently deletes all cameras, streets, regions, and detection data for this intersection.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction onClick={deleteIntersection} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+                    Delete everything
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </div>
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+// ── Hero stats ────────────────────────────────────────────────────────────────
+
+const PEDESTRIAN_TYPES = new Set(['pedestrian', 'person']);
+
+const TYPE_HEX: Record<string, string> = {
+  car:        '#16a34a',
+  motorcycle: '#0369a1',
+  tricycle:   '#d97706',
+  truck:      '#dc2626',
+  pedicab:    '#7c3aed',
+  pedestrian: '#0891b2',
+  person:     '#0891b2',
+};
+
+// ── Page ─────────────────────────────────────────────────────────────────────
+
+export function IntersectionsPage() {
+  const { sseData, onOpenWizard } = useOutletContext<{ sseData: AggregationRow[] | null; sseStatus: SSEStatus; onOpenWizard: () => void }>();
+
+  const [intersections, setIntersections] = useState<Intersection[]>([]);
+  const [streets, setStreets]             = useState<Street[]>([]);
+  const [cameras, setCameras]             = useState<CCTV[]>([]);
+  const [recs, setRecs]                   = useState<Map<number, RecommendationResponse>>(new Map());
+  const [loading, setLoading]             = useState(true);
+
+  const liveCountByIntersection = useMemo(() => {
+    const m: Record<number, number> = {};
+    for (const row of sseData ?? []) {
+      m[row.intersection_id] = (m[row.intersection_id] ?? 0) + row.count;
+    }
+    return m;
+  }, [sseData]);
+
+  const heroStats = useMemo(() => {
+    let vehicles = 0, pedestrians = 0;
+    const byType: Record<string, number> = {};
+    for (const r of sseData ?? []) {
+      if (PEDESTRIAN_TYPES.has(r.object_type)) pedestrians += r.count;
+      else { vehicles += r.count; byType[r.object_type] = (byType[r.object_type] ?? 0) + r.count; }
+    }
+    const topTypes = Object.entries(byType).sort(([, a], [, b]) => b - a).slice(0, 3);
+    const camOnline       = cameras.filter(c => c.status === 'online').length;
+    const camReconnecting = cameras.filter(c => c.status === 'reconnecting').length;
+    const camOffline      = cameras.filter(c => c.status === 'offline').length;
+    const activeIntersections = Object.keys(liveCountByIntersection).length;
+    return { vehicles, pedestrians, topTypes, camOnline, camReconnecting, camOffline, activeIntersections };
+  }, [sseData, cameras, liveCountByIntersection]);
+
+  const [viewMode, setViewMode]               = useState<'grid' | 'map'>('grid');
+  const [generatingAll, setGeneratingAll]     = useState(false);
+  const [wizardOpen, setWizardOpen]           = useState(false);
+  const [settingsTarget, setSettingsTarget]   = useState<Intersection | null>(null);
+
+  async function runAllAnalyses() {
+    setGeneratingAll(true);
+    try {
+      const results = await recommendationsApi.generateAll();
+      setRecs(new Map(results.map(r => [r.intersection_id, r])));
+      const warranted = results.filter(r => r.recommended).length;
+      toast.success(`Analysis complete — ${warranted} warranted`);
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Analysis failed');
+    } finally {
+      setGeneratingAll(false);
+    }
+  }
+
+  const load = useCallback(async () => {
+    try {
+      const [ints, strs, cams, recList] = await Promise.all([
+        intersectionsApi.list(),
+        streetsApi.list(),
+        cctvsApi.list(),
+        recommendationsApi.list().catch(() => []),
+      ]);
+      setIntersections(ints);
+      setStreets(strs);
+      setCameras(cams);
+      setRecs(new Map(recList.map(r => [r.intersection_id, r])));
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Failed to load');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight">Intersections</h1>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            {intersections.length} intersection{intersections.length !== 1 ? 's' : ''} monitored
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {intersections.length > 0 && (
+            <div className="flex rounded-md border border-border overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setViewMode('grid')}
+                aria-pressed={viewMode === 'grid'}
+                aria-label="Grid view"
+                className={cn(
+                  'flex items-center gap-1.5 px-2.5 py-1.5 text-xs transition-colors',
+                  viewMode === 'grid' ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground',
+                )}
+              >
+                <LayoutGrid className="size-3" />
+                Grid
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('map')}
+                aria-pressed={viewMode === 'map'}
+                aria-label="Map view"
+                className={cn(
+                  'flex items-center gap-1.5 px-2.5 py-1.5 text-xs transition-colors border-l border-border',
+                  viewMode === 'map' ? 'bg-foreground text-background' : 'text-muted-foreground hover:text-foreground',
+                )}
+              >
+                <MapIcon className="size-3" />
+                Map
+              </button>
+            </div>
+          )}
+          {intersections.length > 0 && (
+            <Button
+              variant="outline"
+              onClick={runAllAnalyses}
+              disabled={generatingAll}
+            >
+              {generatingAll
+                ? <Loader2 className="size-4 mr-2 animate-spin" />
+                : <RefreshCw className="size-4 mr-2" />}
+              {generatingAll ? 'Analysing…' : 'Run all analyses'}
+            </Button>
+          )}
+          <Button onClick={() => setWizardOpen(true)}>
+            <Plus className="size-4 mr-2" />
+            Set up intersection
+          </Button>
+        </div>
+      </div>
+
+      {/* Hero stats — visible once data loads */}
+      {!loading && intersections.length > 0 && (
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground">Vehicles</p>
+                  <p className="mt-1 text-3xl font-black tabular-nums leading-none">
+                    {sseData ? heroStats.vehicles.toLocaleString() : '—'}
+                  </p>
+                </div>
+                <div className="rounded-lg bg-green-100 p-2">
+                  <TrendingUp className="size-4 text-green-700" />
+                </div>
+              </div>
+              {heroStats.topTypes.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-x-2 gap-y-1">
+                  {heroStats.topTypes.map(([type, count]) => (
+                    <span key={type} className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                      <span className="size-1.5 rounded-full shrink-0" style={{ backgroundColor: TYPE_HEX[type] ?? '#16a34a' }} />
+                      {type[0].toUpperCase() + type.slice(1)} <strong className="font-semibold text-foreground">{count}</strong>
+                    </span>
+                  ))}
                 </div>
               )}
-            </div>
+            </CardContent>
+          </Card>
 
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="green-splits">Existing Green Splits (JSON, optional)</Label>
-              <textarea
-                id="green-splits"
-                className="min-h-[90px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                placeholder={'{"northbound": 20, "southbound": 20, "eastbound": 20, "westbound": 20}'}
-                value={timingForm.existing_green_splits}
-                onChange={e => setTimingForm({ ...timingForm, existing_green_splits: e.target.value })}
-              />
-              <p className="text-xs text-muted-foreground">
-                Green time per approach in seconds. If blank, equal splits from the cycle length above are assumed.
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground">Pedestrians</p>
+                  <p className="mt-1 text-3xl font-black tabular-nums leading-none">
+                    {sseData ? heroStats.pedestrians.toLocaleString() : '—'}
+                  </p>
+                </div>
+                <div className="rounded-lg bg-cyan-100 p-2">
+                  <Users className="size-4 text-cyan-700" />
+                </div>
+              </div>
+              <p className="mt-3 text-[10px] text-muted-foreground">
+                {sseData && (heroStats.vehicles + heroStats.pedestrians) > 0
+                  ? `${Math.round((heroStats.pedestrians / (heroStats.vehicles + heroStats.pedestrians)) * 100)}% of total`
+                  : 'awaiting live data'}
               </p>
-            </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground">Cameras</p>
+                  <p className="mt-1 text-3xl font-black tabular-nums leading-none">
+                    {heroStats.camOnline}
+                    <span className="text-base font-medium text-muted-foreground">/{cameras.length}</span>
+                  </p>
+                </div>
+                <div className={cn('rounded-lg p-2', heroStats.camOffline > 0 ? 'bg-red-100' : 'bg-emerald-100')}>
+                  <Camera className={cn('size-4', heroStats.camOffline > 0 ? 'text-red-600' : 'text-emerald-700')} />
+                </div>
+              </div>
+              <div className="mt-3 flex items-center gap-2.5 text-[10px]">
+                <span className="flex items-center gap-1 text-emerald-700">
+                  <Wifi className="size-2.5" /> {heroStats.camOnline} online
+                </span>
+                {heroStats.camReconnecting > 0 && (
+                  <span className="flex items-center gap-1 text-amber-600">
+                    <RefreshCw className="size-2.5" /> {heroStats.camReconnecting}
+                  </span>
+                )}
+                {heroStats.camOffline > 0 && (
+                  <span className="flex items-center gap-1 font-semibold text-red-500">
+                    <WifiOff className="size-2.5" /> {heroStats.camOffline} offline
+                  </span>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground">Intersections</p>
+                  <p className="mt-1 text-3xl font-black tabular-nums leading-none">
+                    {heroStats.activeIntersections}
+                    <span className="text-base font-medium text-muted-foreground">/{intersections.length}</span>
+                  </p>
+                </div>
+                <div className="rounded-lg bg-violet-100 p-2">
+                  <MapPin className="size-4 text-violet-700" />
+                </div>
+              </div>
+              <p className="mt-3 text-[10px] text-muted-foreground">
+                {heroStats.activeIntersections > 0 ? `${heroStats.activeIntersections} with live data` : 'awaiting live data'}
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {[1, 2, 3].map(i => <Skeleton key={i} className="h-52" />)}
+        </div>
+      ) : intersections.length === 0 ? (
+        <div className="flex flex-col items-center gap-4 py-24 text-center">
+          <div className="rounded-full bg-muted p-5">
+            <WifiOff className="size-8 text-muted-foreground opacity-50" />
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowTimingModal(false)}>Cancel</Button>
-            <Button onClick={saveTiming} disabled={savingTiming}>
-              {savingTiming && <Loader2 data-icon="inline-start" className="animate-spin" />}
-              Save Timing
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* PCE settings modal */}
-      <Dialog open={showPceModal} onOpenChange={setShowPceModal}>
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>PCE Settings — {pceTarget?.name}</DialogTitle>
-          </DialogHeader>
-          <Separator />
-          <div className="flex flex-col gap-4 py-1">
-            {pceLoading ? (
-              <div className="flex flex-col gap-2">
-                {[1, 2, 3].map(i => <div key={i} className="h-8 rounded bg-muted animate-pulse" />)}
-              </div>
-            ) : (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-xs text-muted-foreground border-b">
-                    <th className="text-left pb-1 font-medium">Vehicle Type</th>
-                    <th className="text-right pb-1 font-medium">PCE</th>
-                    <th className="text-center pb-1 font-medium">Tier</th>
-                    <th className="w-8" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {pceValues.map(v => (
-                    <tr key={v.vehicle_type} className="border-b last:border-0">
-                      <td className="py-1.5 font-mono">{v.vehicle_type}</td>
-                      <td className="py-1.5 text-right font-mono">{v.pce.toFixed(2)}</td>
-                      <td className="py-1.5 text-center">
-                        <Badge
-                          variant="outline"
-                          className={
-                            v.tier === 'override'   ? 'text-amber-700 border-amber-400 bg-amber-50 text-[10px]' :
-                            v.tier === 'calibrated' ? 'text-blue-700 border-blue-400 bg-blue-50 text-[10px]' :
-                                                      'text-[10px]'
-                          }
-                        >
-                          {v.tier}
-                        </Badge>
-                      </td>
-                      <td className="py-1.5">
-                        {v.tier === 'override' && (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="size-6 text-destructive hover:text-destructive"
-                            onClick={() => deletePceOverride(v.vehicle_type)}
-                          >
-                            <Trash2 className="size-3" aria-hidden="true" />
-                          </Button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-
-            <Separator />
-
-            <div className="flex flex-col gap-2">
-              <p className="text-xs font-medium text-muted-foreground">Set Override</p>
-              <div className="flex gap-2">
-                <Input
-                  placeholder="vehicle_type"
-                  className="font-mono text-sm"
-                  value={pceEditType}
-                  onChange={e => setPceEditType(e.target.value)}
-                />
-                <Input
-                  placeholder="PCE value"
-                  type="number"
-                  step="0.01"
-                  min="0.01"
-                  className="w-28 font-mono text-sm"
-                  value={pceEditValue}
-                  onChange={e => setPceEditValue(e.target.value)}
-                />
-                <Button
-                  size="sm"
-                  disabled={savingPce || !pceEditType || !pceEditValue}
-                  onClick={savePceOverride}
-                >
-                  {savingPce && <Loader2 data-icon="inline-start" className="animate-spin" />}
-                  Set
-                </Button>
-              </div>
-            </div>
-          </div>
-          <DialogFooter className="justify-between">
-            <Button variant="outline" size="sm" disabled={savingPce} onClick={runCalibration}>
-              {savingPce && <Loader2 data-icon="inline-start" className="animate-spin" />}
-              Recalibrate (7-day data)
-            </Button>
-            <Button variant="outline" onClick={() => setShowPceModal(false)}>Close</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* TOD modal */}
-      <Dialog open={showTodModal} onOpenChange={setShowTodModal}>
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Time-of-Day Plans — {todTarget?.name}</DialogTitle>
-          </DialogHeader>
-          <Separator />
-          <div className="flex flex-col gap-3 py-1">
-            {todLoading ? (
-              <div className="flex flex-col gap-2">
-                {[1, 2, 3, 4, 5].map(i => <div key={i} className="h-8 rounded bg-muted animate-pulse" />)}
-              </div>
-            ) : (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-xs text-muted-foreground border-b">
-                    <th className="text-left pb-1 font-medium">Name</th>
-                    <th className="text-center pb-1 font-medium">Start</th>
-                    <th className="text-center pb-1 font-medium">End</th>
-                    <th className="w-8" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {todChunks.map(chunk => (
-                    <tr key={chunk.id} className="border-b last:border-0">
-                      {todEditId === chunk.id ? (
-                        <>
-                          <td className="py-1.5 pr-1">
-                            <Input
-                              className="h-7 text-xs"
-                              value={todEditForm.name}
-                              onChange={e => setTodEditForm({ ...todEditForm, name: e.target.value })}
-                            />
-                          </td>
-                          <td className="py-1.5 px-1">
-                            <Input
-                              className="h-7 text-xs font-mono text-center"
-                              placeholder="HH:MM"
-                              value={todEditForm.start_time}
-                              onChange={e => setTodEditForm({ ...todEditForm, start_time: e.target.value })}
-                            />
-                          </td>
-                          <td className="py-1.5 px-1">
-                            <Input
-                              className="h-7 text-xs font-mono text-center"
-                              placeholder="HH:MM"
-                              value={todEditForm.end_time}
-                              onChange={e => setTodEditForm({ ...todEditForm, end_time: e.target.value })}
-                            />
-                          </td>
-                          <td className="py-1.5 pl-1">
-                            <div className="flex gap-1">
-                              <Button size="sm" className="h-7 px-2 text-xs" disabled={savingTod} onClick={saveTodChunk}>
-                                {savingTod ? <Loader2 className="size-3 animate-spin" /> : 'Save'}
-                              </Button>
-                              <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => setTodEditId(null)}>
-                                ✕
-                              </Button>
-                            </div>
-                          </td>
-                        </>
-                      ) : (
-                        <>
-                          <td className="py-1.5">{chunk.name}</td>
-                          <td className="py-1.5 text-center font-mono text-xs">{chunk.start_time}</td>
-                          <td className="py-1.5 text-center font-mono text-xs">{chunk.end_time}</td>
-                          <td className="py-1.5">
-                            <Button variant="ghost" size="icon" className="size-6" onClick={() => startTodEdit(chunk)}>
-                              <Pencil className="size-3" aria-hidden="true" />
-                            </Button>
-                          </td>
-                        </>
-                      )}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-            <p className="text-xs text-muted-foreground">
-              Chunks must be contiguous and cover all 24 hours. Editing one boundary does not automatically adjust adjacent chunks.
+          <div>
+            <p className="font-medium">No intersections yet</p>
+            <p className="text-sm text-muted-foreground mt-1">
+              Use the setup wizard to connect cameras and start monitoring traffic.
             </p>
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowTodModal(false)}>Close</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Street modal */}
-      <Dialog open={showStreetModal} onOpenChange={setShowStreetModal}>
-        <DialogContent className="sm:max-w-sm">
-          <DialogHeader>
-            <DialogTitle>
-              {editingStreet ? `Edit Street` : `Add Street`}
-            </DialogTitle>
-            {streetParent && (
-              <p className="text-xs text-muted-foreground">
-                {editingStreet ? `Renaming approach on ` : `New approach direction for `}
-                <span className="font-medium text-foreground">{streetParent.name}</span>
-              </p>
-            )}
-          </DialogHeader>
-          <Separator />
-          <div className="py-1">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="street-name">Approach / Street Name</Label>
-              <Input
-                id="street-name"
-                name="street-name"
-                autoComplete="off"
-                value={streetName}
-                onChange={e => setStreetName(e.target.value)}
-                placeholder="e.g. Northbound, Rizal Ave…"
-                autoFocus
-                onKeyDown={e => e.key === 'Enter' && saveStreet()}
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowStreetModal(false)}>Cancel</Button>
-            <Button onClick={saveStreet} disabled={savingStreet || !streetName}>
-              {savingStreet && <Loader2 data-icon="inline-start" className="animate-spin" />}
-              {editingStreet ? 'Save Changes' : 'Add Street'}
+          <div className="flex items-center gap-3">
+            <Button onClick={onOpenWizard}>
+              <Rocket className="size-4 mr-2" />
+              Get Started
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            <Button variant="outline" onClick={() => setWizardOpen(true)}>
+              <Plus className="size-4 mr-2" />
+              Quick add
+            </Button>
+          </div>
+        </div>
+      ) : viewMode === 'map' ? (
+        <DensityMap
+          intersections={intersections}
+          sseData={sseData}
+          onOpenSettings={setSettingsTarget}
+        />
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {intersections.map(inter => (
+            <IntersectionCard
+              key={inter.id}
+              inter={inter}
+              cameras={cameras.filter(c => c.intersection_id === inter.id)}
+              streets={streets.filter(s => s.intersection_id === inter.id)}
+              rec={recs.get(inter.id)}
+              liveCount={liveCountByIntersection[inter.id] ?? 0}
+              onRefresh={load}
+              onOpenSettings={setSettingsTarget}
+            />
+          ))}
+        </div>
+      )}
+
+      <IntersectionSetupWizard
+        open={wizardOpen}
+        onClose={() => setWizardOpen(false)}
+        onCreated={() => { setWizardOpen(false); load(); }}
+      />
+
+      <SettingsSheet
+        inter={settingsTarget}
+        streets={streets.filter(s => s.intersection_id === settingsTarget?.id)}
+        cameras={cameras.filter(c => c.intersection_id === settingsTarget?.id)}
+        rec={settingsTarget ? recs.get(settingsTarget.id) : undefined}
+        open={settingsTarget !== null}
+        onClose={() => setSettingsTarget(null)}
+        onRefresh={load}
+      />
     </div>
   );
 }

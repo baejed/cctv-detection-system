@@ -5,6 +5,8 @@ import {
   useEffect,
   type ReactNode,
 } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { toast } from 'sonner';
 import { setToken, setUnauthorizedHandler } from '../services/api';
 import { logout as apiLogout } from '../services/auth';
 import { registerServiceWorkerAndSubscribe } from '../services/push';
@@ -23,6 +25,7 @@ const LS_TOKEN    = 'eyegila_token';
 const LS_USERNAME = 'eyegila_username';
 
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const navigate = useNavigate();
   const [token, setTokenState] = useState<string | null>(() => localStorage.getItem(LS_TOKEN));
   const [username, setUsername] = useState<string | null>(() => localStorage.getItem(LS_USERNAME));
 
@@ -39,9 +42,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setTokenState(null);
       setUsername(null);
       setToken(null);
-      window.location.replace('/login');
+      toast.error('Session expired — please log in again');
+      navigate('/login', { replace: true });
     });
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [navigate]);
 
   const login = useCallback((t: string, u: string) => {
     localStorage.setItem(LS_TOKEN, t);

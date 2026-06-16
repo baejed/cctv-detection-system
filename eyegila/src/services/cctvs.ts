@@ -31,4 +31,7 @@ export const cctvsApi = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+
+  discover: () =>
+    request<{ address: string; rtsp_url: string | null; xaddrs: string[] }[]>('/cctvs/discover'),
 };

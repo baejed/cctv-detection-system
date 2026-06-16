@@ -33,17 +33,14 @@ const TYPE_HEX: Record<string, string> = {
 
 // ── Preset date ranges ───────────────────────────────────────────────────────
 
-type Preset = 'today' | 'yesterday' | '7d' | '30d' | 'month' | '3m' | 'year' | 'custom';
+type Preset = 'today' | 'yesterday' | '7d' | '30d' | 'custom';
 
 const PRESETS: { key: Preset; label: string }[] = [
-  { key: 'today',     label: 'Today'      },
-  { key: 'yesterday', label: 'Yesterday'  },
-  { key: '7d',        label: '7 Days'     },
-  { key: '30d',       label: '30 Days'    },
-  { key: 'month',     label: 'This Month' },
-  { key: '3m',        label: '3 Months'   },
-  { key: 'year',      label: 'This Year'  },
-  { key: 'custom',    label: 'Custom'     },
+  { key: 'today',     label: 'Today'     },
+  { key: 'yesterday', label: 'Yesterday' },
+  { key: '7d',        label: '7 days'    },
+  { key: '30d',       label: '30 days'   },
+  { key: 'custom',    label: 'Custom'    },
 ];
 
 function toLocalDateString(d: Date) {
@@ -59,9 +56,6 @@ function getPresetRange(preset: Preset): { start: Date; end: Date } {
     case 'yesterday': return { start: new Date(today.getTime() -86_400_000), end: today };
     case '7d':        return { start: new Date(today.getTime() -7  * 86_400_000), end: tomorrow };
     case '30d':       return { start: new Date(today.getTime() -30 * 86_400_000), end: tomorrow };
-    case 'month':     return { start: new Date(now.getFullYear(), now.getMonth(), 1), end: tomorrow };
-    case '3m':        return { start: new Date(today.getTime() -90 * 86_400_000), end: tomorrow };
-    case 'year':      return { start: new Date(now.getFullYear(), 0, 1), end: tomorrow };
     default:          return { start: today, end: tomorrow };
   }
 }

@@ -29,6 +29,7 @@ from server.routers.pce import router as pce_router
 from server.routers.tod import router as tod_router
 from server.routers.timing import router as timing_router
 from server.routers.simulation import router as simulation_router
+from server.routers.onboarding import router as onboarding_router
 
 load_dotenv()
 
@@ -157,3 +158,4 @@ app.include_router(pce_router)
 app.include_router(tod_router)
 app.include_router(timing_router)
 app.include_router(simulation_router)
+app.include_router(onboarding_router)

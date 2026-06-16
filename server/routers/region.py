@@ -1,6 +1,6 @@
 from server.schemas import RegionPointBase, RegionBase, RegionResponse
 from server.utils import log_and_commit, get_current_user
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from common.models import User, Region, RegionPoint
 from common.database import get_db
 from sqlalchemy.orm import Session
@@ -77,12 +77,12 @@ def update_region(
     return db_region
 
 
-@router.delete("/{region_id}")
+@router.delete("/{region_id}", status_code=204)
 def delete_region(
     region_id: int,
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
-):
+) -> Response:
     db_region = db.get(Region, region_id)
 
     if not db_region:
@@ -91,4 +91,4 @@ def delete_region(
     street_name = db_region.street.name if db_region.street else str(region_id)
     db.delete(db_region)
     log_and_commit(f"User {user.username} deleted region for street {street_name}", db)
-    return {"detail": "Region deleted"}
+    return Response(status_code=204)

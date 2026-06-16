@@ -2,7 +2,7 @@ from server.schemas import IntersectionCreate, IntersectionUpdate, IntersectionR
 from server.utils import log_and_commit, get_current_user
 from server.tod import seed_tod_chunks
 from server.cycle_detection import estimate_signal_timing
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Response
 from pydantic import BaseModel
 from common.models import User, Intersection, CCTV
 from common.database import get_db
@@ -80,7 +80,28 @@ def update_intersection(
     if intersection.longitude:
         db_intersection.longitude = intersection.longitude
 
+    if intersection.crossing_width_m is not None:
+        db_intersection.crossing_width_m = intersection.crossing_width_m
+
     log_and_commit(message, db)
+    db.refresh(db_intersection)
+    return db_intersection
+
+
+@router.patch("/{intersection_id}", response_model=IntersectionResponse)
+def patch_intersection(
+    intersection_id: int,
+    intersection: IntersectionUpdate,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> IntersectionResponse:
+    db_intersection = db.get(Intersection, intersection_id)
+    if not db_intersection:
+        raise HTTPException(status_code=404, detail="Intersection not found")
+    data = intersection.model_dump(exclude_unset=True)
+    for field, value in data.items():
+        setattr(db_intersection, field, value)
+    log_and_commit(f"User {user.username} patched intersection {db_intersection.name}", db)
     db.refresh(db_intersection)
     return db_intersection
 
@@ -253,12 +274,12 @@ def detect_signal_timing(
     return DetectTimingResponse(intersection_id=intersection_id, **result)
 
 
-@router.delete("/{intersection_id}")
+@router.delete("/{intersection_id}", status_code=204)
 def delete_intersection(
     intersection_id: int,
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
-) -> dict[str, str]:
+) -> Response:
     db_intersection = db.get(Intersection, intersection_id)
 
     if not db_intersection:
@@ -266,4 +287,4 @@ def delete_intersection(
 
     db.delete(db_intersection)
     log_and_commit(f"User {user.username} deleted intersection {db_intersection.name}", db)
-    return {"detail": "Intersection deleted"}
+    return Response(status_code=204)

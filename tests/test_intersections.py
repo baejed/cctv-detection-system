@@ -54,7 +54,7 @@ def test_delete_intersection(auth):
                   json={"name": "_del_test", "latitude": 0.0, "longitude": 0.0})
     iid = r.json()["id"]
     r = auth.delete(f"{API_URL}/intersections/{iid}")
-    assert r.status_code == 200
+    assert r.status_code == 204
     r = auth.get(f"{API_URL}/intersections/{iid}")
     assert r.status_code == 404
 

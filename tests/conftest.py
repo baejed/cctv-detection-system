@@ -9,6 +9,9 @@ locally and in CI.
   API_URL       http://localhost:8000
   ADMIN_USER    admin
   ADMIN_PASS    admin
+
+When the server is not reachable, all tests that depend on the `token`,
+`auth`, or `db` fixtures are automatically skipped (not errored).
 """
 import os
 import pytest
@@ -18,6 +21,49 @@ API_URL    = os.getenv("API_URL",   "http://localhost:8000")
 DB_URL     = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5433/traffic")
 ADMIN_USER = os.getenv("ADMIN_USER", "admin")
 ADMIN_PASS = os.getenv("ADMIN_PASS", "admin")
+
+
+_SERVER_UP: bool | None = None
+
+
+def _server_reachable() -> bool:
+    global _SERVER_UP
+    if _SERVER_UP is None:
+        try:
+            requests.get(f"{API_URL}/health", timeout=2)
+            _SERVER_UP = True
+        except Exception:
+            _SERVER_UP = False
+    return _SERVER_UP
+
+
+# Files that contain only integration tests (no pure-unit functions).
+# When the server is unreachable, every test in these files is skipped.
+_INTEGRATION_ONLY_FILES = {
+    "test_auth.py",
+    "test_aggregation.py",
+    "test_cameras.py",
+    "test_health.py",
+    "test_intersections.py",
+    "test_tod.py",
+    "test_worker_claim.py",
+    "test_integration_extended.py",
+    "test_pce.py",
+}
+
+
+def pytest_collection_modifyitems(items: list) -> None:
+    if _server_reachable():
+        return
+    skip = pytest.mark.skip(reason="API server not reachable — run: docker compose up -d")
+    for item in items:
+        filename = item.fspath.basename
+        if filename in _INTEGRATION_ONLY_FILES:
+            item.add_marker(skip)
+            continue
+        # In mixed files (unit + integration), skip tests that use http fixtures
+        if any(f in item.fixturenames for f in ("api", "auth", "db", "token")):
+            item.add_marker(skip)
 
 
 @pytest.fixture(scope="session")
@@ -30,7 +76,12 @@ def api():
 
 @pytest.fixture(scope="session")
 def token(api):
-    """Authenticate once per test session and return the Bearer token."""
+    """Authenticate once per test session and return the Bearer token.
+
+    Skips all dependent tests when the server is not running.
+    """
+    if not _server_reachable():
+        pytest.skip("API server not reachable — run: docker compose up -d")
     r = api.post(f"{API_URL}/login",
                  json={"username": ADMIN_USER, "password": ADMIN_PASS})
     assert r.status_code == 200, f"Login failed: {r.text}"
@@ -48,6 +99,8 @@ def auth(token):
 @pytest.fixture(scope="session")
 def db():
     """SQLAlchemy session connected directly to the test DB (port 5433)."""
+    if not _server_reachable():
+        pytest.skip("API server not reachable — run: docker compose up -d")
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
     engine = create_engine(DB_URL)

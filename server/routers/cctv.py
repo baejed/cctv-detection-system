@@ -5,7 +5,7 @@ import re
 from urllib.parse import quote
 from server.schemas import CCTVBase, CCTVCreate, CCTVUpdate, CCTVResponse
 from server.utils import log_and_commit, get_current_user
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from common.models import User, CCTV
 from common.database import get_db
 from server.rate_limit import limiter
@@ -296,12 +296,12 @@ def update_cctv(
     return db_cctv
 
 
-@router.delete("/{cctv_id}")
+@router.delete("/{cctv_id}", status_code=204)
 def delete_cctv(
     cctv_id: int,
     user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
-) -> dict[str, str]:
+) -> Response:
     db_cctv = db.get(CCTV, cctv_id)
 
     if not db_cctv:
@@ -309,4 +309,4 @@ def delete_cctv(
 
     db.delete(db_cctv)
     log_and_commit(f"User {user.username} deleted cctv {db_cctv.name}", db)
-    return {"detail": "CCTV deleted"}
+    return Response(status_code=204)

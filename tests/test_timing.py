@@ -35,10 +35,10 @@ def test_compute_timing_low_flow():
 
 
 def test_compute_timing_clamped_min():
-    """Very low or zero flows clamp to min_cycle."""
+    """Very low or zero flows clamp to min_cycle (crossing_width_m=0 removes ped_min)."""
     from server.webster import compute_timing
 
-    cycle, splits = compute_timing({1: 0.0, 2: 0.0}, min_cycle=40)
+    cycle, splits = compute_timing({1: 0.0, 2: 0.0}, min_cycle=40, crossing_width_m=0)
     assert cycle == 40
     assert len(splits) == 2
 
@@ -63,11 +63,15 @@ def test_compute_timing_empty_flows():
 
 
 def test_compute_timing_green_splits_proportional():
-    """Approach with double the flow gets double the green time."""
+    """Approach with double the flow gets double the green time.
+
+    crossing_width_m=0 removes the ped_min clamp so the pure proportional
+    split is testable without the floor interfering.
+    """
     from server.webster import compute_timing
 
     flows = {1: 200.0, 2: 100.0}
-    cycle, splits = compute_timing(flows, min_cycle=40, max_cycle=120)
+    cycle, splits = compute_timing(flows, min_cycle=40, max_cycle=120, crossing_width_m=0)
     assert cycle >= 40
     # Approach 1 should get roughly twice the green of approach 2
     ratio = splits[1] / splits[2]

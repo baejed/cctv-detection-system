@@ -106,6 +106,7 @@ services:
       - ./rq-worker:/app/rq-worker
       - ./common:/app/common
       - ./worker:/app/worker
+      - ./eyegila_v3.pt:/app/eyegila_v3.pt:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -131,6 +132,7 @@ services:
     volumes:
       - ./worker:/app/worker
       - ./common:/app/common
+      - ./eyegila_v3.pt:/app/eyegila_v3.pt:ro
     depends_on:
       pgbouncer:
         condition: service_healthy
@@ -158,6 +160,7 @@ services:
       - trt_cache:/app/trt_cache
       - ./worker:/app/worker
       - ./common:/app/common
+      - ./eyegila_v3.pt:/app/eyegila_v3.pt:ro
     depends_on:
       pgbouncer:
         condition: service_healthy
@@ -190,6 +193,7 @@ services:
       - trt_cache:/app/trt_cache
       - ./worker:/app/worker
       - ./common:/app/common
+      - ./eyegila_v3.pt:/app/eyegila_v3.pt:ro
     depends_on:
       pgbouncer:
         condition: service_healthy

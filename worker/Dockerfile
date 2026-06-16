@@ -9,7 +9,6 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements.txt
 COPY common ./common
 COPY worker ./worker
-COPY eyegila_v3.pt ./eyegila_v3.pt
 COPY worker/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 ENTRYPOINT ["/app/entrypoint.sh"]

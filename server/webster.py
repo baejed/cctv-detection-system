@@ -50,14 +50,11 @@ _OPPOSING: dict[str, str] = {
 
 
 def get_street_directions(db: Session, intersection_id: int) -> dict[int, str]:
-    """Return {street_id: direction} for every street at this intersection."""
+    """Return {street_id: arm_direction} for every street at this intersection."""
     rows = db.execute(text("""
-        SELECT s.id,
-               COALESCE(MAX(r.direction), 'unknown') AS direction
-          FROM streets s
-          LEFT JOIN regions r ON r.street_id = s.id
-         WHERE s.intersection_id = :iid
-         GROUP BY s.id
+        SELECT id, COALESCE(arm_direction, 'unknown') AS direction
+          FROM streets
+         WHERE intersection_id = :iid
     """), {"iid": intersection_id}).fetchall()
     return {row.id: (row.direction or "unknown") for row in rows}
 
@@ -111,6 +108,7 @@ def pcu_flow_per_street(
           FROM aggregation_summaries
          WHERE intersection_id = :iid
            AND street_id IS NOT NULL
+           AND direction IN ('inbound', 'unknown')
            AND window_start   >= :since
            AND object_type NOT IN ('pedestrian', 'person')
            AND (  EXTRACT(HOUR   FROM window_start) * 60
@@ -149,6 +147,7 @@ def compute_timing(
     all_red_clearance: int = 3,
     min_cycle: int = 40,
     max_cycle: int = 120,
+    crossing_width_m: float = 12.0,
 ) -> tuple[int, dict[int, float]]:
     """Return (cycle_length_s, {street_id: green_seconds}) using Webster's formula.
 
@@ -188,6 +187,14 @@ def compute_timing(
         g_each = round(G / n_phases, 1)
         g_phases = [g_each] * n_phases
 
+    # Pedestrian minimum green: DPWH crossing time = width / 1.2 m/s + 7 s clearance.
+    # Ensures every phase is long enough for a pedestrian to cross the approach road.
+    ped_min_g = crossing_width_m / 1.2 + 7.0
+    g_phases = [max(g, ped_min_g) for g in g_phases]
+
+    # Recompute cycle with pedestrian-constrained splits (may exceed Webster's C_opt)
+    C = max(min_cycle, min(max_cycle, int(round(L + sum(g_phases)))))
+
     # Streets sharing a phase all get the same green time
     splits: dict[int, float] = {}
     for ph, g in zip(phases, g_phases):
@@ -217,10 +224,11 @@ def generate_timing_for_recommendation(
     pce_tier  = _dominant_pce_tier(pce_map)
     directions = get_street_directions(db, intersection.id)
 
-    lost_time = intersection.lost_time_per_phase or 4
-    all_red   = intersection.all_red_clearance   or 3
-    min_c     = intersection.min_cycle_length    or 40
-    max_c     = intersection.max_cycle_length    or 120
+    lost_time      = intersection.lost_time_per_phase or 4
+    all_red        = intersection.all_red_clearance   or 3
+    min_c          = intersection.min_cycle_length    or 40
+    max_c          = intersection.max_cycle_length    or 120
+    crossing_width = getattr(intersection, "crossing_width_m", 12.0) or 12.0
 
     chunks = (
         db.query(TodChunk)
@@ -240,7 +248,7 @@ def generate_timing_for_recommendation(
 
         if flows:
             phases = group_phases(flows, directions)
-            cycle, splits = compute_timing(flows, phases, lost_time, all_red, min_c, max_c)
+            cycle, splits = compute_timing(flows, phases, lost_time, all_red, min_c, max_c, crossing_width)
             total_flow = sum(flows.values())
             if total_flow > peak_total_flow:
                 peak_total_flow = total_flow

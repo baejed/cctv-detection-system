@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 log = logging.getLogger("recommendations")
 
@@ -50,8 +50,7 @@ class RecommendationResponse(BaseModel):
     w_local_3_met: Optional[bool] = None
     w_local_3_confidence: Optional[float] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 def _compute_features_from_rows(rows) -> dict[str, float]:
@@ -418,11 +417,11 @@ def run_generate_all(db: Session, artifacts) -> list[dict]:
                 timing_cycle=overall.cycle_length if overall else None,
                 timing_chunk=peak_chunk,
             ))
+            db.commit()
         except Exception:
             log.exception("generate_all: failed for intersection %d — skipping", intersection.id)
             db.rollback()
 
-    db.commit()
     return results
 
 

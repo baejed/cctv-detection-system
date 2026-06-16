@@ -1,4 +1,5 @@
 """Auth endpoint tests — login, logout, token enforcement, rate limiting."""
+import os
 import time
 import pytest
 import requests
@@ -58,8 +59,13 @@ def test_logout(token):
     assert r.status_code in (401, 403)
 
 
+@pytest.mark.ratelimit
 def test_login_rate_limit():
-    """11 rapid login attempts from the same IP should trigger 429 on the 11th."""
+    """11 rapid login attempts from the same IP should trigger 429 on the 11th.
+
+    Excluded from normal runs (exhausts the shared rate limit bucket, breaking
+    subsequent tests). Run explicitly: pytest -m ratelimit
+    """
     hits_429 = False
     for _ in range(12):
         r = requests.post(f"{API_URL}/login",

@@ -5,8 +5,8 @@ import { toast } from 'sonner';
 import { cctvsApi } from '@/services/cctvs';
 import { streetsApi } from '@/services/streets';
 import { intersectionsApi } from '@/services/intersections';
-import { request } from '@/services/api';
-import type { CCTV, Street, Region, RegionPoint, Intersection } from '@/types';
+import { request, triggerUnauthorized } from '@/services/api';
+import type { CCTV, Street, Region, RegionPoint, Intersection, ArmDirection } from '@/types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -22,6 +22,14 @@ import { cn } from '@/lib/utils';
 const REGION_COLORS = [
   '#22c55e', '#3b82f6', '#f59e0b', '#ef4444', '#a855f7',
   '#06b6d4', '#f97316', '#ec4899',
+];
+
+const ARM_DIRECTION_OPTIONS: { value: ArmDirection; label: string; short: string }[] = [
+  { value: 'unknown',    label: 'Unknown',    short: '?' },
+  { value: 'northbound', label: 'Northbound', short: 'NB' },
+  { value: 'southbound', label: 'Southbound', short: 'SB' },
+  { value: 'eastbound',  label: 'Eastbound',  short: 'EB' },
+  { value: 'westbound',  label: 'Westbound',  short: 'WB' },
 ];
 
 interface RegionWithName extends Region {
@@ -42,24 +50,24 @@ const WS_BASE = import.meta.env.DEV ? 'ws://localhost:8000' : `ws://${window.loc
 // ── Inline editable street row ────────────────────────────────────────────────
 function StreetRow({
   street,
-  onRenamed,
+  onUpdated,
   onDeleted,
 }: {
   street: Street;
-  onRenamed: (id: number, name: string) => void;
+  onUpdated: (id: number, patch: Partial<Street>) => void;
   onDeleted: (id: number) => void;
 }) {
-  const [editing, setEditing] = useState(false);
-  const [value, setValue] = useState(street.name);
+  const [editingName, setEditingName] = useState(false);
+  const [nameValue, setNameValue] = useState(street.name);
   const [saving, setSaving] = useState(false);
 
-  async function save() {
-    if (!value.trim() || value === street.name) { setEditing(false); return; }
+  async function saveName() {
+    if (!nameValue.trim() || nameValue === street.name) { setEditingName(false); return; }
     setSaving(true);
     try {
-      await streetsApi.update(street.id, { name: value.trim() });
-      onRenamed(street.id, value.trim());
-      setEditing(false);
+      await streetsApi.update(street.id, { name: nameValue.trim() });
+      onUpdated(street.id, { name: nameValue.trim() });
+      setEditingName(false);
     } catch {
       toast.error('Failed to rename street');
     } finally {
@@ -67,53 +75,84 @@ function StreetRow({
     }
   }
 
-  if (editing) {
-    return (
-      <div className="flex items-center gap-1 py-1">
-        <Input
-          autoFocus
-          value={value}
-          onChange={e => setValue(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter') save(); if (e.key === 'Escape') setEditing(false); }}
-          className="h-7 text-xs flex-1"
-        />
-        <Button size="icon" variant="ghost" className="size-7" onClick={save} disabled={saving}>
-          {saving ? <Loader2 className="size-3 animate-spin" /> : <Check className="size-3 text-emerald-600" />}
-        </Button>
-        <Button size="icon" variant="ghost" className="size-7" onClick={() => setEditing(false)}>
-          <X className="size-3" />
-        </Button>
-      </div>
-    );
+  async function saveArmDirection(dir: ArmDirection) {
+    try {
+      await streetsApi.update(street.id, { arm_direction: dir });
+      onUpdated(street.id, { arm_direction: dir });
+    } catch {
+      toast.error('Failed to update arm direction');
+    }
   }
+
+  const armOpt = ARM_DIRECTION_OPTIONS.find(o => o.value === (street.arm_direction ?? 'unknown'));
 
   return (
     <div className="flex items-center gap-1 py-1 group">
-      <span className="text-xs flex-1 truncate">{street.name}</span>
-      <Button size="icon" variant="ghost" className="size-6 opacity-0 group-hover:opacity-100" onClick={() => setEditing(true)}>
-        <Pencil className="size-3" />
-      </Button>
-      <AlertDialog>
-        <AlertDialogTrigger asChild>
-          <Button size="icon" variant="ghost" className="size-6 opacity-0 group-hover:opacity-100 text-destructive hover:text-destructive">
-            <Trash2 className="size-3" />
+      {/* Arm direction badge / select */}
+      <Select value={street.arm_direction ?? 'unknown'} onValueChange={v => saveArmDirection(v as ArmDirection)}>
+        <SelectTrigger className={cn(
+          'h-5 w-10 px-1 text-[10px] font-mono border rounded shrink-0 focus:ring-0',
+          street.arm_direction === 'unknown' || !street.arm_direction
+            ? 'border-muted text-muted-foreground'
+            : 'border-blue-400/60 text-blue-700 bg-blue-50',
+        )}>
+          <SelectValue>{armOpt?.short ?? '?'}</SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          {ARM_DIRECTION_OPTIONS.map(o => (
+            <SelectItem key={o.value} value={o.value} className="text-xs">
+              {o.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+
+      {/* Street name */}
+      {editingName ? (
+        <>
+          <Input
+            autoFocus
+            value={nameValue}
+            onChange={e => setNameValue(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') saveName(); if (e.key === 'Escape') setEditingName(false); }}
+            className="h-7 text-xs flex-1"
+          />
+          <Button size="icon" variant="ghost" className="size-7" onClick={saveName} disabled={saving}>
+            {saving ? <Loader2 className="size-3 animate-spin" /> : <Check className="size-3 text-emerald-600" />}
           </Button>
-        </AlertDialogTrigger>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete "{street.name}"?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Regions linked to this street will lose their street association.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={() => onDeleted(street.id)} className="bg-destructive text-destructive-foreground">
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+          <Button size="icon" variant="ghost" className="size-7" onClick={() => setEditingName(false)}>
+            <X className="size-3" />
+          </Button>
+        </>
+      ) : (
+        <>
+          <span className="text-xs flex-1 truncate">{street.name}</span>
+          <Button size="icon" variant="ghost" className="size-6 opacity-0 group-hover:opacity-100" onClick={() => setEditingName(true)}>
+            <Pencil className="size-3" />
+          </Button>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button size="icon" variant="ghost" className="size-6 opacity-0 group-hover:opacity-100 text-destructive hover:text-destructive">
+                <Trash2 className="size-3" />
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Delete "{street.name}"?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Regions linked to this street will lose their street association.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction onClick={() => onDeleted(street.id)} className="bg-destructive text-destructive-foreground">
+                  Delete
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </>
+      )}
     </div>
   );
 }
@@ -204,7 +243,10 @@ export function CameraDetailPage() {
     ws.binaryType = 'arraybuffer';
     ws.onopen  = () => setWsStatus('live');
     ws.onerror = () => setWsStatus('error');
-    ws.onclose = () => setWsStatus('error');
+    ws.onclose = (event: CloseEvent) => {
+      if (event.code === 4001) { triggerUnauthorized(); return; }
+      setWsStatus('error');
+    };
     ws.onmessage = (event: MessageEvent<ArrayBuffer>) => {
       const canvas = videoCanvasRef.current;
       if (!canvas) return;
@@ -379,9 +421,11 @@ export function CameraDetailPage() {
     } catch { toast.error('Failed to delete street'); }
   }
 
-  function handleStreetRenamed(id: number, name: string) {
-    setStreets(prev => prev.map(s => s.id === id ? { ...s, name } : s));
-    setRegions(prev => prev.map(r => r.street_id === id ? { ...r, streetName: name } : r));
+  function handleStreetUpdated(id: number, patch: Partial<Street>) {
+    setStreets(prev => prev.map(s => s.id === id ? { ...s, ...patch } : s));
+    if (patch.name !== undefined) {
+      setRegions(prev => prev.map(r => r.street_id === id ? { ...r, streetName: patch.name } : r));
+    }
   }
 
   return (
@@ -522,7 +566,7 @@ export function CameraDetailPage() {
                       <StreetRow
                         key={s.id}
                         street={s}
-                        onRenamed={handleStreetRenamed}
+                        onUpdated={handleStreetUpdated}
                         onDeleted={handleDeleteStreet}
                       />
                     ))}
@@ -578,6 +622,12 @@ export function CameraDetailPage() {
                       <SelectItem value="outbound">Outbound (away from intersection)</SelectItem>
                     </SelectContent>
                   </Select>
+                  {selectedStreet && selectedDirection === 'inbound' &&
+                    regions.some(r => r.street_id === Number(selectedStreet) && r.direction === 'inbound') && (
+                    <p className="text-[11px] text-amber-600 leading-tight">
+                      This street already has an inbound region — adding another will double-count flow for timing.
+                    </p>
+                  )}
                 </div>
                 {!drawing ? (
                   <Button size="sm" onClick={() => { setDrawing(true); setPoints([]); }} disabled={!selectedStreet || !canvasSize}>
