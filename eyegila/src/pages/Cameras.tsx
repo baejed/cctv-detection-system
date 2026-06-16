@@ -190,7 +190,7 @@ export function CamerasPage() {
         toast.error(`Cannot reach RTSP on ${nvrForm.host}:554`);
       } else {
         setNvrSelected(new Set(result.channels.map(c => c.channel)));
-        toast.success(`Found ${result.channels.length} channels — select which to import`);
+        toast.success(`Found ${result.channels.length} channels - select which to import`);
       }
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Scan failed');
@@ -702,7 +702,7 @@ export function CamerasPage() {
             <div className="flex flex-col gap-4 py-1">
               <p className="text-sm text-muted-foreground">
                 Upload a CSV to bulk-create intersections and cameras.
-                Intersections are matched by name — existing ones are reused.
+                Intersections are matched by name - existing ones are reused.
               </p>
 
               <div className="rounded-md border border-dashed border-border p-4 flex flex-col items-center gap-3 text-center">

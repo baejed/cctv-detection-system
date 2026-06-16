@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from common.models import Intersection, SimulationResult, TodChunk, TimingRecommendation
-from server.webster import pcu_flow_per_street, SATURATION_FLOW
+from server.webster import pcu_flow_per_street, pcu_flow_for_window, SATURATION_FLOW, get_street_directions, group_phases, compute_timing
 
 _TC = 6.5   # critical gap (s), TWSC through movement HCM 6th ed.
 _TF = 3.3   # follow-up time (s)
@@ -119,6 +119,109 @@ def _queue_series_unsignalized(
         if t % 60 == 59:
             series.append(round(queue, 1))
     return series
+
+
+def compute_simulation_for_window(
+    db: Session,
+    intersection: Intersection,
+    start: datetime,
+    end: datetime,
+) -> dict:
+    """On-demand before/after simulation for an explicit time window. Returns a plain dict, not DB rows."""
+    from server.pce import resolve_pce
+
+    pce_map    = resolve_pce(db, intersection.id)
+    flows      = pcu_flow_for_window(db, intersection.id, start, end, pce_map)
+    directions = get_street_directions(db, intersection.id)
+
+    status         = intersection.signal_status or "unsignalized"
+    min_c          = intersection.min_cycle_length    or 40
+    max_c          = intersection.max_cycle_length    or 120
+    lost_time      = intersection.lost_time_per_phase or 4
+    all_red        = intersection.all_red_clearance   or 3
+    crossing_width = getattr(intersection, "crossing_width_m", 12.0) or 12.0
+
+    chunk_label = f"{start.strftime('%b %d %H:%M')} – {end.strftime('%H:%M')}"
+
+    if not flows:
+        return {"has_data": False, "chunk_label": chunk_label}
+
+    n      = len(flows)
+    phases = group_phases(flows, directions)
+    proposed_C, proposed_splits = compute_timing(
+        flows, phases, lost_time, all_red, min_c, max_c, crossing_width
+    )
+
+    delay_after_per: dict[int, float] = {}
+    vc_after_per:    dict[int, float] = {}
+    q_series_after:  dict[str, list[float]] = {}
+
+    for sid, q in flows.items():
+        g = proposed_splits.get(sid, proposed_C / n)
+        delay_after_per[sid] = compute_uniform_delay(proposed_C, g, q)
+        vc_after_per[sid]    = compute_vc_ratio(proposed_C, g, q)
+        q_series_after[str(sid)] = _queue_series_signalized(q, proposed_C, g)
+
+    delay_before_per: dict[int, float] = {}
+    vc_before_per:    dict[int, float] = {}
+    q_series_before:  dict[str, list[float]] = {}
+
+    if status in ("fixed_time", "actuated"):
+        exist_C    = intersection.existing_cycle_length or proposed_C
+        raw_splits = intersection.existing_green_splits or {}
+        exist_splits = (
+            {int(k): v for k, v in raw_splits.items()}
+            if raw_splits
+            else {sid: exist_C / n for sid in flows}
+        )
+        for sid, q in flows.items():
+            g = exist_splits.get(sid, exist_C / n)
+            delay_before_per[sid] = compute_uniform_delay(exist_C, g, q)
+            vc_before_per[sid]    = compute_vc_ratio(exist_C, g, q)
+            q_series_before[str(sid)] = _queue_series_signalized(q, exist_C, g)
+    else:
+        major_id = max(flows, key=flows.__getitem__)
+        q_major  = flows[major_id]
+        for sid, q in flows.items():
+            if sid == major_id:
+                delay_before_per[sid] = 2.0
+                cap = SATURATION_FLOW
+                vc_before_per[sid]   = round(q / SATURATION_FLOW, 3)
+            else:
+                delay_before_per[sid] = compute_hcm_gap_delay(q_major, q)
+                cap = _gap_acceptance_capacity(q_major)
+                vc_before_per[sid]   = round(min(q / max(cap, 1), 1.0), 3)
+            q_series_before[str(sid)] = _queue_series_unsignalized(q, cap)
+
+    total_flow = sum(flows.values())
+    window_hrs = (end - start).total_seconds() / 3600
+
+    if total_flow > 0:
+        delay_before = sum(delay_before_per[sid] * flows[sid] for sid in flows) / total_flow
+        delay_after  = sum(delay_after_per[sid]  * flows[sid] for sid in flows) / total_flow
+    else:
+        delay_before = delay_after = 0.0
+
+    vc_before = max(vc_before_per.values(), default=0.0)
+    vc_after  = max(vc_after_per.values(),  default=0.0)
+    vh_saved  = (delay_before - delay_after) * total_flow * window_hrs / 3600
+
+    return {
+        "has_data":        True,
+        "chunk_label":     chunk_label,
+        "flows":           {str(sid): round(q, 1) for sid, q in flows.items()},
+        "proposed_C":      proposed_C,
+        "proposed_splits": {str(sid): round(g, 1) for sid, g in proposed_splits.items()},
+        "delay_before":    round(delay_before, 2),
+        "delay_after":     round(delay_after, 2),
+        "vc_before":       round(vc_before, 3),
+        "vc_after":        round(vc_after, 3),
+        "total_flow":      round(total_flow, 2),
+        "vh_saved":        round(vh_saved, 3),
+        "q_series_before": q_series_before,
+        "q_series_after":  q_series_after,
+        "status":          status,
+    }
 
 
 def generate_simulation(

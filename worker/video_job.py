@@ -151,7 +151,10 @@ def process_video(video_id: int) -> None:
             base_ts = base_ts.replace(tzinfo=timezone.utc)
 
         # ── load model and regions ─────────────────────────────────────────
-        model = YOLO("eyegila_v3.pt")
+        # MODEL_PATH is set by docker-compose to /app/model.pt (the canonical
+        # mount path). Never use a bare filename here — the CWD is not the
+        # project root inside the container.
+        model = YOLO(os.getenv("MODEL_PATH", "/app/model.pt"))
 
         # For a video upload we need a cctv_id to load regions.
         # Use the first CCTV belonging to the video's intersection, or skip regions.

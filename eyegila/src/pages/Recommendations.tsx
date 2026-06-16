@@ -45,7 +45,7 @@ export function RecommendationsPage() {
       ]);
       setIntersections(ints);
       setRecs(r);
-      dlog(`load: done in ${(performance.now() - t0).toFixed(0)}ms — ${ints.length} intersections, ${r.length} recs`);
+      dlog(`load: done in ${(performance.now() - t0).toFixed(0)}ms - ${ints.length} intersections, ${r.length} recs`);
     } catch (err: unknown) {
       derr('load failed', err);
       setError(err instanceof Error ? err.message : 'Failed to load');
@@ -89,8 +89,8 @@ export function RecommendationsPage() {
       const results = await recommendationsApi.generateAll();
       setRecs(results);
       const warranted = results.filter(r => r.recommended).length;
-      dlog(`regenerateAll: done in ${(performance.now() - t0).toFixed(0)}ms — ${results.length} recs, ${warranted} warranted`);
-      toast.success(`Analysis complete — ${warranted} warranted`);
+      dlog(`regenerateAll: done in ${(performance.now() - t0).toFixed(0)}ms - ${results.length} recs, ${warranted} warranted`);
+      toast.success(`Analysis complete - ${warranted} warranted`);
     } catch (err: unknown) {
       derr('regenerateAll failed', err);
       toast.error(err instanceof Error ? err.message : 'Analysis failed');
@@ -140,7 +140,7 @@ export function RecommendationsPage() {
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Recommendations</h1>
           <p className="text-xs text-muted-foreground mt-0.5">
-            MUTCD signal warrant analysis — last full hour of detections
+            MUTCD signal warrant analysis - last full hour of detections
           </p>
         </div>
         <Button onClick={regenerateAll} disabled={generatingAll || loading || intersections.length === 0} size="sm">

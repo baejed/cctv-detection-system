@@ -176,6 +176,8 @@ def main() -> None:
     print(f"[worker] ── config ──────────────────────────────")
     print(f"[worker]   DATABASE_URL       = {os.getenv('DATABASE_URL', '(default)')}")
     print(f"[worker]   REDIS_URL          = {os.getenv('REDIS_URL', '(default)')}")
+    print(f"[worker]   MODEL_VERSION      = {os.getenv('MODEL_VERSION', 'eyegila_v4')}")
+    print(f"[worker]   MODEL_PATH         = {os.getenv('MODEL_PATH', '/app/model.pt')}")
     print(f"[worker]   CAMERAS_PER_WORKER = {CAMERAS_PER_WORKER}")
     print(f"[worker]   INFERENCE_EVERY_N  = {INFERENCE_EVERY_N}")
     print(f"[worker]   READER_MAX_FPS     = {READER_MAX_FPS if READER_MAX_FPS > 0 else 'unlimited'}")
@@ -184,11 +186,18 @@ def main() -> None:
 
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
-    # Add last_error column if it doesn't exist yet (idempotent migration)
+    # Guard the DDL with an existence check so ALTER TABLE (which acquires
+    # AccessExclusiveLock even with IF NOT EXISTS) is never run after the
+    # initial migration — the hot-restart path stays completely lock-free.
     try:
-        db.execute(text(
-            "ALTER TABLE worker_heartbeats ADD COLUMN IF NOT EXISTS last_error VARCHAR(500)"
-        ))
+        needs_col = not db.execute(text(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = 'worker_heartbeats' AND column_name = 'last_error'"
+        )).scalar()
+        if needs_col:
+            db.execute(text(
+                "ALTER TABLE worker_heartbeats ADD COLUMN last_error VARCHAR(500)"
+            ))
         db.commit()
     except Exception:
         db.rollback()
@@ -277,14 +286,14 @@ def main() -> None:
                     frame_h, frame_w = result.orig_img.shape[:2]
 
                     # publish bounding boxes to Redis for camera_ws overlay (every frame)
+                    # Include all detections regardless of track ID so the live
+                    # overlay shows boxes even before BoT-SORT confirms a track.
                     try:
                         boxes_payload = []
                         for box in result.boxes:
-                            if box.id is None:
-                                continue
                             bx1, by1, bx2, by2 = box.xyxy[0].tolist()
                             boxes_payload.append({
-                                "track_id":    int(box.id[0]),
+                                "track_id":    int(box.id[0]) if box.id is not None else -1,
                                 "object_type": model.names[int(box.cls[0])],
                                 "confidence":  round(float(box.conf[0]), 3),
                                 "x1": round(bx1 / frame_w, 4),
@@ -292,10 +301,13 @@ def main() -> None:
                                 "x2": round(bx2 / frame_w, 4),
                                 "y2": round(by2 / frame_h, 4),
                             })
-                        _redis.setex(f"cam:{slot.cctv_id}:detections", 5, _json.dumps({
+                        payload = _json.dumps({
+                            "v":     1,
                             "ts":    now,
                             "boxes": boxes_payload,
-                        }))
+                        })
+                        _redis.setex(f"cam:{slot.cctv_id}:detections", 5, payload)
+                        _redis.publish(f"cam:{slot.cctv_id}:detections:ch", payload)
                     except Exception:
                         pass
 
@@ -386,26 +398,32 @@ def main() -> None:
 # ── helpers ────────────────────────────────────────────────────────────────────
 
 def _load_model() -> YOLO:
-    trt_cache = os.getenv("TRT_CACHE_DIR", "/app/trt_cache")
-    engine_path = Path(trt_cache) / "eyegila_v3.engine"
+    model_ver    = os.getenv("MODEL_VERSION", "eyegila_v4")
+    trt_cache    = os.getenv("TRT_CACHE_DIR", "/app/trt_cache")
+    engine_path  = Path(trt_cache) / f"{model_ver}.engine"
+    weights_path = Path(os.getenv("MODEL_PATH", "/app/model.pt"))
+
     if engine_path.exists():
         if CAMERAS_PER_WORKER > 1:
             print(
-                f"[worker] WARNING: TRT engine loaded with CAMERAS_PER_WORKER={CAMERAS_PER_WORKER}. "
-                f"If the engine was not exported with dynamic=True, inference will not be truly batched. "
+                f"[worker] NOTE: TRT engine loaded with CAMERAS_PER_WORKER={CAMERAS_PER_WORKER}. "
+                f"Ensure the engine was exported with dynamic=True for true batching. "
                 f"Export once with: model.export(format='engine', dynamic=True, device=0)"
             )
-        print(f"[worker] loading TensorRT FP16 engine from {engine_path}")
+        print(f"[worker] loading TensorRT FP16 engine: {engine_path}")
         return YOLO(str(engine_path), task="detect")
 
-    weights_path = Path("eyegila_v3.pt")
     if not weights_path.exists():
         raise FileNotFoundError(
-            f"No model found. Looked for TensorRT engine at '{engine_path}' "
-            f"and PyTorch weights at '{weights_path}'. "
-            "Export the engine first: model.export(format='engine') or place eyegila_v3.pt in the working directory."
+            f"Model not found at '{weights_path}'. "
+            f"Check that {model_ver}.pt exists in the project root and that the "
+            f"docker-compose volume mount is correct "
+            f"(expects ./{model_ver}.pt → /app/model.pt)."
         )
-    print("[worker] WARNING: TensorRT engine not found — falling back to PyTorch weights (expect lower throughput)")
+
+    # CPU / Mac path: no TRT engine available; run PyTorch weights on CPU.
+    # This is normal and expected on machines without an NVIDIA GPU.
+    print(f"[worker] running CPU inference from {weights_path} (no TRT engine)")
     return YOLO(str(weights_path))
 
 

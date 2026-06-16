@@ -1,7 +1,7 @@
 /**
  * Runtime shape tests for TypeScript types and domain utility functions.
  *
- * TypeScript's type system is erased at runtime — these tests verify that the
+ * TypeScript's type system is erased at runtime - these tests verify that the
  * *values* flowing through the app still match the expected shapes, and that
  * pure helper functions (LOS colour lookup, `fmt`, `buildTypeMix`) work correctly.
  */
@@ -77,7 +77,7 @@ describe('LOS_COLORS', () => {
 // ─── fmt() helper (inline copy from SignalTiming.tsx) ─────────────────────────
 
 function fmt(n: number | null | undefined, unit = 's'): string {
-  if (n == null) return '—';
+  if (n == null) return '-';
   return `${n.toFixed(1)}${unit}`;
 }
 
@@ -87,8 +87,8 @@ describe('fmt()', () => {
     expect(fmt(0)).toBe('0.0s');
   });
 
-  it('returns em-dash for null', () => expect(fmt(null)).toBe('—'));
-  it('returns em-dash for undefined', () => expect(fmt(undefined)).toBe('—'));
+  it('returns em-dash for null', () => expect(fmt(null)).toBe('-'));
+  it('returns em-dash for undefined', () => expect(fmt(undefined)).toBe('-'));
 
   it('accepts custom unit', () => {
     expect(fmt(3.1, ' PCU/hr')).toBe('3.1 PCU/hr');

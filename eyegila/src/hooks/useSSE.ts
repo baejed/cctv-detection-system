@@ -69,7 +69,7 @@ export function useSSE<T>(url: string, enabled = true) {
                 try {
                   setData(JSON.parse(line.slice(6)) as T);
                 } catch {
-                  // malformed JSON — ignore
+                  // malformed JSON - ignore
                 }
               }
             }

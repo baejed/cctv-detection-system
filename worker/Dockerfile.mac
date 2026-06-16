@@ -11,6 +11,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements.txt
 COPY common ./common
 COPY worker ./worker
-COPY eyegila_v3.pt ./eyegila_v3.pt
+# Model weights are NOT baked into this image.
+# docker-compose mounts ./${MODEL_VERSION}.pt at /app/model.pt at runtime,
+# so the image stays version-agnostic and rebuilds are not needed when
+# weights are updated.
 
 CMD ["python", "-m", "worker.main"]

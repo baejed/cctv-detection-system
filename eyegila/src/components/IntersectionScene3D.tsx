@@ -1,5 +1,5 @@
 /**
- * 3D intersection simulation — vehicles + pedestrian crossings.
+ * 3D intersection simulation - vehicles + pedestrian crossings.
  *
  * Coordinate system (Three.js, Y-up):
  *   +X = East   –X = West
@@ -79,13 +79,13 @@ interface CwDef {
 const XWALK_POS = BOX + XWALK_OFFSET;  // 10.0 m from centre
 
 const CW_DEFS: CwDef[] = [
-  // N arm — peds walk east (+X); model default faces -Z, so +π/2 turns it to face +X
+  // N arm - peds walk east (+X); model default faces -Z, so +π/2 turns it to face +X
   { startX: -ROAD_W / 2, startZ: -XWALK_POS, dx:  1, dz:  0, rotY:  Math.PI / 2, blockedApp: 0 },
-  // S arm — peds walk west (-X); -π/2 faces -X
+  // S arm - peds walk west (-X); -π/2 faces -X
   { startX:  ROAD_W / 2, startZ:  XWALK_POS, dx: -1, dz:  0, rotY: -Math.PI / 2, blockedApp: 0 },
-  // E arm — peds walk south (+Z); π faces +Z
+  // E arm - peds walk south (+Z); π faces +Z
   { startX:  XWALK_POS, startZ: -ROAD_W / 2, dx:  0, dz:  1, rotY:  Math.PI,     blockedApp: 1 },
-  // W arm — peds walk north (-Z); 0 = default -Z facing
+  // W arm - peds walk north (-Z); 0 = default -Z facing
   { startX: -XWALK_POS, startZ:  ROAD_W / 2, dx:  0, dz: -1, rotY:  0,           blockedApp: 1 },
 ];
 
@@ -341,7 +341,7 @@ function makeTrafficLight(): TLRefs {
   const armMesh = mesh(new THREE.CylinderGeometry(0.13*S, 0.13*S, 4.0*S, 6), poleMat);
   armMesh.rotation.z = Math.PI / 2; armMesh.position.set(-2.0*S, 9.20, 0); g.add(armMesh);
 
-  // Housing — scale up 1.5× for visibility
+  // Housing - scale up 1.5× for visibility
   const HX = -4.0*S;
   const housing = mesh(bx(1.10*S, 3.60*S, 1.10*S), darkMat);
   housing.position.set(HX, 9.20, 0); g.add(housing);
@@ -349,7 +349,7 @@ function makeTrafficLight(): TLRefs {
   addBox(g, 1.30*S, 0.18*S, 1.20*S, HX, 11.10, 0, 0x111827);
   for (const y of [9.90, 9.05]) addBox(g, 1.10*S, 0.12*S, 1.10*S, HX, y, 0, 0x111827);
 
-  // Lenses — bigger (0.60 radius) for clear visibility at camera distance
+  // Lenses - bigger (0.60 radius) for clear visibility at camera distance
   const lensGeo = new THREE.SphereGeometry(0.60*S, 14, 10);
   const matR = makeMat(0x7f1d1d, 0, 0, 0.90);
   const matA = makeMat(0x78350f, 0, 0, 0.90);
@@ -366,7 +366,7 @@ function makeTrafficLight(): TLRefs {
   const ptA = new THREE.PointLight(0xf59e0b, 0, 40, 2); ptA.position.set(HX,  9.70, 1.4); g.add(ptA);
   const ptG = new THREE.PointLight(0x22c55e, 0, 40, 2); ptG.position.set(HX,  8.80, 1.4); g.add(ptG);
 
-  // Countdown sprite — canvas texture always facing camera
+  // Countdown sprite - canvas texture always facing camera
   const cdCanvas = document.createElement('canvas');
   cdCanvas.width = 128; cdCanvas.height = 128;
   const cdCtx = cdCanvas.getContext('2d')!;
@@ -716,7 +716,7 @@ function cloneGLBWithColor(gltf: GLTF, hexColor: number): THREE.Group {
     if (!m.isMesh) return;
     // Replace each material with a flat-colored MeshStandardMaterial.
     // We cannot just set .color because the original texture (map) multiplies
-    // against it — a dark baked texture would make even a bright .color invisible.
+    // against it - a dark baked texture would make even a bright .color invisible.
     const matCount = Array.isArray(m.material) ? m.material.length : 1;
     const flat = new THREE.MeshStandardMaterial({
       color: hexColor,
@@ -951,7 +951,7 @@ export function IntersectionScene3D({
       renderer.domElement.addEventListener('touchstart', onTouchStart, { passive: true });
       renderer.domElement.addEventListener('touchmove',  onTouchMove,  { passive: false });
 
-      // Scene — time-of-day ambient based on chunk name
+      // Scene - time-of-day ambient based on chunk name
       const chunkN = timing.chunk_name ?? '';
       const isNightChunk = /night|midnight|pre.?dawn/i.test(chunkN);
       const isDuskDawn   = /dusk|dawn|evening|early.?morning/i.test(chunkN);
@@ -977,24 +977,24 @@ export function IntersectionScene3D({
       sun.shadow.camera.near = 1; sun.shadow.camera.far = 300;
       const sc = 90; Object.assign(sun.shadow.camera, { left: -sc, right: sc, top: sc, bottom: -sc });
       scene.add(sun);
-      // Fill light — blue-tinted sky bounce
+      // Fill light - blue-tinted sky bounce
       const fillLight = new THREE.DirectionalLight(0x3b6ca8, isNightChunk ? 0.1 : 0.6);
       fillLight.position.set(-30, 20, -40);
       scene.add(fillLight);
 
       buildRoadScene(scene);
 
-      // Traffic lights — curb-mounted on the driver's right, arm extends over the approaching lane.
-      // Lenses face toward approaching vehicles; back-face lenses (same material) face away — both visible.
-      //   rotY = 0:      arm → -X (west),  lenses → +Z (south) — for SB traffic
-      //   rotY = π/2:    arm → +Z (south), lenses → +X (east)  — for WB traffic
-      //   rotY = π:      arm → +X (east),  lenses → -Z (north) — for NB traffic
-      //   rotY = -π/2:   arm → -Z (north), lenses → -X (west)  — for EB traffic
+      // Traffic lights - curb-mounted on the driver's right, arm extends over the approaching lane.
+      // Lenses face toward approaching vehicles; back-face lenses (same material) face away - both visible.
+      //   rotY = 0:      arm → -X (west),  lenses → +Z (south) - for SB traffic
+      //   rotY = π/2:    arm → +Z (south), lenses → +X (east)  - for WB traffic
+      //   rotY = π:      arm → +X (east),  lenses → -Z (north) - for NB traffic
+      //   rotY = -π/2:   arm → -Z (north), lenses → -X (west)  - for EB traffic
       const tlConfigs = [
-        { x:  ROAD_W / 2 + 0.8, z: -(BOX + 1.5),   rotY: 0             },  // SB — east curb of N arm
-        { x:  BOX + 1.5,        z: -(ROAD_W / 2 + 0.8), rotY: Math.PI / 2 }, // WB — north curb of E arm
-        { x: -(ROAD_W / 2 + 0.8), z: BOX + 1.5,    rotY: Math.PI       },  // NB — west curb of S arm
-        { x: -(BOX + 1.5),      z:  ROAD_W / 2 + 0.8, rotY: -Math.PI / 2 }, // EB — south curb of W arm
+        { x:  ROAD_W / 2 + 0.8, z: -(BOX + 1.5),   rotY: 0             },  // SB - east curb of N arm
+        { x:  BOX + 1.5,        z: -(ROAD_W / 2 + 0.8), rotY: Math.PI / 2 }, // WB - north curb of E arm
+        { x: -(ROAD_W / 2 + 0.8), z: BOX + 1.5,    rotY: Math.PI       },  // NB - west curb of S arm
+        { x: -(BOX + 1.5),      z:  ROAD_W / 2 + 0.8, rotY: -Math.PI / 2 }, // EB - south curb of W arm
       ];
       const tls: TLRefs[] = tlConfigs.map(cfg => {
         const tl = makeTrafficLight();
@@ -1010,7 +1010,7 @@ export function IntersectionScene3D({
         ? (signalStatus !== 'fixed_time' && signalStatus !== 'actuated')
         : signalOff;
 
-      // Phase green times — before mode uses existing splits, after uses Webster splits
+      // Phase green times - before mode uses existing splits, after uses Webster splits
       const approachGreen: (number | undefined)[] = [undefined, undefined, undefined, undefined];
       const splits = showBefore ? (existingGreenSplits ?? null) : timing.green_splits;
       if (splits) {
@@ -1051,7 +1051,7 @@ export function IntersectionScene3D({
       // Per-crosswalk queue of remaining delay times for staged ped spawns
       const pedSpawnQueue: number[][] = [[], [], [], []];
 
-      // Pedestrian model pool — pick randomly from available man GLBs
+      // Pedestrian model pool - pick randomly from available man GLBs
       const pedGLTFs = (['man', 'man2', 'manSleeves', 'manSuit'] as const)
         .map(k => gltfs[k]).filter(Boolean) as GLTF[];
 
@@ -1106,7 +1106,7 @@ export function IntersectionScene3D({
       }
 
       const CAR_POOL   = buildPool(['car', 'car2', 'suv', 'taxi', 'sportsCar', 'sportsCar2', 'policeCar']);
-      const MC_POOL    = buildPool(['scooter']);   // scooter only — tricycle.glb has 210 meshes/draw call
+      const MC_POOL    = buildPool(['scooter']);   // scooter only - tricycle.glb has 210 meshes/draw call
       const TRUCK_POOL = buildPool(['truck']);
 
       function pickEntry(pool: GLBEntry[]): GLBEntry { return pool[Math.floor(Math.random() * pool.length)]; }
@@ -1146,7 +1146,7 @@ export function IntersectionScene3D({
         placeVehicle(veh);  // position immediately so vehicles appear on first render
       }
 
-      // Pre-populate: 6 per arm (24 total) — keeps draw calls reasonable at startup
+      // Pre-populate: 6 per arm (24 total) - keeps draw calls reasonable at startup
       for (let app = 0; app < 4; app++) {
         for (let i = 0; i < 6; i++) spawnVehicle(app);
       }
@@ -1178,7 +1178,7 @@ export function IntersectionScene3D({
           }
         }
 
-        // Vehicle physics — IDM queuing + Bezier arc intersection traversal
+        // Vehicle physics - IDM queuing + Bezier arc intersection traversal
         for (let i = vehicles.length - 1; i >= 0; i--) {
           const v = vehicles[i];
           const p = VPARAMS[v.type];
@@ -1326,7 +1326,7 @@ export function IntersectionScene3D({
               }
             }
 
-            // Drain the spawn queue — each entry is a countdown; fire when it hits zero
+            // Drain the spawn queue - each entry is a countdown; fire when it hits zero
             for (let qi = pedSpawnQueue[cwId].length - 1; qi >= 0; qi--) {
               pedSpawnQueue[cwId][qi] -= dt;
               if (pedSpawnQueue[cwId][qi] <= 0) {
@@ -1361,7 +1361,7 @@ export function IntersectionScene3D({
           }
         }
 
-        // HUD overlay — update once per simulated second
+        // HUD overlay - update once per simulated second
         const curSec = Math.floor(simTime);
         if (curSec !== lastHudSec) {
           lastHudSec = curSec;
@@ -1370,7 +1370,7 @@ export function IntersectionScene3D({
         }
       }
 
-      const MAX_PHYS_DT = 0.05; // physics sub-step cap (seconds) — prevents penetration at speed
+      const MAX_PHYS_DT = 0.05; // physics sub-step cap (seconds) - prevents penetration at speed
       let rafId = 0;
       function animate(now: number) {
         rafId = requestAnimationFrame(animate);

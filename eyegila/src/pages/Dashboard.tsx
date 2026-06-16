@@ -271,7 +271,7 @@ export function DashboardPage() {
         if (cancelled) return;
         setRecsById(new Map(recs.map(r => [r.intersection_id, r])));
       })
-      .catch(() => { /* silent — Dashboard still works without recs */ });
+      .catch(() => { /* silent - Dashboard still works without recs */ });
     return () => { cancelled = true; };
   }, []);
 
@@ -846,7 +846,7 @@ export function DashboardPage() {
                             {r.met ? '✓' : '·'} {((r.conf ?? 0) * 100).toFixed(0)}%
                           </Badge>
                         ) : (
-                          <Badge variant="outline" className="text-[10px] border-slate-200 text-slate-400">—</Badge>
+                          <Badge variant="outline" className="text-[10px] border-slate-200 text-slate-400">-</Badge>
                         )}
                       </div>
                     ));

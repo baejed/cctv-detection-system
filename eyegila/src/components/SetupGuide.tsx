@@ -161,7 +161,7 @@ export function SetupGuide() {
             <Progress value={progress} className="h-1.5" />
           </div>
 
-          {/* Steps — scrollable */}
+          {/* Steps - scrollable */}
           <div className="divide-y divide-border overflow-y-auto">
             {STEPS.map(step => {
               const done    = step.done(data);

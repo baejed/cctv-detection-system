@@ -1,4 +1,4 @@
-import { request } from './api';
+import { request, getToken } from './api';
 import type { CCTV } from '../types';
 
 export const cctvsApi = {
@@ -21,10 +21,16 @@ export const cctvsApi = {
   delete: (id: number) =>
     request<{ detail: string }>(`/cctvs/${id}`, { method: 'DELETE' }),
 
-  snapshotUrl: (id: number) =>
-    import.meta.env.DEV
-      ? `http://${window.location.hostname}:8000/cctvs/${id}/snapshot`
-      : `/api/cctvs/${id}/snapshot`,
+  retry: (id: number) =>
+    request<void>(`/cctvs/${id}/retry`, { method: 'POST' }),
+
+  snapshotUrl: (id: number) => {
+    const token = getToken();
+    const q = token ? `?token=${encodeURIComponent(token)}` : '';
+    return import.meta.env.DEV
+      ? `http://${window.location.hostname}:8000/cctvs/${id}/snapshot${q}`
+      : `/api/cctvs/${id}/snapshot${q}`;
+  },
 
   scanNvr: (data: { host: string; username: string; password: string; max_channels: number; subtype: number }) =>
     request<{ reachable: boolean; channels: { channel: number; rtsp_url: string }[] }>('/cctvs/scan-nvr', {

@@ -1,4 +1,24 @@
-.PHONY: test test-unit test-integration test-frontend test-e2e test-load
+.PHONY: test test-unit test-integration test-functionality test-frontend test-e2e test-load \
+        dev dev-mac dev-mac-down dev-mac-logs
+
+# ── Standard dev stack (requires NVIDIA GPU for worker) ──────────────────────
+dev:
+	docker compose up --build -d
+
+# ── Mac / CPU-only dev stack (no GPU required) ────────────────────────────────
+# Starts the full stack with CPU-only workers:
+#   • rq-worker uses rq-worker/Dockerfile.mac (onnxruntime CPU, no TensorRT)
+#   • --profile worker starts the CPU live-camera worker
+# Copy .env.example to .env first and ensure eyegila_v4.pt is in the root.
+dev-mac:
+	RQ_WORKER_DOCKERFILE=rq-worker/Dockerfile.mac \
+	  docker compose --profile worker up --build -d
+
+dev-mac-logs:
+	docker compose --profile worker logs -f
+
+dev-mac-down:
+	docker compose --profile worker down
 
 # ── Fast offline tests (no server needed, ~5 seconds total) ──────────────────
 test-unit:
@@ -16,6 +36,10 @@ test-integration:
 	    tests/test_recommendations.py tests/test_simulation.py \
 	    tests/test_timing.py tests/test_auth.py tests/test_intersections.py \
 	    tests/test_health.py -q
+
+# ── Functionality tests (end-to-end user flows) — needs: docker compose up -d ─
+test-functionality:
+	python3 -m pytest tests/test_functionality.py -v
 
 # ── Frontend unit tests (Vitest, jsdom, ~1 second) ───────────────────────────
 test-frontend:

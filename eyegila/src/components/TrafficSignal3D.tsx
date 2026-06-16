@@ -128,7 +128,7 @@ function TrafficLight({ phase, label, greenSecs, blinkOn }: TrafficLightProps) {
         {label}
       </div>
 
-      {/* 3D scene — perspective wrapper */}
+      {/* 3D scene - perspective wrapper */}
       <div style={{ perspective: '320px' }}>
         <div style={{
           display: 'flex', flexDirection: 'column', alignItems: 'center',
@@ -167,7 +167,7 @@ function TrafficLight({ phase, label, greenSecs, blinkOn }: TrafficLightProps) {
             <Lens on={displayPhase === 'amber'} color="#f59e0b" glow="rgba(245,158,11,0.50)" />
             <Lens on={displayPhase === 'green'} color="#22c55e" glow="rgba(34,197,94,0.50)"  />
 
-            {/* Visor ridges between lenses — small cosmetic detail */}
+            {/* Visor ridges between lenses - small cosmetic detail */}
             {([25, 50, 75] as const).map(top => (
               <div key={top} style={{
                 position: 'absolute', left: 0, right: 0,
@@ -266,7 +266,7 @@ export function IntersectionSignal3D({ timing, streets }: IntersectionSignal3DPr
   const rafRef   = useRef<number>(0);
   const lastTRef = useRef<number>(0);
 
-  // Real-time clock — 1 real second = 1 sim second
+  // Real-time clock - 1 real second = 1 sim second
   useEffect(() => {
     setSimTime(0);
     lastTRef.current = performance.now();
@@ -335,7 +335,7 @@ export function IntersectionSignal3D({ timing, streets }: IntersectionSignal3DPr
           background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.3)',
           borderRadius: 4, padding: '2px 8px', letterSpacing: '0.05em',
         }}>
-          SIGNAL OFF — FLASHING AMBER
+          SIGNAL OFF - FLASHING AMBER
         </div>
       )}
 
@@ -368,7 +368,7 @@ export function IntersectionSignal3D({ timing, streets }: IntersectionSignal3DPr
         <TrafficLight phase={sb.phase} label={sb.label} greenSecs={sb.greenSecs} blinkOn={blinkOn}/>
       )}
 
-      {/* Fallback: no directional data — flat list */}
+      {/* Fallback: no directional data - flat list */}
       {!hasNS && !hasEW && lights.length > 0 && (
         <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', justifyContent: 'center' }}>
           {lights.map(l => (

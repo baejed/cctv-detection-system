@@ -16,6 +16,14 @@ from prometheus_client import (
     CONTENT_TYPE_LATEST, REGISTRY,
 )
 from prometheus_fastapi_instrumentator import Instrumentator
+import prometheus_fastapi_instrumentator.routing as _pfi_routing
+
+# Patch: _IncludedRouter has no `path` attr — guard against it
+_orig_get_route_name = _pfi_routing._get_route_name
+def _safe_get_route_name(scope, routes):
+    safe = [r for r in routes if hasattr(r, "path")]
+    return _orig_get_route_name(scope, safe)
+_pfi_routing._get_route_name = _safe_get_route_name
 from sqlalchemy import text
 
 from common.database import engine, Base, SessionLocal
@@ -41,22 +49,48 @@ async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as db:
         try:
-            db.execute(text(
-                "ALTER TABLE worker_heartbeats ADD COLUMN IF NOT EXISTS last_error VARCHAR(500)"
-            ))
-            db.execute(text("""
-                ALTER TABLE recommendations
-                    ADD COLUMN IF NOT EXISTS recommended_confidence FLOAT,
-                    ADD COLUMN IF NOT EXISTS major_volume INTEGER,
-                    ADD COLUMN IF NOT EXISTS minor_volume INTEGER,
-                    ADD COLUMN IF NOT EXISTS peds INTEGER,
-                    ADD COLUMN IF NOT EXISTS vpm INTEGER,
-                    ADD COLUMN IF NOT EXISTS phf FLOAT,
-                    ADD COLUMN IF NOT EXISTS hour_start TIMESTAMPTZ
-            """))
-            db.execute(text(
-                "ALTER TABLE detections ALTER COLUMN cctv_id DROP NOT NULL"
-            ))
+            # Guard every DDL statement with an existence check via information_schema
+            # so that ALTER TABLE (which acquires AccessExclusiveLock even with
+            # IF NOT EXISTS) is never executed on a post-migration startup.
+            # This makes the hot-restart path completely lock-free.
+            def col_exists(table: str, col: str) -> bool:
+                return bool(db.execute(text(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name = :t AND column_name = :c"
+                ), {"t": table, "c": col}).scalar())
+
+            if not col_exists("worker_heartbeats", "last_error"):
+                db.execute(text(
+                    "ALTER TABLE worker_heartbeats ADD COLUMN last_error VARCHAR(500)"
+                ))
+
+            rec_cols = [
+                "recommended_confidence", "major_volume", "minor_volume",
+                "peds", "vpm", "phf", "hour_start",
+            ]
+            if any(not col_exists("recommendations", c) for c in rec_cols):
+                db.execute(text("""
+                    ALTER TABLE recommendations
+                        ADD COLUMN IF NOT EXISTS recommended_confidence FLOAT,
+                        ADD COLUMN IF NOT EXISTS major_volume INTEGER,
+                        ADD COLUMN IF NOT EXISTS minor_volume INTEGER,
+                        ADD COLUMN IF NOT EXISTS peds INTEGER,
+                        ADD COLUMN IF NOT EXISTS vpm INTEGER,
+                        ADD COLUMN IF NOT EXISTS phf FLOAT,
+                        ADD COLUMN IF NOT EXISTS hour_start TIMESTAMPTZ
+                """))
+
+            # Drop NOT NULL from cctv_id only if the column is still non-nullable.
+            is_not_null = db.execute(text(
+                "SELECT a.attnotnull FROM pg_attribute a "
+                "JOIN pg_class c ON c.oid = a.attrelid "
+                "WHERE c.relname = 'detections' AND a.attname = 'cctv_id'"
+            )).scalar()
+            if is_not_null:
+                db.execute(text(
+                    "ALTER TABLE detections ALTER COLUMN cctv_id DROP NOT NULL"
+                ))
+
             db.commit()
         except Exception:
             db.rollback()

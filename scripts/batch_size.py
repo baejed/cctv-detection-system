@@ -3,7 +3,7 @@ import torch
 import numpy as np
 from ultralytics import YOLO                                       
 
-model = YOLO("eyegila_v3.pt")                                      
+model = YOLO("eyegila_v4.pt")                                      
 dummy = np.zeros((480, 854, 3), dtype=np.uint8)           
                                                                     
 for n in [1, 4, 8, 12, 16, 24, 32]:                                

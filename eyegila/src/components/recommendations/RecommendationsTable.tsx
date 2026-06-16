@@ -88,7 +88,7 @@ export function RecommendationsTable({
                 <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
                   {rec.timing_cycle != null
                     ? `${rec.timing_cycle}s${rec.timing_chunk ? ` (${rec.timing_chunk})` : ''}`
-                    : '—'}
+                    : '-'}
                 </TableCell>
                 <TableCell className="text-xs text-muted-foreground" title={new Date(rec.generated_at).toLocaleString()}>
                   {relativeTime(rec.generated_at)}
@@ -156,14 +156,14 @@ function ProbCell({ met, value }: { met: boolean; value: number }) {
 function NumCell({ value }: { value: number | null }) {
   return (
     <TableCell className="text-right tabular-nums text-muted-foreground">
-      {value ?? '—'}
+      {value ?? '-'}
     </TableCell>
   );
 }
 
 function LocalWarrantCell({ met, label, title }: { met: boolean | null; label: string; title: string }) {
   if (met === null || met === undefined) {
-    return <TableCell className="text-center"><span className="text-muted-foreground text-[10px]">—</span></TableCell>;
+    return <TableCell className="text-center"><span className="text-muted-foreground text-[10px]">-</span></TableCell>;
   }
   return (
     <TableCell className="text-center">
@@ -202,7 +202,7 @@ export function sortRows(rows: RecommendationResponse[], sort: SortState): Recom
       case 'status': {
         const cmp = STATUS_ORDER[statusBucket(a)] - STATUS_ORDER[statusBucket(b)];
         if (cmp !== 0) return sign * cmp;
-        // Tiebreaker is fixed descending by design — within any bucket, the strongest
+        // Tiebreaker is fixed descending by design - within any bucket, the strongest
         // recommended_confidence sorts first regardless of the user's chosen status sort
         // direction. The spec calls for "Warranted first, then recommended_confidence
         // descending" and inverting the inner sort on a desc click would scatter weak

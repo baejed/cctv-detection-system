@@ -42,7 +42,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setTokenState(null);
       setUsername(null);
       setToken(null);
-      toast.error('Session expired — please log in again');
+      toast.error('Session expired - please log in again');
       navigate('/login', { replace: true });
     });
   }, [navigate]);

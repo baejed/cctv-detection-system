@@ -6,7 +6,7 @@ from ultralytics import YOLO
 def p(msg): print(msg, flush=True)
 
 p("Loading model...")
-model = YOLO("eyegila_v3.pt")
+model = YOLO("eyegila_v4.pt")
 p("Model loaded. Warming up...")
 
 dummy = np.zeros((720, 1280, 3), dtype=np.uint8)

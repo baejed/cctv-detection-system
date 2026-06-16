@@ -129,7 +129,7 @@ export function ManualPage() {
                 <Step n={1}>Click the intersection name to expand it in the table.</Step>
                 <Step n={2}>Click <strong>+ Street</strong> on the right side of the row.</Step>
                 <Step n={3}>Enter the approach name (e.g. "Northbound", "Rizal Ave", "Eastbound").</Step>
-                <Step n={4}>Repeat for each approach — most intersections have 2 to 4 streets.</Step>
+                <Step n={4}>Repeat for each approach - most intersections have 2 to 4 streets.</Step>
                 <Tip>Use clear directional names so operators can match them to camera angles.</Tip>
               </div>
 
@@ -264,8 +264,8 @@ export function ManualPage() {
 
               <Sub>Camera Status</Sub>
               <ul className="text-sm text-muted-foreground list-disc pl-5 space-y-1 mb-2">
-                <li><strong>Online</strong> — a worker heartbeat was seen in the last 15 seconds. The camera is actively processing frames.</li>
-                <li><strong>Offline</strong> — no active heartbeat. The stream may be unreachable or no worker has claimed it yet.</li>
+                <li><strong>Online</strong> - a worker heartbeat was seen in the last 15 seconds. The camera is actively processing frames.</li>
+                <li><strong>Offline</strong> - no active heartbeat. The stream may be unreachable or no worker has claimed it yet.</li>
               </ul>
               <Warn>If a camera stays offline after adding it, verify that the RTSP URL is reachable from the server and that a detection worker container is running.</Warn>
 
@@ -300,7 +300,7 @@ export function ManualPage() {
                 <li>A detection is counted in a region if its bounding box <strong>center point</strong> falls inside the polygon (ray-casting algorithm).</li>
                 <li>Each unique track ID is counted <strong>at most once per region</strong>, even if it stays inside across many frames.</li>
                 <li>Multiple regions can be active on the same camera simultaneously.</li>
-                <li>Region coordinates are stored as normalized 0-1 values — they scale with the video resolution.</li>
+                <li>Region coordinates are stored as normalized 0-1 values - they scale with the video resolution.</li>
               </ul>
               <Tip>Keep regions tight around the lane to reduce over-counting. Loose regions may capture vehicles in adjacent lanes.</Tip>
 

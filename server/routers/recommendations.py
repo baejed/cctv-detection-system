@@ -427,7 +427,7 @@ def run_generate_all(db: Session, artifacts) -> list[dict]:
 
 
 @router.post("/generate-all", response_model=list[RecommendationResponse])
-@limiter.limit("2/minute")
+@limiter.limit("10/minute")
 def generate_all_recommendations(
     request: Request,
     db: Annotated[Session, Depends(get_db)],

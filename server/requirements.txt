@@ -6,7 +6,7 @@ psycopg2-binary
 rq
 redis
 opencv-python-headless
-prometheus-fastapi-instrumentator
+prometheus-fastapi-instrumentator<8
 cryptography
 slowapi
 numpy

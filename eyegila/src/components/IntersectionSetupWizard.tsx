@@ -320,7 +320,7 @@ export function IntersectionSetupWizard({ open, onClose, onCreated }: Intersecti
               {found.length > 0 && (
                 <div className="flex flex-col gap-2">
                   <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                    {found.length} camera{found.length !== 1 ? 's' : ''} found — select which to add
+                    {found.length} camera{found.length !== 1 ? 's' : ''} found - select which to add
                   </p>
                   <div className="flex flex-col gap-2">
                     {found.map(cam => (
@@ -375,7 +375,7 @@ export function IntersectionSetupWizard({ open, onClose, onCreated }: Intersecti
 
               <div className="flex justify-end pt-2">
                 <Button onClick={goToName} disabled={selectedCount === 0}>
-                  Next — name this intersection
+                  Next - name this intersection
                   <ArrowRight className="size-4 ml-2" />
                 </Button>
               </div>
@@ -400,7 +400,7 @@ export function IntersectionSetupWizard({ open, onClose, onCreated }: Intersecti
               </div>
 
               <div className="flex flex-col gap-1.5">
-                <p className="text-xs text-muted-foreground">Pin the location on the map (optional — click to place):</p>
+                <p className="text-xs text-muted-foreground">Pin the location on the map (optional - click to place):</p>
                 <div className="rounded-lg overflow-hidden border border-border" style={{ height: 240, isolation: 'isolate' }}>
                   <MapContainer
                     center={lat && lng ? [parseFloat(lat), parseFloat(lng)] : TAGUM_CENTER}
@@ -422,7 +422,7 @@ export function IntersectionSetupWizard({ open, onClose, onCreated }: Intersecti
                   <ArrowLeft className="size-4 mr-2" /> Back
                 </Button>
                 <Button onClick={goToAssign} disabled={!interName.trim()}>
-                  Next — assign directions
+                  Next - assign directions
                   <ArrowRight className="size-4 ml-2" />
                 </Button>
               </div>
@@ -499,7 +499,7 @@ export function IntersectionSetupWizard({ open, onClose, onCreated }: Intersecti
                 </div>
               </div>
 
-              {/* Region drawing — critical next step */}
+              {/* Region drawing - critical next step */}
               <div className="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800 p-4 flex flex-col gap-3">
                 <div>
                   <p className="text-sm font-semibold text-amber-900 dark:text-amber-200">

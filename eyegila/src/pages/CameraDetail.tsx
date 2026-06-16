@@ -1,6 +1,6 @@
 import { useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { AuthContext } from '@/context/AuthContext';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import { cctvsApi } from '@/services/cctvs';
 import { streetsApi } from '@/services/streets';
@@ -16,7 +16,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
-import { ArrowLeft, Plus, Trash2, Loader2, Pencil, Check, X, MapPin } from 'lucide-react';
+import { ArrowLeft, Plus, Trash2, Loader2, Pencil, Check, X, MapPin, MonitorPlay, Eye, EyeOff, RotateCcw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const REGION_COLORS = [
@@ -45,6 +45,10 @@ function hexToRgba(hex: string, alpha: number): string {
 }
 
 const WS_BASE = import.meta.env.DEV ? 'ws://localhost:8000' : `ws://${window.location.host}/api`;
+
+function maskRtsp(url: string): string {
+  return url.replace(/(:\/\/)([^:@]+:[^@]+)@/, '$1•••@');
+}
 
 
 // ── Inline editable street row ────────────────────────────────────────────────
@@ -159,9 +163,12 @@ function StreetRow({
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 export function CameraDetailPage() {
-  const { id } = useParams<{ id: string }>();
+  const { id, intersectionId } = useParams<{ id: string; intersectionId?: string }>();
   const cctv_id = Number(id);
   const { token } = useContext(AuthContext);
+  const navigate = useNavigate();
+
+  const backPath = intersectionId ? `/intersections/${intersectionId}` : -1 as const;
 
   const [cctv, setCctv] = useState<CCTV | null>(null);
   const [intersection, setIntersection] = useState<Intersection | null>(null);
@@ -187,12 +194,23 @@ export function CameraDetailPage() {
   const [newStreetName, setNewStreetName] = useState('');
   const [addingStreet, setAddingStreet] = useState(false);
 
+  // Camera name / RTSP URL inline edit
+  const [editingCamName, setEditingCamName] = useState(false);
+  const [camNameValue, setCamNameValue] = useState('');
+  const [editingRtspUrl, setEditingRtspUrl] = useState(false);
+  const [rtspUrlValue, setRtspUrlValue] = useState('');
+  const [showRtspUrl, setShowRtspUrl] = useState(false);
+  const [savingCam, setSavingCam] = useState(false);
+
   // Canvas / stream
   const videoCanvasRef = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [canvasSize, setCanvasSize] = useState<{ w: number; h: number } | null>(null);
-  const [wsStatus, setWsStatus] = useState<'connecting' | 'live' | 'error'>('connecting');
+  const [wsStatus, setWsStatus] = useState<'connecting' | 'live' | 'error' | 'reconnecting'>('connecting');
+  const [workerLive, setWorkerLive] = useState<boolean | null>(null);
+  const [reconnectKey, setReconnectKey] = useState(0);
+  const [retrying, setRetrying] = useState(false);
 
   async function loadData() {
     try {
@@ -223,6 +241,63 @@ export function CameraDetailPage() {
 
   useEffect(() => { loadData(); }, [cctv_id]);
 
+  useEffect(() => {
+    async function checkWorker() {
+      try {
+        const data = await request(`/cctvs/${cctv_id}/worker-status`);
+        setWorkerLive(data.worker_live);
+      } catch { setWorkerLive(false); }
+    }
+    checkWorker();
+    const interval = setInterval(checkWorker, 5000);
+    return () => clearInterval(interval);
+  }, [cctv_id]);
+
+  useEffect(() => {
+    if (cctv) {
+      setCamNameValue(cctv.name);
+      setRtspUrlValue(cctv.rtsp_url);
+    }
+  }, [cctv?.id]);
+
+  async function saveCamName() {
+    if (!cctv || !camNameValue.trim() || camNameValue === cctv.name) { setEditingCamName(false); return; }
+    setSavingCam(true);
+    try {
+      await cctvsApi.update(cctv.id, { name: camNameValue.trim() });
+      setCctv(prev => prev ? { ...prev, name: camNameValue.trim() } : prev);
+      setEditingCamName(false);
+      toast.success('Camera renamed');
+    } catch { toast.error('Failed to rename camera'); }
+    finally { setSavingCam(false); }
+  }
+
+  async function handleRetry() {
+    if (!cctv) return;
+    setRetrying(true);
+    try {
+      await cctvsApi.retry(cctv.id);
+      toast.success('Retry signal sent — worker will reconnect immediately');
+    } catch {
+      toast.error('Failed to send retry signal');
+    } finally {
+      setRetrying(false);
+    }
+    setReconnectKey(k => k + 1);
+  }
+
+  async function saveRtspUrl() {
+    if (!cctv || rtspUrlValue.trim() === cctv.rtsp_url) { setEditingRtspUrl(false); return; }
+    setSavingCam(true);
+    try {
+      await cctvsApi.update(cctv.id, { rtsp_url: rtspUrlValue.trim() });
+      setCctv(prev => prev ? { ...prev, rtsp_url: rtspUrlValue.trim() } : prev);
+      setEditingRtspUrl(false);
+      toast.success('RTSP URL updated — camera will reconnect');
+    } catch { toast.error('Failed to update RTSP URL'); }
+    finally { setSavingCam(false); }
+  }
+
   // Container size → canvas dimensions
   // Depends on `loading` so it re-runs once the container div actually mounts
   useEffect(() => {
@@ -238,41 +313,68 @@ export function CameraDetailPage() {
   // WebSocket → video canvas (server burns boxes onto frames before sending)
   useEffect(() => {
     if (loading) return;
-    setWsStatus('connecting');
-    const ws = new WebSocket(`${WS_BASE}/cctvs/${cctv_id}/ws?token=${token ?? ''}&overlay=true`);
-    ws.binaryType = 'arraybuffer';
-    ws.onopen  = () => setWsStatus('live');
-    ws.onerror = () => setWsStatus('error');
-    ws.onclose = (event: CloseEvent) => {
-      if (event.code === 4001) { triggerUnauthorized(); return; }
-      setWsStatus('error');
-    };
-    ws.onmessage = (event: MessageEvent<ArrayBuffer>) => {
-      const canvas = videoCanvasRef.current;
-      if (!canvas) return;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      const blob = new Blob([event.data], { type: 'image/jpeg' });
-      const url = URL.createObjectURL(blob);
-      const img = new Image();
-      img.onload = () => {
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = 'high';
-        const cw = canvas.width, ch = canvas.height;
-        const scale = Math.min(cw / img.width, ch / img.height);
-        const dw = img.width * scale, dh = img.height * scale;
-        const dx = (cw - dw) / 2, dy = (ch - dh) / 2;
-        ctx.fillStyle = '#000';
-        ctx.fillRect(0, 0, cw, ch);
-        ctx.drawImage(img, dx, dy, dw, dh);
-        URL.revokeObjectURL(url);
-        // trigger overlay redraw after each new frame
-        redrawRef.current();
+    let stopped = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    // Track the most-recently created socket so reconnected sockets (spawned by
+    // the onclose retry timer) are also closed on unmount. Also: token is in the
+    // dep array so that if the session rotates, the old socket is torn down and a
+    // new one opens with the fresh token instead of using the stale closure value.
+    let activeWs: WebSocket | null = null;
+
+    function connect() {
+      if (stopped) return;
+      setWsStatus('connecting');
+      const ws = new WebSocket(`${WS_BASE}/cctvs/${cctv_id}/ws?token=${token ?? ''}&overlay=true`);
+      activeWs = ws;
+      ws.binaryType = 'arraybuffer';
+      ws.onopen  = () => setWsStatus('live');
+      ws.onerror = () => setWsStatus('error');
+      ws.onclose = (event: CloseEvent) => {
+        if (event.code === 4001) { triggerUnauthorized(); return; }
+        setWsStatus('error');
+        if (!stopped) retryTimer = setTimeout(connect, 3000);
       };
-      img.src = url;
+      ws.onmessage = (event: MessageEvent<ArrayBuffer | string>) => {
+        // Text frame = status message from server (e.g. reconnecting)
+        if (typeof event.data === 'string') {
+          try {
+            const msg = JSON.parse(event.data);
+            if (msg.status === 'reconnecting') setWsStatus('reconnecting');
+          } catch { /* ignore */ }
+          return;
+        }
+        setWsStatus('live');
+        const canvas = videoCanvasRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        const blob = new Blob([event.data], { type: 'image/jpeg' });
+        const url = URL.createObjectURL(blob);
+        const img = new Image();
+        img.onload = () => {
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = 'high';
+          const cw = canvas.width, ch = canvas.height;
+          const scale = Math.min(cw / img.width, ch / img.height);
+          const dw = img.width * scale, dh = img.height * scale;
+          const dx = (cw - dw) / 2, dy = (ch - dh) / 2;
+          ctx.fillStyle = '#000';
+          ctx.fillRect(0, 0, cw, ch);
+          ctx.drawImage(img, dx, dy, dw, dh);
+          URL.revokeObjectURL(url);
+          redrawRef.current();
+        };
+        img.src = url;
+      };
+    }
+
+    connect();
+    return () => {
+      stopped = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      activeWs?.close();
     };
-    return () => ws.close();
-  }, [cctv_id, loading]);
+  }, [cctv_id, loading, token, reconnectKey]);
 
   // Sync canvas internal resolution to container size, scaled by devicePixelRatio for sharp rendering
   useEffect(() => {
@@ -432,30 +534,64 @@ export function CameraDetailPage() {
     <div className="flex flex-col gap-6">
       {/* Header */}
       <div className="flex items-center gap-3">
-        <Link to="/cameras">
-          <Button variant="ghost" size="icon" className="size-8"><ArrowLeft className="size-4" /></Button>
-        </Link>
-        <div>
+        <Button variant="ghost" size="icon" className="size-8" onClick={() => navigate(backPath)}>
+          <ArrowLeft className="size-4" />
+        </Button>
+        <div className="flex-1">
           <h1 className="text-xl font-semibold tracking-tight">{cctv?.name ?? 'Camera'}</h1>
-          <p className="text-xs text-muted-foreground mt-0.5">Live stream · region editor</p>
         </div>
         {cctv && (
-          <Badge variant="outline" className={cn(
-            'ml-2',
-            cctv.status === 'online' && 'border-emerald-500/40 text-emerald-600 bg-emerald-50',
-            cctv.status === 'offline' && 'border-destructive/40 text-destructive',
-          )}>
+          <Badge
+            data-testid="badge-camera-status"
+            variant="outline"
+            className={cn(
+              'ml-2',
+              cctv.status === 'online' && 'border-emerald-500/40 text-emerald-600 bg-emerald-50',
+              cctv.status === 'offline' && 'border-destructive/40 text-destructive',
+            )}
+          >
             {cctv.status}
           </Badge>
         )}
         <Badge variant="outline" className={cn(
           'text-[10px]',
-          wsStatus === 'live'       && 'border-emerald-500/40 text-emerald-600',
-          wsStatus === 'connecting' && 'border-amber-500/40 text-amber-500',
-          wsStatus === 'error'      && 'border-destructive/40 text-destructive',
+          wsStatus === 'live'         && 'border-emerald-500/40 text-emerald-600',
+          wsStatus === 'connecting'   && 'border-amber-500/40 text-amber-500',
+          wsStatus === 'reconnecting' && 'border-amber-500/40 text-amber-500',
+          wsStatus === 'error'        && 'border-destructive/40 text-destructive',
         )}>
-          {wsStatus === 'live' ? '● live' : wsStatus === 'connecting' ? '○ connecting' : '✕ no stream'}
+          {wsStatus === 'live'         ? '● live'
+          : wsStatus === 'connecting'  ? '○ connecting'
+          : wsStatus === 'reconnecting'? '○ reconnecting'
+          : '✕ no stream'}
         </Badge>
+        {workerLive !== null && (
+          <Badge variant="outline" className={cn(
+            'text-[10px]',
+            workerLive  && 'border-emerald-500/40 text-emerald-600',
+            !workerLive && 'border-destructive/40 text-destructive',
+          )}>
+            {workerLive ? '● worker' : '✕ worker offline'}
+          </Badge>
+        )}
+        <div className="flex rounded-md border border-border overflow-hidden shrink-0">
+          <button
+            type="button"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-foreground text-background"
+          >
+            <Pencil className="size-3" />
+            Edit
+          </button>
+          <button
+            type="button"
+            disabled={!cctv?.intersection_id}
+            onClick={() => cctv?.intersection_id && navigate(`/intersections/${cctv.intersection_id}`)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs border-l border-border text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <MonitorPlay className="size-3" />
+            Live
+          </button>
+        </div>
       </div>
 
       {loading ? (
@@ -470,6 +606,7 @@ export function CameraDetailPage() {
             <CardContent>
               <div
                 ref={containerRef}
+                data-testid="feed-container"
                 className="relative overflow-hidden rounded-md bg-black"
                 style={{ aspectRatio: '16/9' }}
               >
@@ -481,9 +618,32 @@ export function CameraDetailPage() {
                   onClick={handleCanvasClick}
                   onDoubleClick={() => { if (drawing && points.length >= 3) finishPolygon(); }}
                 />
-                {wsStatus === 'error' && (
-                  <div className="absolute inset-0 flex items-center justify-center text-white/50 text-sm pointer-events-none">
-                    Stream unavailable
+                {wsStatus === 'reconnecting' && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/40 pointer-events-none">
+                    <div className="flex flex-col items-center gap-2">
+                      <Loader2 className="size-6 text-white animate-spin" />
+                      <span className="text-white/70 text-xs">Camera reconnecting…</span>
+                    </div>
+                  </div>
+                )}
+                {wsStatus !== 'live' && wsStatus !== 'reconnecting' && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
+                    {wsStatus === 'error' ? (
+                      <>
+                        <span className="text-white/50 text-sm">Stream unavailable</span>
+                        <button
+                          type="button"
+                          onClick={handleRetry}
+                          disabled={retrying}
+                          className="flex items-center gap-1.5 rounded-md bg-white/10 hover:bg-white/20 transition-colors px-3 py-1.5 text-xs text-white/80 disabled:opacity-50"
+                        >
+                          {retrying ? <Loader2 className="size-3 animate-spin" /> : <RotateCcw className="size-3" />}
+                          Reconnect
+                        </button>
+                      </>
+                    ) : (
+                      <Loader2 className="size-5 text-white/30 animate-spin" />
+                    )}
                   </div>
                 )}
               </div>
@@ -510,6 +670,103 @@ export function CameraDetailPage() {
 
           {/* ── Right panel ── */}
           <div className="flex flex-col gap-4">
+
+            {/* Camera Settings */}
+            {cctv && (
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm">Camera Settings</CardTitle>
+                </CardHeader>
+                <CardContent className="flex flex-col gap-3">
+                  {/* Name */}
+                  <div className="flex flex-col gap-1">
+                    <Label className="text-xs text-muted-foreground">Name</Label>
+                    {editingCamName ? (
+                      <div className="flex gap-1">
+                        <Input
+                          data-testid="input-cam-name"
+                          autoFocus
+                          value={camNameValue}
+                          onChange={e => setCamNameValue(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') saveCamName(); if (e.key === 'Escape') { setEditingCamName(false); setCamNameValue(cctv.name); } }}
+                          className="h-7 text-xs"
+                        />
+                        <Button size="icon" variant="ghost" className="size-7" onClick={saveCamName} disabled={savingCam}>
+                          {savingCam ? <Loader2 className="size-3 animate-spin" /> : <Check className="size-3 text-emerald-600" />}
+                        </Button>
+                        <Button size="icon" variant="ghost" className="size-7" onClick={() => { setEditingCamName(false); setCamNameValue(cctv.name); }}>
+                          <X className="size-3" />
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2 group">
+                        <span data-testid="display-cam-name" className="text-sm font-medium flex-1 truncate">{cctv.name}</span>
+                        <Button size="icon" variant="ghost" className="size-6 opacity-0 group-hover:opacity-100" onClick={() => setEditingCamName(true)}>
+                          <Pencil className="size-3" />
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Retry connection */}
+                  {cctv.status !== 'online' && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={handleRetry}
+                      disabled={retrying}
+                      className="h-7 px-2.5 text-xs self-start"
+                    >
+                      {retrying ? <Loader2 className="size-3 mr-1 animate-spin" /> : <RotateCcw className="size-3 mr-1" />}
+                      Retry connection
+                    </Button>
+                  )}
+
+                  {/* RTSP URL */}
+                  <div className="flex flex-col gap-1">
+                    <Label className="text-xs text-muted-foreground">RTSP URL</Label>
+                    {editingRtspUrl ? (
+                      <div className="flex gap-1">
+                        <Input
+                          autoFocus
+                          value={rtspUrlValue}
+                          onChange={e => setRtspUrlValue(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') saveRtspUrl();
+                            if (e.key === 'Escape') { setEditingRtspUrl(false); setRtspUrlValue(cctv.rtsp_url); }
+                          }}
+                          className="h-7 text-xs font-mono"
+                          placeholder="rtsp://..."
+                          data-testid="input-rtsp-url"
+                        />
+                        <Button size="icon" variant="ghost" className="size-7" onClick={saveRtspUrl} disabled={savingCam}>
+                          {savingCam ? <Loader2 className="size-3 animate-spin" /> : <Check className="size-3 text-emerald-600" />}
+                        </Button>
+                        <Button size="icon" variant="ghost" className="size-7" onClick={() => { setEditingRtspUrl(false); setRtspUrlValue(cctv.rtsp_url); }}>
+                          <X className="size-3" />
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2 group">
+                        <span
+                          className="text-xs font-mono flex-1 truncate text-muted-foreground"
+                          data-testid="display-rtsp-url"
+                          title={cctv.rtsp_url}
+                        >
+                          {showRtspUrl ? cctv.rtsp_url : maskRtsp(cctv.rtsp_url)}
+                        </span>
+                        <Button size="icon" variant="ghost" className="size-6 opacity-0 group-hover:opacity-100" onClick={() => setShowRtspUrl(v => !v)}>
+                          {showRtspUrl ? <EyeOff className="size-3" /> : <Eye className="size-3" />}
+                        </Button>
+                        <Button size="icon" variant="ghost" className="size-6 opacity-0 group-hover:opacity-100" onClick={() => { setRtspUrlValue(cctv.rtsp_url); setEditingRtspUrl(true); }}>
+                          <Pencil className="size-3" />
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
 
             {/* Intersection */}
             {intersection && (
@@ -539,7 +796,13 @@ export function CameraDetailPage() {
                     </div>
                   ) : (
                     <div className="flex items-center gap-2 group">
-                      <span className="text-sm font-medium flex-1">{intersection.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => navigate(`/intersections/${intersection.id}`)}
+                        className="text-sm font-medium flex-1 text-left hover:underline underline-offset-2"
+                      >
+                        {intersection.name}
+                      </button>
                       <Button size="icon" variant="ghost" className="size-6 opacity-0 group-hover:opacity-100" onClick={() => setEditingIntersection(true)}>
                         <Pencil className="size-3" />
                       </Button>
@@ -625,7 +888,7 @@ export function CameraDetailPage() {
                   {selectedStreet && selectedDirection === 'inbound' &&
                     regions.some(r => r.street_id === Number(selectedStreet) && r.direction === 'inbound') && (
                     <p className="text-[11px] text-amber-600 leading-tight">
-                      This street already has an inbound region — adding another will double-count flow for timing.
+                      This street already has an inbound region - adding another will double-count flow for timing.
                     </p>
                   )}
                 </div>

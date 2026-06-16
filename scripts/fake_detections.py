@@ -548,7 +548,6 @@ def seed_scenarios(db, weights: dict):
     print()
 
     for spec in SCENARIO_INTERSECTIONS:
-        # Create or reuse intersection
         existing = db.query(Intersection).filter_by(name=spec["name"]).first()
         if existing:
             intersection = existing

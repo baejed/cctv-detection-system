@@ -43,12 +43,14 @@ _INTEGRATION_ONLY_FILES = {
     "test_auth.py",
     "test_aggregation.py",
     "test_cameras.py",
+    "test_camera_ws.py",
     "test_health.py",
     "test_intersections.py",
     "test_tod.py",
     "test_worker_claim.py",
     "test_integration_extended.py",
     "test_pce.py",
+    "test_functionality.py",
 }
 
 

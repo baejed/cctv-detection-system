@@ -56,7 +56,7 @@ export function LoginPage() {
           <CardContent>
             <form onSubmit={handleSubmit} className="flex flex-col gap-4">
               {error && (
-                <Alert variant="destructive">
+                <Alert variant="destructive" data-testid="alert-login-error">
                   <AlertCircle className="size-4" />
                   <AlertDescription>{error}</AlertDescription>
                 </Alert>
@@ -66,6 +66,7 @@ export function LoginPage() {
                 <Input
                   id="username"
                   name="username"
+                  data-testid="input-username"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   autoComplete="username"
@@ -80,13 +81,14 @@ export function LoginPage() {
                   id="password"
                   name="password"
                   type="password"
+                  data-testid="input-password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   autoComplete="current-password"
                   required
                 />
               </div>
-              <Button type="submit" className="w-full" disabled={loading}>
+              <Button type="submit" className="w-full" data-testid="btn-sign-in" disabled={loading}>
                 {loading && <Loader2 data-icon="inline-start" className="animate-spin" />}
                 {loading ? 'Signing in…' : 'Sign in'}
               </Button>

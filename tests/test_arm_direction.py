@@ -10,32 +10,36 @@ from tests.conftest import API_URL
 # ── Unit: group_phases ────────────────────────────────────────────────────────
 
 def test_group_phases_4arm_2phases():
-    """Standard 4-arm intersection: NB+SB → phase 1, EB+WB → phase 2."""
+    """4-arm intersection with all cardinal directions → 4 independent phases.
+
+    The signal controller at this deployment uses a 4-phase plan where only
+    one arm receives a green at a time (no concurrent opposing greens).
+    Phase order follows the clockwise _PHASE_ORDER: SB → WB → NB → EB.
+    """
     from server.webster import group_phases
 
     flows      = {1: 400.0, 2: 400.0, 3: 300.0, 4: 300.0}
     directions = {1: "northbound", 2: "southbound", 3: "eastbound", 4: "westbound"}
     phases = group_phases(flows, directions)
 
-    assert len(phases) == 2
-    # Each phase contains the two opposing streets
-    phase_sets = [frozenset(p) for p in phases]
-    assert frozenset({1, 2}) in phase_sets
-    assert frozenset({3, 4}) in phase_sets
+    assert len(phases) == 4
+    assert {frozenset(p) for p in phases} == {
+        frozenset({1}), frozenset({2}), frozenset({3}), frozenset({4})
+    }
 
 
 def test_group_phases_t_intersection():
-    """T-intersection (NB+SB through, EB solo): should produce 2 phases."""
+    """T-intersection (NB, SB, EB): 3 independent phases, one per arm."""
     from server.webster import group_phases
 
     flows      = {1: 400.0, 2: 400.0, 3: 300.0}
     directions = {1: "northbound", 2: "southbound", 3: "eastbound"}
     phases = group_phases(flows, directions)
 
-    assert len(phases) == 2
-    phase_sets = [frozenset(p) for p in phases]
-    assert frozenset({1, 2}) in phase_sets
-    assert frozenset({3}) in phase_sets
+    assert len(phases) == 3
+    assert {frozenset(p) for p in phases} == {
+        frozenset({1}), frozenset({2}), frozenset({3})
+    }
 
 
 def test_group_phases_single_arm_no_opposing():
@@ -51,12 +55,11 @@ def test_group_phases_single_arm_no_opposing():
 
 
 def test_group_phases_all_unknown():
-    """Streets with unknown direction share a single phase (no pairing possible).
+    """Streets with unknown direction each get their own independent phase.
 
-    All unknown streets share the same by_dir["unknown"] bucket and land in one
-    concurrent phase, which is the safe fallback: no lost time is wasted on
-    phase splits we can't justify, and the operator is expected to set arm
-    directions before relying on timing output.
+    Because we cannot tell which arms conflict, each is given exclusive green —
+    the safe fallback. The operator should set arm directions before relying on
+    the timing output for efficiency.
     """
     from server.webster import group_phases
 
@@ -64,54 +67,54 @@ def test_group_phases_all_unknown():
     directions = {1: "unknown", 2: "unknown", 3: "unknown"}
     phases = group_phases(flows, directions)
 
-    assert len(phases) == 1
-    assert frozenset(phases[0]) == frozenset({1, 2, 3})
+    assert len(phases) == 3
+    assert {frozenset(p) for p in phases} == {
+        frozenset({1}), frozenset({2}), frozenset({3})
+    }
 
 
 def test_group_phases_mixed_known_unknown():
-    """NB+SB paired; unknown street gets its own phase."""
+    """NB, SB, and an unknown street → 3 independent phases, one per arm."""
     from server.webster import group_phases
 
     flows      = {1: 400.0, 2: 300.0, 3: 200.0}
     directions = {1: "northbound", 2: "southbound", 3: "unknown"}
     phases = group_phases(flows, directions)
 
-    assert len(phases) == 2
-    phase_sets = [frozenset(p) for p in phases]
-    assert frozenset({1, 2}) in phase_sets
-    assert frozenset({3}) in phase_sets
+    assert len(phases) == 3
+    assert {frozenset(p) for p in phases} == {
+        frozenset({1}), frozenset({2}), frozenset({3})
+    }
 
 
 def test_group_phases_eb_wb_only():
-    """East-West only intersection (2 arms): single phase pair."""
+    """East-West 2-arm intersection → 2 independent phases (one per arm)."""
     from server.webster import group_phases
 
     flows      = {1: 500.0, 2: 450.0}
     directions = {1: "eastbound", 2: "westbound"}
     phases = group_phases(flows, directions)
 
-    assert len(phases) == 1
-    assert frozenset(phases[0]) == frozenset({1, 2})
+    assert len(phases) == 2
+    assert {frozenset(p) for p in phases} == {frozenset({1}), frozenset({2})}
 
 
 def test_group_phases_multi_arm_cctv():
-    """One CCTV covering 2 streets (NB + EB) — each street treated independently."""
+    """4-arm intersection captured across multiple cameras → 4 independent phases."""
     from server.webster import group_phases
 
-    # Flows from a single corner camera: street 1 is NB arm, street 2 is EB arm.
-    # SB (street 3) and WB (street 4) are on other cameras.
     flows      = {1: 400.0, 2: 300.0, 3: 380.0, 4: 290.0}
     directions = {1: "northbound", 2: "eastbound", 3: "southbound", 4: "westbound"}
     phases = group_phases(flows, directions)
 
-    assert len(phases) == 2
-    phase_sets = [frozenset(p) for p in phases]
-    assert frozenset({1, 3}) in phase_sets   # NB + SB
-    assert frozenset({2, 4}) in phase_sets   # EB + WB
+    assert len(phases) == 4
+    assert {frozenset(p) for p in phases} == {
+        frozenset({1}), frozenset({2}), frozenset({3}), frozenset({4})
+    }
 
 
 def test_compute_timing_with_phases_paired():
-    """NB+SB paired → 2 phases → less lost time than 4 independent phases."""
+    """group_phases cycle length must not exceed the manual solo-phase baseline."""
     from server.webster import compute_timing, group_phases
 
     flows      = {1: 400.0, 2: 380.0, 3: 300.0, 4: 290.0}
@@ -123,7 +126,7 @@ def test_compute_timing_with_phases_paired():
     cycle_paired, _ = compute_timing(flows, phases_paired)
     cycle_solo,   _ = compute_timing(flows, phases_solo)
 
-    # 2 phases has less total lost time than 4 phases → shorter (or equal) cycle
+    # With the 4-phase controller both plans have 4 phases, so cycles are equal.
     assert cycle_paired <= cycle_solo
 
 

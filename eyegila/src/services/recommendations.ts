@@ -36,4 +36,12 @@ export const recommendationsApi = {
   dataHealth(intersectionId: number): Promise<DataHealthResponse> {
     return request(`/recommendations/data-health/${intersectionId}`);
   },
+  // Returns the single most-recent recommendation for an intersection, or null
+  // if none exists yet. Uses the history endpoint (limit=1) because there is no
+  // dedicated /latest/:id route on the server.
+  latest(intersectionId: number): Promise<RecommendationResponse | null> {
+    return request<RecommendationResponse[]>(
+      `/recommendations/history/${intersectionId}?limit=1`
+    ).then(list => list[0] ?? null);
+  },
 };

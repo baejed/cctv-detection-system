@@ -7,6 +7,13 @@ import os
 import time
 import cv2
 
+_REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+try:
+    import redis as _redis_lib
+    _redis = _redis_lib.from_url(_REDIS_URL, socket_connect_timeout=1)
+except Exception:
+    _redis = None
+
 # TCP transport + 10-second socket timeout so a dead MediaMTX/OBS stream fails fast
 os.environ.setdefault(
     "OPENCV_FFMPEG_CAPTURE_OPTIONS",
@@ -48,6 +55,24 @@ def _stream_is_live(cap: cv2.VideoCapture) -> bool:
     return ret
 
 
+def _sleep_interruptible(cctv_id: int, delay: float) -> None:
+    """Sleep for `delay` seconds, but wake early if a Redis retry_now signal is set."""
+    if _redis is None:
+        time.sleep(delay)
+        return
+    key = f"cam:{cctv_id}:retry_now"
+    deadline = time.time() + delay
+    while time.time() < deadline:
+        try:
+            if _redis.get(key):
+                _redis.delete(key)
+                return
+        except Exception:
+            pass
+        remaining = deadline - time.time()
+        time.sleep(min(0.5, max(0.0, remaining)))
+
+
 def reconnect_stream(
     rtsp_url: str | None,
     debug: bool,
@@ -76,7 +101,7 @@ def reconnect_stream(
     while True:
         attempt += 1
         print(f"[worker cctv={cctv_id}] reconnect attempt {attempt}, waiting {delay}s...")
-        time.sleep(delay)
+        _sleep_interruptible(cctv_id, delay)
         cap = open_stream(rtsp_url, debug)
         if _stream_is_live(cap):
             print(f"[worker cctv={cctv_id}] reconnected after {attempt} attempt(s)")

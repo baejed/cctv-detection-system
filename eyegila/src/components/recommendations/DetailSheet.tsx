@@ -29,7 +29,7 @@ export function DetailSheet({ rec, onClose, onRegenerate, regenerating, onNotesS
   }, [rec?.intersection_id]);
 
   // Fetch history when the History tab becomes active and rows are not yet loaded.
-  // historyLoading is intentionally omitted from deps — including it would re-run the
+  // historyLoading is intentionally omitted from deps - including it would re-run the
   // cleanup when setHistoryLoading(true) fires, cancelling the in-flight request.
   useEffect(() => {
     if (tab !== 'history' || !rec || historyRows !== undefined) return;

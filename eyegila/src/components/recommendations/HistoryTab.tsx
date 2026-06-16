@@ -47,7 +47,7 @@ export function HistoryTab({ rows, loading, error, onRetry }: Props) {
             <YAxis domain={[0, 1]} fontSize={9} />
             <Tooltip
               labelFormatter={t => new Date(t as number).toLocaleString()}
-              formatter={(v) => typeof v === 'number' ? v.toFixed(2) : '—'}
+              formatter={(v) => typeof v === 'number' ? v.toFixed(2) : '-'}
             />
             <Legend wrapperStyle={{ fontSize: 10 }} />
             <Line type="monotone" dataKey="W1" stroke="#0ea5e9" dot={false} strokeWidth={1.5} />
@@ -101,7 +101,7 @@ function Cell({ label, v }: { label: string; v: number | string | null }) {
   return (
     <div>
       <div className="text-[9px] uppercase text-muted-foreground">{label}</div>
-      <div className="tabular-nums">{v ?? '—'}</div>
+      <div className="tabular-nums">{v ?? '-'}</div>
     </div>
   );
 }

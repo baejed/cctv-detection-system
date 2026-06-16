@@ -13,18 +13,29 @@ import { defineConfig, devices } from '@playwright/test';
  *   cd eyegila && npx playwright test --ui        (Playwright UI mode)
  */
 export default defineConfig({
+  globalSetup: './global-setup',
   testDir: '.',
-  fullyParallel: false,    // tests share auth state; keep sequential
+  fullyParallel: true,
+  workers: 2,
   retries: 1,
   timeout: 30_000,
   use: {
     baseURL: process.env.BASE_URL || 'http://localhost:5173',
+    storageState: 'e2e/.auth/user.json',
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
   },
   reporter: process.env.CI ? 'github' : 'list',
   outputDir: process.env.PLAYWRIGHT_OUTPUT_DIR || 'test-results',
   projects: [
-    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    {
+      name: 'chromium',
+      use: { ...devices['Desktop Chrome'] },
+    },
+    // webkit requires libgtk-4, libgraphene, libgst* — run `sudo npx playwright install-deps webkit`
+    // {
+    //   name: 'webkit',
+    //   use: { ...devices['Desktop Safari'] },
+    // },
   ],
 });

@@ -84,6 +84,69 @@ def group_phases(
     return phases or [[sid] for sid in flows]
 
 
+def pcu_flow_for_window(
+    db: Session,
+    intersection_id: int,
+    start: datetime,
+    end: datetime,
+    pce_map: dict[str, dict],
+) -> dict[int, float]:
+    """Return average PCU/hr per street for an explicit [start, end) datetime window.
+
+    Uses the live detection view for recent windows (≤72 h) to match what the
+    timeline shows, then falls back to the pre-computed aggregate for older data.
+    """
+    from datetime import timezone as _tz
+    start_utc = start if start.tzinfo else start.replace(tzinfo=_tz.utc)
+    use_live  = (datetime.now(tz=_tz.utc) - start_utc).total_seconds() <= 72 * 3600
+
+    if use_live:
+        rows = db.execute(text("""
+            SELECT street_id,
+                   object_type,
+                   COUNT(*)::int                                             AS total_count,
+                   COUNT(DISTINCT DATE_TRUNC('hour', time))::int             AS distinct_hours
+              FROM detection_street_view
+             WHERE intersection_id = :iid
+               AND direction IN ('inbound', 'unknown')
+               AND time >= :start
+               AND time <  :end
+               AND object_type NOT IN ('pedestrian', 'person')
+             GROUP BY street_id, object_type
+        """), {"iid": intersection_id, "start": start, "end": end}).fetchall()
+    else:
+        rows = db.execute(text("""
+            SELECT street_id,
+                   object_type,
+                   SUM(count)::int                                          AS total_count,
+                   COUNT(DISTINCT time_bucket('1 hour', window_start))::int AS distinct_hours
+              FROM aggregation_summaries
+             WHERE intersection_id = :iid
+               AND street_id IS NOT NULL
+               AND direction IN ('inbound', 'unknown')
+               AND window_start >= :start
+               AND window_start <  :end
+               AND object_type NOT IN ('pedestrian', 'person')
+             GROUP BY street_id, object_type
+        """), {"iid": intersection_id, "start": start, "end": end}).fetchall()
+
+    street_pcu:   dict[int, float] = {}
+    street_hours: dict[int, int]   = {}
+
+    for row in rows:
+        pce = pce_map.get(row.object_type, {}).get("pce", 1.0)
+        sid = row.street_id
+        street_pcu[sid]   = street_pcu.get(sid, 0.0) + row.total_count * pce
+        street_hours[sid] = max(street_hours.get(sid, 0), row.distinct_hours)
+
+    result: dict[int, float] = {}
+    for sid, total_pcu in street_pcu.items():
+        hours = max(street_hours[sid], 1)
+        result[sid] = total_pcu / hours
+
+    return result
+
+
 def pcu_flow_per_street(
     db: Session,
     intersection_id: int,

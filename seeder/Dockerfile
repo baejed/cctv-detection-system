@@ -5,4 +5,4 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install sqlalchemy psycopg2-binary
 COPY common ./common
 COPY scripts ./scripts
-CMD ["python", "scripts/fake_detections.py", "--full", "--days", "7"]
+CMD ["sh", "-c", "python scripts/fake_detections.py --full --days 7 && python scripts/fake_detections.py --scenarios"]

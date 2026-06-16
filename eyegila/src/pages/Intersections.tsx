@@ -1,28 +1,24 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { Link, useOutletContext } from 'react-router-dom';
 import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from 'react-leaflet';
+import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { toast } from 'sonner';
-import { intersectionsApi, type DetectTimingResult } from '@/services/intersections';
+import { intersectionsApi } from '@/services/intersections';
 import { streetsApi } from '@/services/streets';
 import { cctvsApi } from '@/services/cctvs';
 import { recommendationsApi, type RecommendationResponse } from '@/services/recommendations';
-import type { Intersection, Street, CCTV, SignalStatus, AggregationRow } from '@/types';
+import type { Intersection, Street, CCTV, AggregationRow } from '@/types';
 import type { SSEStatus } from '@/hooks/useSSE';
 import { IntersectionSetupWizard } from '@/components/IntersectionSetupWizard';
+import { SettingsSheet } from '@/components/IntersectionSettingsSheet';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
-import { Separator } from '@/components/ui/separator';
 import {
-  Plus, Settings2, Trash2, WifiOff, RefreshCw, Wifi,
-  Loader2, TrendingUp, AlertTriangle, ScanSearch, ExternalLink,
+  Plus, Settings2, WifiOff, RefreshCw, Wifi,
+  Loader2, TrendingUp, AlertTriangle,
   Camera, Rocket, LayoutGrid, Map as MapIcon, Users, MapPin, MonitorPlay,
 } from 'lucide-react';
 import { statusBucket, BUCKET_LABEL, BUCKET_BADGE_CLASS } from '@/components/recommendations/statusBucket';
@@ -127,14 +123,6 @@ function DensityMap({ intersections, sseData, onOpenSettings }: DensityMapProps)
   );
 }
 
-// ── Settings ──────────────────────────────────────────────────────────────────
-
-const SIGNAL_STATUS_OPTIONS: { value: SignalStatus; label: string }[] = [
-  { value: 'unsignalized', label: 'Unsignalized' },
-  { value: 'fixed_time',   label: 'Fixed-time signal' },
-  { value: 'actuated',     label: 'Actuated signal' },
-];
-
 // ── Camera snapshot grid ─────────────────────────────────────────────────────
 
 function CameraGrid({ cameras }: { cameras: CCTV[] }) {
@@ -158,7 +146,8 @@ function CameraGrid({ cameras }: { cameras: CCTV[] }) {
       shown.length === 1 ? 'grid-cols-1' : 'grid-cols-2',
     )}>
       {shown.map((cam, idx) => {
-        const isLast = idx === shown.length - 1 && extra > 0;
+        const isLast   = idx === shown.length - 1 && extra > 0;
+        const isOnline = cam.status === 'online';
         return (
           <Link
             key={cam.id}
@@ -166,12 +155,23 @@ function CameraGrid({ cameras }: { cameras: CCTV[] }) {
             className="relative group bg-black block"
             style={{ aspectRatio: shown.length === 1 ? '16/9' : '3/2' }}
           >
-            <img
-              src={cctvsApi.snapshotUrl(cam.id)}
-              alt={cam.name}
-              className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity"
-              onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
-            />
+            {isOnline ? (
+              <img
+                src={cctvsApi.snapshotUrl(cam.id)}
+                alt={cam.name}
+                className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity"
+                onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
+              />
+            ) : (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-1">
+                {cam.status === 'reconnecting'
+                  ? <RefreshCw className="size-4 text-amber-400/60 animate-spin" />
+                  : <WifiOff className="size-4 text-muted-foreground/30" />}
+                <span className="text-[9px] text-muted-foreground/40">
+                  {cam.status === 'reconnecting' ? 'reconnecting' : 'offline'}
+                </span>
+              </div>
+            )}
             <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
               <span className="text-[10px] text-white font-medium bg-black/60 px-2 py-0.5 rounded">
                 Draw regions
@@ -244,8 +244,8 @@ function IntersectionCard({ inter, cameras, rec, streets, liveCount, onRefresh, 
   }
 
   return (
-    <div className="rounded-xl border border-border bg-card flex flex-col gap-0 overflow-hidden">
-      {/* Header strip — coloured by warrant status */}
+    <div data-testid="intersection-card" data-intersection-id={inter.id} className="rounded-xl border border-border bg-card flex flex-col gap-0 overflow-hidden h-full">
+      {/* Header strip - coloured by warrant status */}
       <div className={cn(
         'h-1',
         bucket === 'warranted'     && 'bg-emerald-500',
@@ -254,11 +254,11 @@ function IntersectionCard({ inter, cameras, rec, streets, liveCount, onRefresh, 
         (bucket === 'no_data' || !bucket) && 'bg-muted/40',
       )} />
 
-      <div className="p-5 flex flex-col gap-4">
+      <div className="p-5 flex flex-col gap-4 flex-1">
         {/* Top row */}
         <div className="flex items-start justify-between gap-2">
           <div className="flex flex-col gap-1 min-w-0">
-            <h3 className="font-semibold text-base leading-tight truncate">{inter.name}</h3>
+            <Link to={`/intersections/${inter.id}`} className="font-semibold text-base leading-tight truncate hover:underline underline-offset-2">{inter.name}</Link>
             <div className="flex items-center gap-2 flex-wrap">
               <Badge variant="secondary" className="text-[10px]">
                 {inter.signal_status.replace('_', ' ')}
@@ -291,7 +291,7 @@ function IntersectionCard({ inter, cameras, rec, streets, liveCount, onRefresh, 
           )}
         </div>
 
-        {/* Timing summary — only when warranted and timing exists */}
+        {/* Timing summary - only when warranted and timing exists */}
         {bucket === 'warranted' && rec?.timing_cycle && (
           <div className="rounded-lg bg-muted/40 px-3 py-2 flex items-center gap-2">
             <TrendingUp className="size-3.5 text-emerald-500 shrink-0" />
@@ -308,12 +308,12 @@ function IntersectionCard({ inter, cameras, rec, streets, liveCount, onRefresh, 
         {streets.length === 0 && (
           <div className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400">
             <AlertTriangle className="size-3.5 shrink-0" />
-            No approach directions set — open settings to configure
+            No approach directions set - open settings to configure
           </div>
         )}
 
         {/* Actions */}
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap mt-auto">
           <Link to={`/intersections/${inter.id}`}>
             <Button size="sm" variant="outline" className="h-7 text-xs gap-1.5">
               <MonitorPlay className="size-3" />
@@ -331,6 +331,7 @@ function IntersectionCard({ inter, cameras, rec, streets, liveCount, onRefresh, 
             size="sm"
             variant="ghost"
             className="h-7 text-xs gap-1.5"
+            data-testid="btn-run-analysis"
             onClick={generate}
             disabled={generating}
           >
@@ -342,402 +343,6 @@ function IntersectionCard({ inter, cameras, rec, streets, liveCount, onRefresh, 
         </div>
       </div>
     </div>
-  );
-}
-
-// ── Settings sheet ───────────────────────────────────────────────────────────
-
-interface SettingsSheetProps {
-  inter: Intersection | null;
-  streets: Street[];
-  cameras: CCTV[];
-  rec: import('@/services/recommendations').RecommendationResponse | undefined;
-  open: boolean;
-  onClose: () => void;
-  onRefresh: () => void;
-}
-
-function SettingsSheet({ inter, streets, cameras, rec, open, onClose, onRefresh }: SettingsSheetProps) {
-  const [name, setName]   = useState('');
-  const [lat, setLat]     = useState('');
-  const [lng, setLng]     = useState('');
-  const [signalStatus, setSignalStatus] = useState<SignalStatus>('unsignalized');
-  const [cycleLen, setCycleLen]         = useState('');
-  const [saving, setSaving]             = useState(false);
-  const [detectingTiming, setDetectingTiming] = useState(false);
-  const [detectResult, setDetectResult]       = useState<DetectTimingResult | null>(null);
-  const [stagingDirs, setStagingDirs]   = useState<Record<number, string>>({});
-  const [newCamName, setNewCamName]   = useState('');
-  const [newCamRtsp, setNewCamRtsp]   = useState('');
-  const [addingCam, setAddingCam]     = useState(false);
-  const [addingStreet, setAddingStreet] = useState(false);
-  const [newStreetName, setNewStreetName] = useState('');
-  const [newStreetDir, setNewStreetDir]   = useState<string>('unknown');
-
-  useEffect(() => {
-    if (inter) {
-      setName(inter.name);
-      setLat(String(inter.latitude ?? ''));
-      setLng(String(inter.longitude ?? ''));
-      setSignalStatus(inter.signal_status ?? 'unsignalized');
-      setCycleLen(inter.existing_cycle_length != null ? String(inter.existing_cycle_length) : '');
-      setDetectResult(null);
-      setStagingDirs({});
-    }
-  }, [inter]);
-
-  const hasUnsavedDirs = Object.keys(stagingDirs).length > 0;
-
-  async function saveAll() {
-    if (!inter || !name.trim()) return;
-    setSaving(true);
-    try {
-      const dirUpdates = Object.entries(stagingDirs).map(([sid, dir]) =>
-        streetsApi.update(Number(sid), { arm_direction: dir as Street['arm_direction'] })
-      );
-      await Promise.all([
-        intersectionsApi.update(inter.id, { name: name.trim(), latitude: parseFloat(lat) || 0, longitude: parseFloat(lng) || 0 }),
-        intersectionsApi.patchTiming(inter.id, {
-          signal_status: signalStatus,
-          existing_cycle_length: cycleLen ? parseInt(cycleLen) : null,
-        }),
-        ...dirUpdates,
-      ]);
-      setStagingDirs({});
-      toast.success('Saved');
-      onRefresh();
-    } catch (err: unknown) {
-      toast.error(err instanceof Error ? err.message : 'Save failed');
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function detect() {
-    if (!inter) return;
-    setDetectingTiming(true);
-    try {
-      const result = await intersectionsApi.detectTiming(inter.id);
-      setDetectResult(result);
-      if (result.estimated_cycle_s != null) {
-        setCycleLen(String(result.estimated_cycle_s));
-        toast.success(`Detected ~${result.estimated_cycle_s}s cycle`);
-      } else {
-        toast.info('Could not detect a cycle pattern');
-      }
-    } catch {
-      toast.error('Detection failed');
-    } finally {
-      setDetectingTiming(false);
-    }
-  }
-
-  async function deleteStreet(street: Street) {
-    try { await streetsApi.delete(street.id); onRefresh(); }
-    catch { toast.error('Delete failed'); }
-  }
-
-  async function addStreet() {
-    if (!inter || !newStreetName.trim()) return;
-    setAddingStreet(true);
-    try {
-      await streetsApi.create({ intersection_id: inter.id, name: newStreetName.trim(), arm_direction: newStreetDir as Street['arm_direction'] });
-      setNewStreetName(''); setNewStreetDir('unknown');
-      onRefresh();
-    } catch { toast.error('Failed to add street'); }
-    finally { setAddingStreet(false); }
-  }
-
-  async function addCamera() {
-    if (!inter || !newCamRtsp.trim()) return;
-    setAddingCam(true);
-    try {
-      await cctvsApi.create({ intersection_id: inter.id, name: newCamName || `Camera ${cameras.length + 1}`, rtsp_url: newCamRtsp.trim() });
-      setNewCamName(''); setNewCamRtsp('');
-      onRefresh();
-    } catch { toast.error('Failed to add camera'); }
-    finally { setAddingCam(false); }
-  }
-
-  async function deleteCamera(cam: CCTV) {
-    try { await cctvsApi.delete(cam.id); onRefresh(); }
-    catch { toast.error('Delete failed'); }
-  }
-
-  async function deleteIntersection() {
-    if (!inter) return;
-    try { await intersectionsApi.delete(inter.id); onRefresh(); onClose(); }
-    catch { toast.error('Delete failed'); }
-  }
-
-  if (!inter) return null;
-
-  const DIRECTION_OPTIONS = [
-    { value: 'northbound', label: 'Northbound' },
-    { value: 'southbound', label: 'Southbound' },
-    { value: 'eastbound',  label: 'Eastbound'  },
-    { value: 'westbound',  label: 'Westbound'  },
-    { value: 'unknown',    label: 'Unknown'     },
-  ];
-
-  const bucket = rec ? statusBucket(rec) : null;
-  const onlineCount = cameras.filter(c => c.status === 'online').length;
-
-  return (
-    <Sheet open={open} onOpenChange={v => !v && onClose()}>
-      <SheetContent className="w-full sm:max-w-md overflow-y-auto flex flex-col gap-0 px-0 pt-0 pb-0">
-        {/* Fixed header */}
-        <div className="px-6 pt-6 pb-4 border-b border-border shrink-0">
-          <SheetHeader>
-            <SheetTitle className="text-base">{inter.name}</SheetTitle>
-          </SheetHeader>
-          {/* Summary strip */}
-          <div className="flex items-center gap-3 mt-3 flex-wrap">
-            {bucket && (
-              <Badge variant="outline" className={cn('text-[10px]', BUCKET_BADGE_CLASS[bucket])}>
-                {BUCKET_LABEL[bucket]}
-              </Badge>
-            )}
-            <Badge variant="secondary" className="text-[10px]">
-              {inter.signal_status.replace('_', ' ')}
-            </Badge>
-            <span className="text-xs text-muted-foreground">
-              {onlineCount}/{cameras.length} cameras online
-            </span>
-            {inter.existing_cycle_length && (
-              <span className="text-xs text-muted-foreground">
-                · {inter.existing_cycle_length}s cycle
-              </span>
-            )}
-          </div>
-        </div>
-
-        {/* Scrollable body */}
-        <div className="flex-1 overflow-y-auto px-6 py-5 flex flex-col gap-6">
-
-          {/* Basic info */}
-          <div className="flex flex-col gap-3">
-            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Intersection</p>
-            <div className="flex flex-col gap-1.5">
-              <Label className="text-xs">Name</Label>
-              <Input value={name} onChange={e => setName(e.target.value)} className="h-8 text-sm" />
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <div className="flex flex-col gap-1">
-                <Label className="text-xs">Latitude</Label>
-                <Input value={lat} onChange={e => setLat(e.target.value)} className="h-8 text-sm font-mono" />
-              </div>
-              <div className="flex flex-col gap-1">
-                <Label className="text-xs">Longitude</Label>
-                <Input value={lng} onChange={e => setLng(e.target.value)} className="h-8 text-sm font-mono" />
-              </div>
-            </div>
-          </div>
-
-          <Separator />
-
-          {/* Signal */}
-          <div className="flex flex-col gap-3">
-            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Signal timing</p>
-            <div className="flex flex-col gap-1.5">
-              <Label className="text-xs">Signal status</Label>
-              <Select value={signalStatus} onValueChange={v => setSignalStatus(v as SignalStatus)}>
-                <SelectTrigger className="h-8 text-sm"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {SIGNAL_STATUS_OPTIONS.map(o => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            {signalStatus !== 'unsignalized' && (
-              <div className="flex flex-col gap-1.5">
-                <Label className="text-xs">Current cycle length (seconds)</Label>
-                <div className="flex gap-2">
-                  <Input
-                    type="number" min={0} placeholder="e.g. 90"
-                    value={cycleLen} onChange={e => setCycleLen(e.target.value)}
-                    className="h-8 text-sm flex-1"
-                  />
-                  <Button size="sm" variant="outline" className="h-8 px-2 shrink-0" onClick={detect} disabled={detectingTiming} title="Detect from camera feed">
-                    {detectingTiming ? <Loader2 className="size-3.5 animate-spin" /> : <ScanSearch className="size-3.5" />}
-                  </Button>
-                </div>
-                {detectResult && (
-                  <p className="text-xs text-muted-foreground">{detectResult.confidence} confidence — {detectResult.note}</p>
-                )}
-              </div>
-            )}
-          </div>
-
-          <Separator />
-
-          {/* Cameras */}
-          <div className="flex flex-col gap-3">
-            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              Cameras ({cameras.length})
-            </p>
-            {cameras.length === 0 ? (
-              <p className="text-xs text-muted-foreground">No cameras added yet.</p>
-            ) : (
-              <div className="flex flex-col gap-2">
-                {cameras.map(cam => (
-                  <div key={cam.id} className="rounded-lg border border-border bg-muted/10 overflow-hidden">
-                    {/* Thumbnail */}
-                    <div className="relative h-20 bg-black">
-                      <img
-                        src={cctvsApi.snapshotUrl(cam.id)}
-                        alt={cam.name}
-                        className="w-full h-full object-cover opacity-80"
-                        onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                      />
-                      <span className={cn('absolute top-1.5 left-1.5 size-2 rounded-full',
-                        cam.status === 'online' ? 'bg-emerald-400' :
-                        cam.status === 'reconnecting' ? 'bg-amber-400' : 'bg-red-400',
-                      )} />
-                    </div>
-                    <div className="px-3 py-2 flex items-center gap-2">
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium truncate">{cam.name}</p>
-                        <p className="text-[10px] text-muted-foreground font-mono truncate">{cam.rtsp_url}</p>
-                      </div>
-                      <Link to={`/cameras/${cam.id}`} className="shrink-0" title="Draw detection regions">
-                        <Button size="sm" variant="ghost" className="h-7 px-2 text-[10px] gap-1">
-                          <ExternalLink className="size-3" />
-                          Regions
-                        </Button>
-                      </Link>
-                      <AlertDialog>
-                        <AlertDialogTrigger asChild>
-                          <button className="shrink-0 p-1 text-muted-foreground hover:text-destructive transition-colors" aria-label={`Delete ${cam.name}`}>
-                            <Trash2 className="size-3.5" />
-                          </button>
-                        </AlertDialogTrigger>
-                        <AlertDialogContent>
-                          <AlertDialogHeader>
-                            <AlertDialogTitle>Delete {cam.name}?</AlertDialogTitle>
-                            <AlertDialogDescription>This will remove the camera and stop detection.</AlertDialogDescription>
-                          </AlertDialogHeader>
-                          <AlertDialogFooter>
-                            <AlertDialogCancel>Cancel</AlertDialogCancel>
-                            <AlertDialogAction onClick={() => deleteCamera(cam)} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">Delete</AlertDialogAction>
-                          </AlertDialogFooter>
-                        </AlertDialogContent>
-                      </AlertDialog>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-            <div className="flex flex-col gap-2 rounded-lg border border-dashed border-border p-3">
-              <p className="text-xs text-muted-foreground">Add camera</p>
-              <Input placeholder="Camera name (optional)" value={newCamName} onChange={e => setNewCamName(e.target.value)} className="h-8 text-sm" />
-              <Input placeholder="rtsp://..." value={newCamRtsp} onChange={e => setNewCamRtsp(e.target.value)} className="h-8 text-sm font-mono" />
-              <Button size="sm" variant="outline" className="w-fit" onClick={addCamera} disabled={addingCam || !newCamRtsp.trim()}>
-                {addingCam ? <Loader2 className="size-3.5 mr-1.5 animate-spin" /> : <Plus className="size-3.5 mr-1.5" />}
-                Add camera
-              </Button>
-            </div>
-          </div>
-
-          <Separator />
-
-          {/* Approach directions — staged, saved with the main Save button */}
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center justify-between">
-              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Approach directions</p>
-              {hasUnsavedDirs && (
-                <span className="text-[10px] text-amber-600 font-medium">unsaved changes</span>
-              )}
-            </div>
-            {streets.length === 0 ? (
-              <p className="text-xs text-muted-foreground">No approaches configured yet.</p>
-            ) : (
-              <div className="flex flex-col gap-2">
-                {streets.map(s => {
-                  const effectiveDir = stagingDirs[s.id] ?? s.arm_direction;
-                  const isDirty = stagingDirs[s.id] !== undefined && stagingDirs[s.id] !== s.arm_direction;
-                  return (
-                    <div key={s.id} className={cn('flex items-center gap-2 rounded-md border px-3 py-2',
-                      isDirty ? 'border-amber-400 bg-amber-50 dark:bg-amber-950/20' : 'border-border',
-                    )}>
-                      <span className="text-sm flex-1 truncate">{s.name}</span>
-                      <Select value={effectiveDir} onValueChange={v => setStagingDirs(prev => ({ ...prev, [s.id]: v }))}>
-                        <SelectTrigger className="h-7 w-36 text-xs"><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          {DIRECTION_OPTIONS.map(o => <SelectItem key={o.value} value={o.value} className="text-xs">{o.label}</SelectItem>)}
-                        </SelectContent>
-                      </Select>
-                      <AlertDialog>
-                        <AlertDialogTrigger asChild>
-                          <button className="text-muted-foreground hover:text-destructive transition-colors" aria-label={`Delete ${s.name}`}>
-                            <Trash2 className="size-3.5" />
-                          </button>
-                        </AlertDialogTrigger>
-                        <AlertDialogContent>
-                          <AlertDialogHeader><AlertDialogTitle>Delete "{s.name}"?</AlertDialogTitle></AlertDialogHeader>
-                          <AlertDialogFooter>
-                            <AlertDialogCancel>Cancel</AlertDialogCancel>
-                            <AlertDialogAction onClick={() => deleteStreet(s)} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">Delete</AlertDialogAction>
-                          </AlertDialogFooter>
-                        </AlertDialogContent>
-                      </AlertDialog>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-            <div className="flex items-center gap-2 rounded-lg border border-dashed border-border p-3">
-              <Input placeholder="Street name" value={newStreetName} onChange={e => setNewStreetName(e.target.value)} className="h-7 text-xs flex-1" />
-              <Select value={newStreetDir} onValueChange={setNewStreetDir}>
-                <SelectTrigger className="h-7 w-32 text-xs"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {DIRECTION_OPTIONS.map(o => <SelectItem key={o.value} value={o.value} className="text-xs">{o.label}</SelectItem>)}
-                </SelectContent>
-              </Select>
-              <Button size="sm" variant="outline" className="h-7 shrink-0" onClick={addStreet} disabled={addingStreet || !newStreetName.trim()}>
-                {addingStreet ? <Loader2 className="size-3.5 animate-spin" /> : <Plus className="size-3.5" />}
-              </Button>
-            </div>
-          </div>
-
-          <Separator />
-
-          {/* Single save button */}
-          <Button onClick={saveAll} disabled={saving} className="w-full">
-            {saving && <Loader2 className="size-4 mr-2 animate-spin" />}
-            Save all changes
-          </Button>
-
-          <Separator />
-
-          {/* Danger zone */}
-          <div className="flex flex-col gap-2">
-            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Danger zone</p>
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
-                <Button variant="destructive" size="sm" className="w-fit">
-                  <Trash2 className="size-3.5 mr-1.5" />
-                  Delete intersection
-                </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Delete {inter.name}?</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    Permanently deletes all cameras, streets, regions, and detection data for this intersection.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>Cancel</AlertDialogCancel>
-                  <AlertDialogAction onClick={deleteIntersection} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
-                    Delete everything
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-          </div>
-        </div>
-      </SheetContent>
-    </Sheet>
   );
 }
 
@@ -800,7 +405,7 @@ export function IntersectionsPage() {
       const results = await recommendationsApi.generateAll();
       setRecs(new Map(results.map(r => [r.intersection_id, r])));
       const warranted = results.filter(r => r.recommended).length;
-      toast.success(`Analysis complete — ${warranted} warranted`);
+      toast.success(`Analysis complete - ${warranted} warranted`);
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Analysis failed');
     } finally {
@@ -843,6 +448,7 @@ export function IntersectionsPage() {
             <div className="flex rounded-md border border-border overflow-hidden">
               <button
                 type="button"
+                data-testid="btn-view-grid"
                 onClick={() => setViewMode('grid')}
                 aria-pressed={viewMode === 'grid'}
                 aria-label="Grid view"
@@ -856,6 +462,7 @@ export function IntersectionsPage() {
               </button>
               <button
                 type="button"
+                data-testid="btn-view-map"
                 onClick={() => setViewMode('map')}
                 aria-pressed={viewMode === 'map'}
                 aria-label="Map view"
@@ -871,6 +478,7 @@ export function IntersectionsPage() {
           )}
           {intersections.length > 0 && (
             <Button
+              data-testid="btn-run-all-analyses"
               variant="outline"
               onClick={runAllAnalyses}
               disabled={generatingAll}
@@ -881,14 +489,14 @@ export function IntersectionsPage() {
               {generatingAll ? 'Analysing…' : 'Run all analyses'}
             </Button>
           )}
-          <Button onClick={() => setWizardOpen(true)}>
+          <Button data-testid="btn-add-intersection" onClick={() => setWizardOpen(true)}>
             <Plus className="size-4 mr-2" />
             Set up intersection
           </Button>
         </div>
       </div>
 
-      {/* Hero stats — visible once data loads */}
+      {/* Hero stats - visible once data loads */}
       {!loading && intersections.length > 0 && (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <Card>
@@ -897,7 +505,7 @@ export function IntersectionsPage() {
                 <div>
                   <p className="text-xs font-medium text-muted-foreground">Vehicles</p>
                   <p className="mt-1 text-3xl font-black tabular-nums leading-none">
-                    {sseData ? heroStats.vehicles.toLocaleString() : '—'}
+                    {sseData ? heroStats.vehicles.toLocaleString() : '-'}
                   </p>
                 </div>
                 <div className="rounded-lg bg-green-100 p-2">
@@ -923,7 +531,7 @@ export function IntersectionsPage() {
                 <div>
                   <p className="text-xs font-medium text-muted-foreground">Pedestrians</p>
                   <p className="mt-1 text-3xl font-black tabular-nums leading-none">
-                    {sseData ? heroStats.pedestrians.toLocaleString() : '—'}
+                    {sseData ? heroStats.pedestrians.toLocaleString() : '-'}
                   </p>
                 </div>
                 <div className="rounded-lg bg-cyan-100 p-2">

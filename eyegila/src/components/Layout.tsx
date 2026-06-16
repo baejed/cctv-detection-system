@@ -32,8 +32,8 @@ const NAV_ITEMS = [
 const SSE_INDICATOR: Record<SSEStatus, { icon: React.ReactNode; label: string; color: string; tip: string }> = {
   connected:     { icon: <Wifi className="size-3 text-emerald-500 sse-pulse" />, label: 'Live',          color: 'text-emerald-500', tip: 'Live data stream connected'       },
   connecting:    { icon: <Loader2 className="size-3 text-amber-500 animate-spin" />, label: 'Connecting', color: 'text-amber-500',   tip: 'Reconnecting to data stream…'     },
-  disconnected:  { icon: <WifiOff className="size-3 text-destructive" />,        label: 'Offline',       color: 'text-destructive',  tip: 'Stream dropped — retrying…'       },
-  server_offline:{ icon: <ServerCrash className="size-3 text-destructive" />,    label: 'Server offline',color: 'text-destructive',  tip: 'Server unreachable — retrying…'   },
+  disconnected:  { icon: <WifiOff className="size-3 text-destructive" />,        label: 'Offline',       color: 'text-destructive',  tip: 'Stream dropped - retrying…'       },
+  server_offline:{ icon: <ServerCrash className="size-3 text-destructive" />,    label: 'Server offline',color: 'text-destructive',  tip: 'Server unreachable - retrying…'   },
 };
 
 function SSEIndicator({ status }: { status: SSEStatus }) {
@@ -107,7 +107,12 @@ export function Layout() {
             <SidebarMenu>
               {NAV_ITEMS.map(({ to, label, icon: Icon, end }) => (
                 <SidebarMenuItem key={to}>
-                  <NavLink to={to} end={end} className="w-full">
+                  <NavLink
+                    to={to}
+                    end={end}
+                    className="w-full"
+                    data-testid={`nav-link-${label.toLowerCase()}`}
+                  >
                     {({ isActive }) => (
                       <SidebarMenuButton isActive={isActive} tooltip={label}>
                         <Icon />
@@ -120,7 +125,7 @@ export function Layout() {
 
             </SidebarMenu>
 
-            {/* Setup progress indicator — click to open wizard */}
+            {/* Setup progress indicator - click to open wizard */}
             {intersectionList.length > 0 && (() => {
               const configured = intersectionList.filter(i => i.existing_cycle_length != null).length;
               const total      = intersectionList.length;

@@ -33,10 +33,11 @@ export default function App() {
             <Route path="intersections/:id" element={<IntersectionDetailPage />} />
             <Route path="timing/:id" element={<SignalTimingPage />} />
             <Route path="cameras/:id" element={<CameraDetailPage />} />
+            <Route path="intersections/:intersectionId/cameras/:id" element={<CameraDetailPage />} />
             <Route path="videos"     element={<VideosPage />} />
             <Route path="videos/:id" element={<VideosPage />} />
 
-            {/* Legacy routes — keep working but redirect to home */}
+            {/* Legacy routes - keep working but redirect to home */}
             <Route path="intersections"   element={<Navigate to="/" replace />} />
             <Route path="cameras"         element={<Navigate to="/" replace />} />
             <Route path="recommendations" element={<Navigate to="/" replace />} />

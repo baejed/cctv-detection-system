@@ -4,6 +4,7 @@ import os
 import queue as stdlib_queue
 import threading
 import time
+from collections import deque
 
 os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS",
                       "rtsp_transport;tcp|stimeout;5000000")  # 5 s socket timeout
@@ -37,6 +38,11 @@ _TYPE_COLORS: dict[str, tuple[int, int, int]] = {
 }
 _DEFAULT_COLOR = (100, 100, 100)
 
+_DELAY_SEC = 0.05       # seconds to hold frames before displaying (worker sync)
+_MAX_DET_HISTORY = 120  # detection snapshots to keep (~2 min at 1/s inference)
+_OUTPUT_WIDTH = 854     # resize before buffering to reduce memory usage
+_LINGER_SEC = 5.0       # keep capture alive after last subscriber leaves
+
 
 def _draw_boxes(frame: np.ndarray, detections: list[dict]) -> None:
     h, w = frame.shape[:2]
@@ -67,121 +73,220 @@ def _enqueue(frame_q: stdlib_queue.Queue, data: bytes) -> None:
         pass
 
 
-_DELAY_SEC = 0.3       # seconds to hold frames before displaying
-_MAX_DET_HISTORY = 120  # detection snapshots to keep (~2 min at 1/s inference)
-_OUTPUT_WIDTH = 854     # resize before buffering to reduce memory usage
+# ── Shared per-camera RTSP capture ──────────────────────────────────────────
 
-
-def _capture_thread(
-    rtsp_url: str,
-    cctv_id: int,
-    frame_q: stdlib_queue.Queue,
-    stop_event: threading.Event,
-    draw_overlay: bool = True,
-):
+class _SharedCapture:
     """
-    Delay-buffer approach: frames are held for _DELAY_SEC before being sent.
-    Detection results (from the worker) are cached locally as they arrive.
-    When a frame is released, we find the detection snapshot whose wall-clock
-    timestamp is closest to that frame's capture time, guaranteeing boxes are
-    always in sync with the video regardless of inference speed.
+    One RTSP connection shared among all WebSocket clients viewing the same camera.
+
+    The capture thread reads frames at _TARGET_FPS, maintains the 0.3 s delay
+    buffer for worker-detection sync, and broadcasts (frame, boxes) tuples to
+    all subscriber queues. Each WebSocket handler draws its own overlay and
+    encodes JPEG, so subscribers with overlay=False still get raw frames.
     """
-    from collections import deque
 
-    det_key = f"cam:{cctv_id}:detections"
+    def __init__(self, rtsp_url: str, cctv_id: int) -> None:
+        self.rtsp_url = rtsp_url
+        self.cctv_id = cctv_id
+        self.stop_event = threading.Event()
+        self._lock = threading.Lock()
+        self._queues: list[stdlib_queue.Queue] = []
+        # Initialise to now so the linger check doesn't fire before first subscribe
+        self._last_unsub_ts: float = time.monotonic()
+        # Latest detection snapshot from Redis, written by poller thread
+        self._det_lock = threading.Lock()
+        self._latest_det: tuple[float, list] | None = None  # (det_ts, boxes)
+        self._det_thread = threading.Thread(
+            target=self._poll_detections, daemon=True, name=f"det-cctv{cctv_id}"
+        )
+        self._det_thread.start()
+        self.thread = threading.Thread(
+            target=self._run, daemon=True, name=f"cap-cctv{cctv_id}"
+        )
+        self.thread.start()
 
-    # (wall_time: float, frame: np.ndarray)  – raw frames waiting to be sent
-    frame_buf: deque[tuple[float, np.ndarray]] = deque()
+    def subscribe(self) -> "stdlib_queue.Queue[tuple[np.ndarray, list]]":
+        q: stdlib_queue.Queue = stdlib_queue.Queue(maxsize=2)
+        with self._lock:
+            self._queues.append(q)
+        return q
 
-    # (det_ts: float, boxes: list)  – rolling history of detection snapshots
-    det_history: deque[tuple[float, list]] = deque(maxlen=_MAX_DET_HISTORY)
+    def unsubscribe(self, q: "stdlib_queue.Queue") -> None:
+        with self._lock:
+            try:
+                self._queues.remove(q)
+            except ValueError:
+                pass
+            if not self._queues:
+                self._last_unsub_ts = time.monotonic()
 
-    last_det_ts = 0.0
-    last_read = 0.0
+    def subscriber_count(self) -> int:
+        with self._lock:
+            return len(self._queues)
 
-    cap = cv2.VideoCapture(rtsp_url)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    def stop(self) -> None:
+        self.stop_event.set()
 
-    try:
-        while not stop_event.is_set():
-            ret, frame = cap.read()
-            if not ret:
-                time.sleep(0.1)
-                cap.release()
-                cap = cv2.VideoCapture(rtsp_url)
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                continue
-
-            mono_now = time.monotonic()
-            wall_now = time.time()
-
-            # Rate-limit intake to target FPS to keep buffer memory bounded
-            if mono_now - last_read < _FRAME_INTERVAL:
-                continue
-            last_read = mono_now
-
-            # Resize before buffering to reduce per-frame memory
-            h, w = frame.shape[:2]
-            if w > _OUTPUT_WIDTH:
-                frame = cv2.resize(frame, (_OUTPUT_WIDTH, int(h * _OUTPUT_WIDTH / w)))
-
-            frame_buf.append((wall_now, frame))
-
-            # Absorb any new detection snapshot from Redis into local history
-            raw = _redis.get(det_key)
+    def _poll_detections(self) -> None:
+        channel = f"cam:{self.cctv_id}:detections:ch"
+        # Seed with whatever is already in the key so boxes appear immediately on connect
+        try:
+            raw = _redis.get(f"cam:{self.cctv_id}:detections")
             if raw:
+                data = json.loads(raw)
+                boxes  = data.get("boxes", []) if isinstance(data, dict) else data
+                det_ts = data.get("ts", time.time()) if isinstance(data, dict) else time.time()
+                with self._det_lock:
+                    self._latest_det = (det_ts, boxes)
+        except Exception:
+            pass
+
+        pubsub = _redis.pubsub()
+        pubsub.subscribe(channel)
+        try:
+            while not self.stop_event.is_set():
+                msg = pubsub.get_message(timeout=0.5)
+                if msg and msg["type"] == "message":
+                    try:
+                        data = json.loads(msg["data"])
+                        boxes  = data.get("boxes", []) if isinstance(data, dict) else data
+                        det_ts = data.get("ts", time.time()) if isinstance(data, dict) else time.time()
+                        with self._det_lock:
+                            self._latest_det = (det_ts, boxes)
+                    except Exception:
+                        pass
+        finally:
+            pubsub.unsubscribe(channel)
+            pubsub.close()
+
+    def _broadcast(self, frame: np.ndarray, boxes: list) -> None:
+        with self._lock:
+            for q in list(self._queues):
+                if q.full():
+                    try:
+                        q.get_nowait()
+                    except stdlib_queue.Empty:
+                        pass
                 try:
-                    data = json.loads(raw)
-                    # Support both formats:
-                    #   new: {"ts": <float>, "boxes": [...]}
-                    #   old: [{box}, ...]
-                    if isinstance(data, list):
-                        boxes, det_ts = data, time.time()
-                    else:
-                        boxes, det_ts = data.get("boxes", []), data.get("ts", time.time())
-                    if det_ts > last_det_ts:
-                        det_history.append((det_ts, boxes))
-                        last_det_ts = det_ts
-                except Exception:
+                    q.put_nowait((frame, boxes))
+                except stdlib_queue.Full:
                     pass
 
-            # Release frames that have waited long enough
-            while frame_buf and wall_now - frame_buf[0][0] >= _DELAY_SEC:
-                frame_ts, delayed_frame = frame_buf.popleft()
+    def _broadcast_status(self, status: str) -> None:
+        with self._lock:
+            for q in list(self._queues):
+                try:
+                    q.put_nowait((None, status))
+                except stdlib_queue.Full:
+                    pass
 
-                # Find the detection snapshot closest in time to this frame
-                best_boxes: list = []
-                best_diff = float("inf")
-                for det_ts, boxes in det_history:
-                    diff = abs(det_ts - frame_ts)
-                    if diff < best_diff:
-                        best_diff = diff
-                        best_boxes = boxes
+    def _run(self) -> None:
+        # (wall_time, frame) — raw frames waiting in the delay buffer
+        frame_buf: deque[tuple[float, np.ndarray]] = deque()
+        # (det_ts, boxes) — rolling detection snapshot history
+        det_history: deque[tuple[float, list]] = deque(maxlen=_MAX_DET_HISTORY)
+        last_det_ts = 0.0
+        last_read = 0.0
 
-                if draw_overlay and best_boxes:
-                    _draw_boxes(delayed_frame, best_boxes)
+        if not self.rtsp_url:
+            print(f"[camera_ws] cctv={self.cctv_id} no RTSP URL, capture thread exiting")
+            return
 
-                ok, jpeg = cv2.imencode(
-                    ".jpg", delayed_frame, [cv2.IMWRITE_JPEG_QUALITY, 80]
-                )
-                if ok:
-                    _enqueue(frame_q, jpeg.tobytes())
-    finally:
-        cap.release()
+        _STALE_SEC = 3.0  # force-reconnect if no new frame arrives within this window
+
+        print(f"[camera_ws] cctv={self.cctv_id} capture thread started url={self.rtsp_url}")
+        cap = cv2.VideoCapture(self.rtsp_url)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        last_frame_ts = time.monotonic()
+        try:
+            while not self.stop_event.is_set():
+                # Exit after linger period with no subscribers
+                with self._lock:
+                    idle = not self._queues
+                    idle_since = self._last_unsub_ts
+                if idle and time.monotonic() - idle_since > _LINGER_SEC:
+                    break
+
+                ret, frame = cap.read()
+                if not ret or (time.monotonic() - last_frame_ts > _STALE_SEC):
+                    if ret:
+                        print(f"[camera_ws] cctv={self.cctv_id} stale stream, reconnecting...")
+                    else:
+                        print(f"[camera_ws] cctv={self.cctv_id} read failed, reconnecting...")
+                    self._broadcast_status("reconnecting")
+                    time.sleep(0.1)
+                    cap.release()
+                    cap = cv2.VideoCapture(self.rtsp_url)
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    last_frame_ts = time.monotonic()
+                    continue
+
+                last_frame_ts = time.monotonic()
+                mono_now = time.monotonic()
+                # Rate-limit intake to _TARGET_FPS
+                if mono_now - last_read < _FRAME_INTERVAL:
+                    continue
+                last_read = mono_now
+                wall_now = time.time()
+
+                h, w = frame.shape[:2]
+                if w > _OUTPUT_WIDTH:
+                    frame = cv2.resize(frame, (_OUTPUT_WIDTH, int(h * _OUTPUT_WIDTH / w)))
+
+                frame_buf.append((wall_now, frame))
+
+                # Absorb latest detection snapshot (written by _poll_detections thread)
+                with self._det_lock:
+                    latest = self._latest_det
+                if latest and latest[0] > last_det_ts:
+                    last_det_ts = latest[0]
+                    det_history.append(latest)
+
+                # Release frames that have waited long enough, matched to
+                # the closest detection snapshot in time for overlay sync.
+                while frame_buf and wall_now - frame_buf[0][0] >= _DELAY_SEC:
+                    frame_ts, delayed_frame = frame_buf.popleft()
+                    best_boxes: list = []
+                    best_diff = float("inf")
+                    for det_ts, dboxes in det_history:
+                        diff = abs(det_ts - frame_ts)
+                        if diff < best_diff:
+                            best_diff = diff
+                            best_boxes = dboxes
+                    self._broadcast(delayed_frame, best_boxes)
+        except Exception as e:
+            print(f"[camera_ws] cctv={self.cctv_id} capture thread crashed: {e}")
+        finally:
+            cap.release()
+            print(f"[camera_ws] cctv={self.cctv_id} capture thread stopped")
 
 
-def _set_viewed(cctv_id: int, value: bool):
-    db = SessionLocal()
-    try:
-        cctv = db.get(models.CCTV, cctv_id)
-        if cctv:
-            cctv.is_being_viewed = value
-            db.commit()
-    finally:
-        db.close()
+_captures: dict[int, _SharedCapture] = {}
+_captures_lock = threading.Lock()
 
 
-_SNAPSHOT_TIMEOUT = 5.0  # seconds to wait for a readable frame
+def _get_or_create_capture(rtsp_url: str, cctv_id: int) -> _SharedCapture:
+    with _captures_lock:
+        existing = _captures.get(cctv_id)
+        if existing is not None and existing.thread.is_alive() and not existing.stop_event.is_set():
+            return existing
+        cap = _SharedCapture(rtsp_url, cctv_id)
+        _captures[cctv_id] = cap
+        return cap
+
+
+def _release_subscription(cctv_id: int, q: "stdlib_queue.Queue") -> None:
+    with _captures_lock:
+        cap = _captures.get(cctv_id)
+        if cap is None:
+            return
+        cap.unsubscribe(q)
+        # The linger timeout in _run handles teardown — no immediate stop needed.
+
+
+# ── Snapshot endpoint helpers ────────────────────────────────────────────────
+
+_SNAPSHOT_TIMEOUT = 5.0
 
 
 def _grab_snapshot(rtsp_url: str, cctv_id: int) -> bytes | None:
@@ -218,6 +323,35 @@ def _grab_snapshot(rtsp_url: str, cctv_id: int) -> bytes | None:
     finally:
         cap.release()
     return jpeg_bytes
+
+
+def _set_viewed(cctv_id: int, value: bool):
+    db = SessionLocal()
+    try:
+        cctv = db.get(models.CCTV, cctv_id)
+        if cctv:
+            cctv.is_being_viewed = value
+            db.commit()
+    finally:
+        db.close()
+
+
+# ── Routes ───────────────────────────────────────────────────────────────────
+
+@router.get("/{cctv_id}/worker-status")
+async def worker_status(cctv_id: int, token: str = Query(default="")):
+    """Return whether the worker is actively publishing detections for this camera."""
+    if not get_user_from_token(token):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    raw = _redis.get(f"cam:{cctv_id}:detections")
+    if raw:
+        try:
+            data = json.loads(raw)
+            last_seen = data.get("ts") if isinstance(data, dict) else None
+            return {"worker_live": True, "last_seen": last_seen}
+        except Exception:
+            pass
+    return {"worker_live": False, "last_seen": None}
 
 
 @router.get("/{cctv_id}/snapshot")
@@ -260,7 +394,6 @@ async def boxes_stream(cctv_id: int, request: Request, token: str = Query(...)):
                 if await request.is_disconnected():
                     break
                 ticks += 1
-                # Re-validate every 200 ticks (~10 s at 50 ms poll)
                 if ticks % 200 == 0 and not get_user_from_token(token):
                     break
                 raw = _redis.get(det_key)
@@ -290,7 +423,6 @@ async def boxes_stream(cctv_id: int, request: Request, token: str = Query(...)):
 
 @router.websocket("/{cctv_id}/ws")
 async def camera_ws(websocket: WebSocket, cctv_id: int, token: str = "", overlay: bool = True):
-    # Accept before closing so the browser receives the close code in onclose.
     await websocket.accept()
     if not get_user_from_token(token):
         await websocket.close(code=4001)
@@ -307,37 +439,50 @@ async def camera_ws(websocket: WebSocket, cctv_id: int, token: str = "", overlay
     finally:
         db.close()
 
-    frame_q: stdlib_queue.Queue = stdlib_queue.Queue(maxsize=2)
-    stop_event = threading.Event()
-    thread = threading.Thread(
-        target=_capture_thread,
-        args=(rtsp_url, cctv_id, frame_q, stop_event, overlay),
-        daemon=True,
-    )
-    thread.start()
+    cap = _get_or_create_capture(rtsp_url, cctv_id)
+    frame_q = cap.subscribe()
 
     frame_count = 0
     try:
         while True:
             try:
-                frame_bytes = await asyncio.to_thread(frame_q.get, True, 5.0)
+                item = await asyncio.to_thread(frame_q.get, True, 5.0)
             except stdlib_queue.Empty:
-                # No frame within 5 s — _capture_thread is reconnecting to RTSP.
-                # Keep the WebSocket alive; break only if the thread has died.
-                if not thread.is_alive():
-                    break
+                # No frame for 5 s — shared capture is reconnecting or died.
+                if not cap.thread.is_alive():
+                    cap.unsubscribe(frame_q)
+                    cap = _get_or_create_capture(rtsp_url, cctv_id)
+                    frame_q = cap.subscribe()
                 continue
             except Exception:
                 break
+
+            frame, boxes = item
+
+            # Status sentinel from _broadcast_status — relay as JSON text
+            if frame is None:
+                try:
+                    await websocket.send_text(json.dumps({"status": boxes}))
+                except (WebSocketDisconnect, RuntimeError):
+                    break
+                continue
+
+            if overlay and boxes:
+                frame = frame.copy()
+                _draw_boxes(frame, boxes)
+
+            ok, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            if not ok:
+                continue
+
             frame_count += 1
-            # Re-validate session every 150 frames (~10 s at 15 fps)
             if frame_count % 150 == 0 and not get_user_from_token(token):
                 await websocket.close(code=4001)
                 break
             try:
-                await websocket.send_bytes(frame_bytes)
+                await websocket.send_bytes(jpeg.tobytes())
             except (WebSocketDisconnect, RuntimeError):
                 break
     finally:
-        stop_event.set()
+        _release_subscription(cctv_id, frame_q)
         _set_viewed(cctv_id, False)

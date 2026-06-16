@@ -145,7 +145,7 @@ function initClearing(v: Vehicle): void {
   v.waypoints = buildWaypoints(v.approach, v.turn);
 }
 
-// --- IDM (Intelligent Driver Model — Treiber et al. 2000) ---
+// --- IDM (Intelligent Driver Model - Treiber et al. 2000) ---
 // Returns acceleration in canvas units/s² (positive = accelerate, negative = brake).
 function idmAccel(
   v: number,     // current speed (cu/s)
@@ -171,7 +171,7 @@ function conflictingGapOk(approach: number, vehicles: Vehicle[], gapTime: number
 
   const conflicts = CONFLICTS[approach] ?? [];
   for (const ca of conflicts) {
-    // Perpendicular-axis approaches can't proceed right now — their vehicles decelerate
+    // Perpendicular-axis approaches can't proceed right now - their vehicles decelerate
     // to a stop at the line, so they are not a real gap threat (avoids deadlock where
     // both axes block each other indefinitely).
     if (ca % 2 !== axisNow) continue;
@@ -225,7 +225,7 @@ function stepPhysics(
     if (vehicles[i].clearing && vehicles[i].waypoints.length === 0) vehicles.splice(i, 1);
   }
 
-  // Car-following for queuing vehicles — Intelligent Driver Model (Treiber et al. 2000)
+  // Car-following for queuing vehicles - Intelligent Driver Model (Treiber et al. 2000)
   const byApproach = new Map<number, Vehicle[]>();
   for (const v of vehicles) {
     if (v.clearing) continue;
@@ -316,7 +316,7 @@ function spawnVehicles(
         if (spawnDist - maxBack < p.minGap) continue;
       }
 
-      // Sample critical gap from a uniform distribution [5.0, 8.5] s — driver heterogeneity
+      // Sample critical gap from a uniform distribution [5.0, 8.5] s - driver heterogeneity
       const critGap = 5.0 + Math.random() * 3.5;
       vehicles.push({
         id: nextId.current++, type, approach: i,
@@ -480,7 +480,7 @@ function paint(
   }
   ctx.setLineDash([]);
 
-  // Double yellow center dividers — solid, no-overtaking lane separator
+  // Double yellow center dividers - solid, no-overtaking lane separator
   const yOffset = 2 * sc;
   ctx.strokeStyle = '#ca8a04';
   ctx.lineWidth = 1.5 * sc;
@@ -534,9 +534,9 @@ function paint(
     if (s % 2 === 0) ctx.fillRect(cx - box - zH, cy - aw/2 + s * zW, zH, zW);
   }
 
-  // Pedestrian crossing dots — animated with simTime
+  // Pedestrian crossing dots - animated with simTime
   // Signalised: peds walk when their crosswalk direction has a red vehicle phase.
-  // Before mode (gap acceptance): alternate by gap-phase axis — peds cross on the
+  // Before mode (gap acceptance): alternate by gap-phase axis - peds cross on the
   // perpendicular axis to whichever vehicle stream currently has priority.
   const gapAxis = Math.floor(simTime / GAP_PHASE_S) % 2;
   const nsBlocked = showCycles
@@ -587,41 +587,6 @@ function paint(
     }
   }
 
-  // CCTV camera FOV cone — camera at NE corner pointing SW
-  {
-    const camX = cx + box + 5 * sc;
-    const camY = cy - box - 5 * sc;
-    const fovDist = box + arm * 0.65;
-    const fovCenter = Math.PI * 0.75; // SW direction in canvas coords
-    const fovHalf   = Math.PI / 5;    // ±36° half-angle = 72° total
-    ctx.save();
-    ctx.globalAlpha = 0.07;
-    ctx.fillStyle = '#93c5fd';
-    ctx.beginPath();
-    ctx.moveTo(camX, camY);
-    ctx.arc(camX, camY, fovDist, fovCenter - fovHalf, fovCenter + fovHalf);
-    ctx.closePath();
-    ctx.fill();
-    ctx.globalAlpha = 0.5;
-    ctx.strokeStyle = '#3b82f6';
-    ctx.lineWidth = 0.8 * sc;
-    ctx.setLineDash([3 * sc, 2 * sc]);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.restore();
-    // Camera body
-    ctx.fillStyle = '#1d4ed8';
-    ctx.fillRect(camX - 5 * sc, camY - 3 * sc, 8 * sc, 5 * sc);
-    ctx.fillStyle = '#93c5fd';
-    ctx.beginPath(); ctx.arc(camX + 4.5 * sc, camY - 0.5 * sc, 3 * sc, 0, Math.PI * 2); ctx.fill();
-    // Camera label
-    ctx.fillStyle = '#60a5fa';
-    ctx.font = `bold ${7 * sc}px sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'top';
-    ctx.fillText('CCTV', camX, camY + 4.5 * sc);
-  }
-
   // Queuing vehicles (approach-aligned rects)
   for (const v of vehicles) {
     if (v.clearing) continue;
@@ -643,7 +608,7 @@ function paint(
     ctx.strokeStyle = '#0f172a';
     ctx.lineWidth = 0.8;
     ctx.strokeRect(x, y, w, h);
-    // Night headlights — small bright ellipses at the front (stop-line side) of the vehicle
+    // Night headlights - small bright ellipses at the front (stop-line side) of the vehicle
     if (isNight) {
       const hlR = 2 * sc;
       const hlOffsets: [number, number][] =
@@ -675,7 +640,7 @@ function paint(
     }
   }
 
-  // Clearing (in-transit) vehicles — oriented toward next waypoint
+  // Clearing (in-transit) vehicles - oriented toward next waypoint
   const AP_ANGLE = [Math.PI / 2, Math.PI, -Math.PI / 2, 0];
   for (const v of vehicles) {
     if (!v.clearing || v.waypoints.length === 0) continue;
@@ -705,7 +670,7 @@ function paint(
       ctx.textBaseline = 'middle';
       ctx.fillText(v.type, 0, 0);
     }
-    // Turn blinkers — amber flash on front corner of turning vehicles
+    // Turn blinkers - amber flash on front corner of turning vehicles
     if (v.turn !== 'through' && Math.floor(simTime * 4) % 2 === 0) {
       const bx2 = p.length * sc * 0.42;
       const by2 = (v.turn === 'right' ? 1 : -1) * p.width * sc * 0.38;
@@ -722,7 +687,7 @@ function paint(
     ctx.restore();
   }
 
-  // Traffic light indicators — 3-circle housing (R/Y/G) + phase countdown
+  // Traffic light indicators - 3-circle housing (R/Y/G) + phase countdown
   ids.slice(0, 4).forEach((_id, i) => {
     const state: SignalState = phaseStates[i] ?? 'red';
     const lR   = 5 * sc;
@@ -739,7 +704,7 @@ function paint(
     }
 
     if (showCycles) {
-      // Housing — glow on active signal in night mode
+      // Housing - glow on active signal in night mode
       ctx.fillStyle = '#111827';
       ctx.strokeStyle = '#374151';
       ctx.lineWidth = sc;
@@ -935,7 +900,7 @@ export function IntersectionCanvas({
     setPlaying(false);
   }, [chunk.chunk_name]);
 
-  // Responsive canvas sizing — multiply by devicePixelRatio for sharp rendering
+  // Responsive canvas sizing - multiply by devicePixelRatio for sharp rendering
   useEffect(() => {
     const container = containerRef.current;
     const canvas    = canvasRef.current;
@@ -982,7 +947,7 @@ export function IntersectionCanvas({
     return () => document.removeEventListener('fullscreenchange', onFsChange);
   }, []);
 
-  // RAF loop — permanent; all state from refs
+  // RAF loop - permanent; all state from refs
   useEffect(() => {
     const loop = (now: number) => {
       const canvas = canvasRef.current;
@@ -1310,7 +1275,7 @@ export function DualIntersectionCanvas({
     setCycleHistory([]);
   }, [chunk.chunk_name]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Canvas sizing — observe mounted containers; re-run when viewMode changes so
+  // Canvas sizing - observe mounted containers; re-run when viewMode changes so
   // observers reconnect after conditional rendering swaps a canvas in or out.
   useEffect(() => {
     const pairs: [React.RefObject<HTMLDivElement | null>, React.RefObject<HTMLCanvasElement | null>][] = [
@@ -1351,7 +1316,7 @@ export function DualIntersectionCanvas({
 
   useEffect(() => {
     const loop = (now: number) => {
-      // Physics always runs when playing — independent of which canvases are mounted.
+      // Physics always runs when playing - independent of which canvases are mounted.
       // This allows "Before" / "After" single-view modes to keep physics alive even
       // when one of the two canvases is unmounted.
       if (playingRef.current) {
@@ -1462,7 +1427,7 @@ export function DualIntersectionCanvas({
       ref={wrapperRef}
       className={cn('space-y-3', isFullscreen && 'bg-[#0f172a] flex flex-col p-4 h-full')}
     >
-      {/* Canvases — dual side-by-side or single before/after */}
+      {/* Canvases - dual side-by-side or single before/after */}
       <div className={cn(
         'grid gap-2',
         viewMode === 'dual' ? 'grid-cols-2' : 'grid-cols-1',
@@ -1471,7 +1436,7 @@ export function DualIntersectionCanvas({
         {viewMode !== 'after' && (
           <div className={cn('flex flex-col', isFullscreen && 'flex-1')}>
             <p className="text-[10px] font-medium text-muted-foreground mb-1 uppercase tracking-wide">
-              Before — gap acceptance
+              Before - gap acceptance
             </p>
             <div ref={ctnBeforeRef} className="rounded-md overflow-hidden w-full">
               <canvas ref={canvasBeforeRef} className="block" />
@@ -1481,7 +1446,7 @@ export function DualIntersectionCanvas({
         {viewMode !== 'before' && (
           <div className={cn('flex flex-col', isFullscreen && 'flex-1')}>
             <p className="text-[10px] font-medium text-green-500 mb-1 uppercase tracking-wide">
-              After — Webster's signal
+              After - Webster's signal
             </p>
             <div ref={ctnAfterRef} className="rounded-md overflow-hidden w-full">
               <canvas ref={canvasAfterRef} className="block" />
@@ -1519,7 +1484,7 @@ export function DualIntersectionCanvas({
       {cycleHistory.length > 0 && (
         <div className="rounded-md border border-border bg-card px-3 py-2">
           <p className="text-[10px] text-muted-foreground uppercase tracking-wide mb-2">
-            Cycle peak queue — before → after
+            Cycle peak queue - before → after
           </p>
           <div className="space-y-1.5">
             {cycleHistory.map(r => {
@@ -1559,7 +1524,7 @@ export function DualIntersectionCanvas({
         <div className="rounded-md border border-border bg-card px-3 py-2 text-center">
           <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Delay saved</p>
           <p className="text-xl font-semibold tabular-nums mt-0.5">
-            {delayDiff > 0 ? `−${delayDiff.toFixed(0)}s` : '—'}
+            {delayDiff > 0 ? `−${delayDiff.toFixed(0)}s` : '-'}
           </p>
           <p className="text-[10px] text-muted-foreground">per vehicle</p>
         </div>
@@ -1571,7 +1536,7 @@ export function DualIntersectionCanvas({
         <div className="rounded-md border border-green-500/30 bg-card px-3 py-2 text-center">
           <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Est. savings</p>
           <p className="text-xl font-semibold tabular-nums mt-0.5 text-green-500">
-            {pesoSaved > 0 ? `₱${Math.round(pesoSaved)}` : '—'}
+            {pesoSaved > 0 ? `₱${Math.round(pesoSaved)}` : '-'}
           </p>
           <p className="text-[10px] text-muted-foreground">chunk · @₱{PESO_PER_VEH_HR}/veh-hr</p>
         </div>

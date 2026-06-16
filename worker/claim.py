@@ -124,6 +124,10 @@ def verify_claim(db: Session, cctv_id: int, expected_version: int) -> bool:
         ), {"id": cctv_id}).fetchone()
     except Exception as e:
         print(f"[worker] verify_claim failed: {e}")
+        try:
+            db.rollback()
+        except Exception:
+            pass
         return True
 
     if row is None or row[0] != expected_version:

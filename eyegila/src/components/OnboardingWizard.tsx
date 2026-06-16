@@ -188,7 +188,7 @@ export function OnboardingWizard({ open, initialStep, onClose }: OnboardingWizar
     async function init() {
       let targetId = createdIntersectionId;
       if (targetId == null) {
-        // Wizard was closed and resumed — use the most recently created intersection
+        // Wizard was closed and resumed - use the most recently created intersection
         try {
           const inters = await intersectionsApi.list();
           if (inters.length > 0) {
@@ -280,7 +280,7 @@ export function OnboardingWizard({ open, initialStep, onClose }: OnboardingWizar
         setCollectingHasRec(recs.some(r => r.intersection_id === targetId));
         setCollectingLastDetection(health?.last_detection_at ?? null);
       } catch {
-        // silent — show placeholder state
+        // silent - show placeholder state
       } finally {
         setCollectingLoading(false);
       }
@@ -544,7 +544,7 @@ export function OnboardingWizard({ open, initialStep, onClose }: OnboardingWizar
 
         {allDone && (
           <div className="mx-4 mb-3 rounded-lg bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-900 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-400 font-medium">
-            All cameras have regions — ready to continue!
+            All cameras have regions - ready to continue!
           </div>
         )}
 
@@ -604,7 +604,7 @@ export function OnboardingWizard({ open, initialStep, onClose }: OnboardingWizar
           type="button"
           onClick={handleClose}
           className="p-2 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-          aria-label="Close wizard — progress is saved"
+          aria-label="Close wizard - progress is saved"
         >
           <X className="size-5" />
         </button>
@@ -757,7 +757,7 @@ export function OnboardingWizard({ open, initialStep, onClose }: OnboardingWizar
               {found.length > 0 && (
                 <div className="flex flex-col gap-2">
                   <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                    {found.length} camera{found.length !== 1 ? 's' : ''} found — select which to add
+                    {found.length} camera{found.length !== 1 ? 's' : ''} found - select which to add
                   </p>
                   <div className="flex flex-col gap-2">
                     {found.map(cam => (
@@ -814,7 +814,7 @@ export function OnboardingWizard({ open, initialStep, onClose }: OnboardingWizar
 
               {selectedCount > 0 && (
                 <p className="text-xs text-muted-foreground">
-                  {selectedCount} camera{selectedCount !== 1 ? 's' : ''} selected — click Next to continue.
+                  {selectedCount} camera{selectedCount !== 1 ? 's' : ''} selected - click Next to continue.
                 </p>
               )}
             </div>
@@ -847,7 +847,7 @@ export function OnboardingWizard({ open, initialStep, onClose }: OnboardingWizar
 
               <div className="flex flex-col gap-1.5">
                 <p className="text-xs text-muted-foreground">
-                  Pin the location on the map (optional — click to place):
+                  Pin the location on the map (optional - click to place):
                 </p>
                 <div
                   className="rounded-lg overflow-hidden border border-border"
@@ -882,7 +882,7 @@ export function OnboardingWizard({ open, initialStep, onClose }: OnboardingWizar
               <div>
                 <h2 className="text-2xl font-semibold">Assign approach directions</h2>
                 <p className="text-muted-foreground mt-2">
-                  Tell the system which direction each camera faces — Northbound, Southbound,
+                  Tell the system which direction each camera faces - Northbound, Southbound,
                   Eastbound, or Westbound. This determines how volumes are reported per approach.
                 </p>
               </div>
@@ -1175,7 +1175,7 @@ export function OnboardingWizard({ open, initialStep, onClose }: OnboardingWizar
                         </p>
                       ) : (
                         <p className="text-xs text-muted-foreground mt-0.5">
-                          No detections recorded yet — check camera feeds are live.
+                          No detections recorded yet - check camera feeds are live.
                         </p>
                       )}
                     </div>

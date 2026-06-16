@@ -124,9 +124,9 @@ interface Props {
 }
 
 const BARS: { key: 'warrant_1' | 'warrant_2' | 'warrant_4' | 'recommended'; label: string }[] = [
-  { key: 'warrant_1',  label: 'W1 — Eight-Hour Vehicular Volume' },
-  { key: 'warrant_2',  label: 'W2 — Four-Hour Vehicular Volume' },
-  { key: 'warrant_4',  label: 'W4 — Pedestrian Volume' },
+  { key: 'warrant_1',  label: 'W1 - Eight-Hour Vehicular Volume' },
+  { key: 'warrant_2',  label: 'W2 - Four-Hour Vehicular Volume' },
+  { key: 'warrant_4',  label: 'W4 - Pedestrian Volume' },
   { key: 'recommended',label: 'Overall recommended' },
 ];
 
@@ -182,7 +182,7 @@ export function LatestTab({ rec, onRegenerate, regenerating, onNotesSaved }: Pro
           </span>
           {rec.data_age_hours != null && rec.data_age_hours > 2 && (
             <span className="ml-2 text-amber-600 font-medium">
-              ({rec.data_age_hours.toFixed(0)}h ago — stale)
+              ({rec.data_age_hours.toFixed(0)}h ago - stale)
             </span>
           )}
         </div>
@@ -209,8 +209,8 @@ export function LatestTab({ rec, onRegenerate, regenerating, onNotesSaved }: Pro
             {health.camera_ok
               ? `Camera live · last detection ${health.data_age_hours?.toFixed(1)}h ago`
               : health.last_detection_at
-                ? `Camera offline · last detection ${health.data_age_hours?.toFixed(0)}h ago — counts may be unreliable`
-                : 'No detections recorded — camera may not be configured'}
+                ? `Camera offline · last detection ${health.data_age_hours?.toFixed(0)}h ago - counts may be unreliable`
+                : 'No detections recorded - camera may not be configured'}
           </span>
         </div>
       )}
@@ -295,9 +295,9 @@ export function LatestTab({ rec, onRegenerate, regenerating, onNotesSaved }: Pro
             </tr>
           </thead>
           <tbody>
-            <WarrantRow label="W1 — Major volume" threshold={400} measured={rec.major_volume} unit="veh/hr" />
-            <WarrantRow label="W1 — Minor volume" threshold={150} measured={rec.minor_volume} unit="veh/hr" />
-            <WarrantRow label="W4 — Pedestrians"  threshold={100} measured={rec.peds}         unit="/hr" />
+            <WarrantRow label="W1 - Major volume" threshold={400} measured={rec.major_volume} unit="veh/hr" />
+            <WarrantRow label="W1 - Minor volume" threshold={150} measured={rec.minor_volume} unit="veh/hr" />
+            <WarrantRow label="W4 - Pedestrians"  threshold={100} measured={rec.peds}         unit="/hr" />
           </tbody>
         </table>
         <p className="text-[10px] text-muted-foreground">
@@ -314,7 +314,7 @@ export function LatestTab({ rec, onRegenerate, regenerating, onNotesSaved }: Pro
             <div className="text-xs font-medium">Signal timing &amp; simulation</div>
             <div className="text-[10px] text-muted-foreground mt-0.5">
               {rec.timing_cycle != null
-                ? `${rec.timing_cycle}s cycle · peak chunk: ${rec.timing_chunk ?? '—'}`
+                ? `${rec.timing_cycle}s cycle · peak chunk: ${rec.timing_chunk ?? '-'}`
                 : 'Run analysis to compute timing'}
             </div>
           </div>
@@ -366,7 +366,7 @@ function Stat({ label, value, suffix, digits = 0 }: { label: string; value: numb
     <div className="rounded-md border border-border bg-card px-2 py-2">
       <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
       <div className="text-sm font-semibold tabular-nums mt-0.5">
-        {value === null ? '—' : digits > 0 ? value.toFixed(digits) : value}
+        {value === null ? '-' : digits > 0 ? value.toFixed(digits) : value}
       </div>
       {suffix && <div className="text-[9px] text-muted-foreground">{suffix}</div>}
     </div>
@@ -382,10 +382,10 @@ function WarrantRow({ label, threshold, measured, unit }: {
       <td className="py-1.5">{label}</td>
       <td className="text-right tabular-nums text-muted-foreground">≥ {threshold} {unit}</td>
       <td className={cn('text-right tabular-nums', measured === null ? 'text-muted-foreground' : met ? 'text-emerald-600 font-semibold' : 'text-rose-500')}>
-        {measured !== null ? `${measured} ${unit}` : '—'}
+        {measured !== null ? `${measured} ${unit}` : '-'}
       </td>
       <td className={cn('text-right', measured === null ? 'text-muted-foreground' : met ? 'text-emerald-600' : 'text-rose-500')}>
-        {measured !== null ? (met ? '✓' : '✗') : '—'}
+        {measured !== null ? (met ? '✓' : '✗') : '-'}
       </td>
     </tr>
   );

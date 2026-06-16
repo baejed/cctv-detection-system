@@ -2,6 +2,7 @@ import socket
 import uuid
 import select
 import re
+import os
 from urllib.parse import quote
 from server.schemas import CCTVBase, CCTVCreate, CCTVUpdate, CCTVResponse
 from server.utils import log_and_commit, get_current_user
@@ -12,6 +13,13 @@ from server.rate_limit import limiter
 from sqlalchemy.orm import Session
 from typing import Annotated
 from pydantic import BaseModel, Field
+
+_REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+try:
+    import redis as _redis_lib
+    _redis = _redis_lib.from_url(_REDIS_URL)
+except Exception:
+    _redis = None
 
 
 router = APIRouter(
@@ -311,4 +319,22 @@ def delete_cctv(
 
     db.delete(db_cctv)
     log_and_commit(f"User {user.username} deleted cctv {db_cctv.name}", db)
+    return Response(status_code=204)
+
+
+@router.post("/{cctv_id}/retry", status_code=204)
+def retry_camera(
+    cctv_id: int,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> Response:
+    """Signal the worker to immediately retry the RTSP connection for this camera."""
+    cctv = db.get(CCTV, cctv_id)
+    if not cctv:
+        raise HTTPException(status_code=404, detail="CCTV not found")
+    if _redis is not None:
+        try:
+            _redis.setex(f"cam:{cctv_id}:retry_now", 60, "1")
+        except Exception:
+            pass
     return Response(status_code=204)

@@ -13,6 +13,10 @@ export interface SimulationChunk {
   queue_series_before: Record<string, number[]> | null;
   queue_series_after: Record<string, number[]> | null;
   generated_at: string;
+  // Only present on historical (on-demand) results
+  measured_flows?: Record<string, number> | null;
+  proposed_cycle_s?: number | null;
+  proposed_splits?: Record<string, number> | null;
 }
 
 export interface DailySummary {
@@ -32,9 +36,19 @@ export interface SimulationResponse {
   existing_cycle_s: number | null;
   chunks: SimulationChunk[];
   daily_summary: DailySummary;
+  // Only present on historical results
+  window_start?: string;
+  window_end?: string;
 }
 
 export const simulationApi = {
   get: (intersectionId: number) =>
     request<SimulationResponse>(`/simulation/${intersectionId}`),
+
+  compute: (params: { intersection_id: number; start: string; end: string }) =>
+    request<SimulationResponse>('/simulation/compute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    }),
 };

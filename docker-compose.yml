@@ -76,8 +76,11 @@ services:
       SUPER_KEY: ${SUPER_KEY:-}
       FERNET_KEY: ${FERNET_KEY:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      # 0 = disabled (default). Set to e.g. 60 in production to run warrant
+      # analysis automatically every hour. Dev stacks should leave this at 0
+      # to avoid background writes clobbering manually-set test data.
       ANALYSIS_INTERVAL_MINUTES: ${ANALYSIS_INTERVAL_MINUTES:-0}
-    command: uvicorn server.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn server.main:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
     volumes:
@@ -101,12 +104,16 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@pgbouncer:5432/traffic
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       UPLOAD_DIR: /app/uploads
+      MODEL_VERSION: ${MODEL_VERSION:-eyegila_v4}
+      # Canonical in-container path for the mounted model weights file.
+      # video_job.py reads this via os.getenv("MODEL_PATH", "/app/model.pt").
+      MODEL_PATH: /app/model.pt
     volumes:
       - upload_data:/app/uploads
       - ./rq-worker:/app/rq-worker
       - ./common:/app/common
       - ./worker:/app/worker
-      - ./eyegila_v3.pt:/app/eyegila_v3.pt:ro
+      - ./${MODEL_VERSION:-eyegila_v4}.pt:/app/model.pt:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -129,10 +136,13 @@ services:
       INFERENCE_EVERY_N: ${INFERENCE_EVERY_N:-1}
       READER_MAX_FPS: ${READER_MAX_FPS:-0}
       FERNET_KEY: ${FERNET_KEY:-}
+      MODEL_VERSION: ${MODEL_VERSION:-eyegila_v4}
+      # Canonical in-container path for the mounted model weights.
+      MODEL_PATH: /app/model.pt
     volumes:
       - ./worker:/app/worker
       - ./common:/app/common
-      - ./eyegila_v3.pt:/app/eyegila_v3.pt:ro
+      - ./${MODEL_VERSION:-eyegila_v4}.pt:/app/model.pt:ro
     depends_on:
       pgbouncer:
         condition: service_healthy
@@ -156,16 +166,23 @@ services:
       READER_MAX_FPS: ${READER_MAX_FPS:-0}
       TRT_CACHE_DIR: /app/trt_cache
       FERNET_KEY: ${FERNET_KEY:-}
+      MODEL_VERSION: ${MODEL_VERSION:-eyegila_v4}
     volumes:
       - trt_cache:/app/trt_cache
       - ./worker:/app/worker
       - ./common:/app/common
-      - ./eyegila_v3.pt:/app/eyegila_v3.pt:ro
+      - ./${MODEL_VERSION:-eyegila_v4}.pt:/app/model.pt:ro
     depends_on:
       pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/worker-alive"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 900s
     deploy:
       resources:
         reservations:
@@ -189,16 +206,23 @@ services:
       READER_MAX_FPS: ${READER_MAX_FPS:-0}
       TRT_CACHE_DIR: /app/trt_cache
       FERNET_KEY: ${FERNET_KEY:-}
+      MODEL_VERSION: ${MODEL_VERSION:-eyegila_v4}
     volumes:
       - trt_cache:/app/trt_cache
       - ./worker:/app/worker
       - ./common:/app/common
-      - ./eyegila_v3.pt:/app/eyegila_v3.pt:ro
+      - ./${MODEL_VERSION:-eyegila_v4}.pt:/app/model.pt:ro
     depends_on:
       pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/worker-alive"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 900s
     deploy:
       resources:
         reservations:
@@ -279,7 +303,6 @@ services:
     restart: unless-stopped
     ports:
       - "8554:8554"
-      - "1935:1935"
 
   seeder:
     profiles: [tools]

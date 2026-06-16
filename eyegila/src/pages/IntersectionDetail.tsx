@@ -2,12 +2,17 @@ import { useEffect, useRef, useState, useContext, useCallback, useMemo } from 'r
 import { useParams, useNavigate, useOutletContext } from 'react-router-dom';
 import { intersectionsApi } from '@/services/intersections';
 import { cctvsApi } from '@/services/cctvs';
+import { streetsApi } from '@/services/streets';
+import { recommendationsApi, type RecommendationResponse } from '@/services/recommendations';
 import { AuthContext } from '@/context/AuthContext';
 import { triggerUnauthorized } from '@/services/api';
-import type { Intersection, CCTV, AggregationRow } from '@/types';
+import type { Intersection, CCTV, Street, AggregationRow } from '@/types';
 import type { SSEStatus } from '@/hooks/useSSE';
+import { SettingsSheet } from '@/components/IntersectionSettingsSheet';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, MonitorPlay, TrendingUp } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { ArrowLeft, MonitorPlay, TrendingUp, Settings2, RefreshCw, Loader2 } from 'lucide-react';
+import { statusBucket, BUCKET_LABEL, BUCKET_BADGE_CLASS } from '@/components/recommendations/statusBucket';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 
@@ -18,9 +23,10 @@ const WS_BASE = import.meta.env.DEV
 interface FeedProps {
   cam: CCTV | null;
   count: number;
+  onCameraClick: (camId: number) => void;
 }
 
-function LiveCameraFeed({ cam, count }: FeedProps) {
+function LiveCameraFeed({ cam, count, onCameraClick }: FeedProps) {
   const { token }    = useContext(AuthContext);
   const canvasRef    = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -49,53 +55,77 @@ function LiveCameraFeed({ cam, count }: FeedProps) {
   // WebSocket → canvas
   useEffect(() => {
     if (!cam) return;
-    setStatus('connecting');
-    const ws = new WebSocket(`${WS_BASE}/cctvs/${cam.id}/ws?token=${token ?? ''}&overlay=true`);
-    ws.binaryType = 'arraybuffer';
-    ws.onopen  = () => setStatus('live');
-    ws.onerror = () => setStatus('error');
-    ws.onclose = (e: CloseEvent) => {
-      if (e.code === 4001) { triggerUnauthorized(); return; }
-      setStatus('error');
-    };
-    ws.onmessage = (e: MessageEvent<ArrayBuffer>) => {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      const blob = new Blob([e.data], { type: 'image/jpeg' });
-      const url  = URL.createObjectURL(blob);
-      const img  = new Image();
-      img.onload = () => {
-        const cw = canvas.width, ch = canvas.height;
-        const scale = Math.min(cw / img.width, ch / img.height);
-        const dw = img.width * scale, dh = img.height * scale;
-        ctx.fillStyle = '#000';
-        ctx.fillRect(0, 0, cw, ch);
-        ctx.drawImage(img, (cw - dw) / 2, (ch - dh) / 2, dw, dh);
-        URL.revokeObjectURL(url);
+    let stopped = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    // Track the most-recently created socket so that reconnected sockets (created
+    // by the onclose retry timer) are also closed when the component unmounts.
+    // Capturing only the return value of the first connect() call misses any WS
+    // instances created by subsequent retries.
+    let activeWs: WebSocket | null = null;
+
+    function connect() {
+      if (stopped) return;
+      setStatus('connecting');
+      const ws = new WebSocket(`${WS_BASE}/cctvs/${cam!.id}/ws?token=${token ?? ''}&overlay=true`);
+      activeWs = ws;
+      ws.binaryType = 'arraybuffer';
+      ws.onopen  = () => setStatus('live');
+      ws.onerror = () => setStatus('error');
+      ws.onclose = (e: CloseEvent) => {
+        if (e.code === 4001) { triggerUnauthorized(); return; }
+        setStatus('error');
+        if (!stopped) retryTimer = setTimeout(connect, 3000);
       };
-      img.src = url;
+      ws.onmessage = (e: MessageEvent<ArrayBuffer>) => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        const blob = new Blob([e.data], { type: 'image/jpeg' });
+        const url  = URL.createObjectURL(blob);
+        const img  = new Image();
+        img.onload = () => {
+          const cw = canvas.width, ch = canvas.height;
+          const scale = Math.min(cw / img.width, ch / img.height);
+          const dw = img.width * scale, dh = img.height * scale;
+          ctx.fillStyle = '#000';
+          ctx.fillRect(0, 0, cw, ch);
+          ctx.drawImage(img, (cw - dw) / 2, (ch - dh) / 2, dw, dh);
+          URL.revokeObjectURL(url);
+        };
+        img.src = url;
+      };
+    }
+
+    connect();
+    return () => {
+      stopped = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      activeWs?.close();
     };
-    return () => ws.close();
   }, [cam?.id, token]);
 
   return (
-    <div ref={containerRef} className="relative bg-zinc-950 overflow-hidden">
+    <div
+      ref={containerRef}
+      className={cn('relative bg-zinc-950 overflow-hidden', cam && 'cursor-pointer group')}
+      onClick={() => cam && onCameraClick(cam.id)}
+    >
       {cam && (
         <>
           <canvas ref={canvasRef} className="absolute inset-0" />
+          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors z-10 pointer-events-none" />
           <span className={cn(
-            'absolute top-2 left-2 size-1.5 rounded-full z-10',
+            'absolute top-2 left-2 size-1.5 rounded-full z-20',
             status === 'live'       ? 'bg-emerald-400' :
             status === 'connecting' ? 'bg-amber-400 animate-pulse' :
                                       'bg-red-400',
           )} />
-          <span className="absolute bottom-2 left-2 text-[9px] text-white/60 leading-none z-10 drop-shadow">
+          <span className="absolute bottom-2 left-2 text-[9px] text-white/60 leading-none z-20 drop-shadow">
             {cam.name}
           </span>
           {count > 0 && (
-            <span className="absolute bottom-2 right-2 text-[10px] text-emerald-400 font-semibold tabular-nums leading-none z-10 drop-shadow">
+            <span className="absolute bottom-2 right-2 text-[10px] text-emerald-400 font-semibold tabular-nums leading-none z-20 drop-shadow">
               {count}
             </span>
           )}
@@ -114,22 +144,47 @@ export function IntersectionDetailPage() {
 
   const [intersection, setIntersection] = useState<Intersection | null>(null);
   const [cameras,      setCameras]      = useState<CCTV[]>([]);
+  const [streets,      setStreets]      = useState<Street[]>([]);
   const [loading,      setLoading]      = useState(true);
+  const [rec,          setRec]          = useState<RecommendationResponse | null>(null);
+  const [generating,   setGenerating]   = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const [inter, allCams] = await Promise.all([
+      const [inter, allCams, allStreets] = await Promise.all([
         intersectionsApi.get(interId),
         cctvsApi.list(),
+        streetsApi.list().catch(() => [] as Street[]),
       ]);
       setIntersection(inter);
       setCameras(allCams.filter(c => c.intersection_id === interId));
+      setStreets(allStreets.filter(s => s.intersection_id === interId));
+      // latest() returns null when no recommendation exists yet. Any fetch
+      // error (including network failures) is absorbed here so that a missing
+      // badge never blocks the rest of the page from loading. Auth errors are
+      // already handled inside request() before the error is thrown.
+      const r = await recommendationsApi.latest(interId).catch(() => null);
+      setRec(r);
     } catch {
       toast.error('Failed to load intersection');
     } finally {
       setLoading(false);
     }
   }, [interId]);
+
+  async function generate() {
+    setGenerating(true);
+    try {
+      await recommendationsApi.generate(interId);
+      toast.success('Analysis complete');
+      load();
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : 'Analysis failed');
+    } finally {
+      setGenerating(false);
+    }
+  }
 
   useEffect(() => { load(); }, [load]);
 
@@ -155,25 +210,53 @@ export function IntersectionDetailPage() {
         <Button variant="ghost" size="icon" className="size-8 shrink-0" onClick={() => navigate('/')}>
           <ArrowLeft className="size-4" />
         </Button>
-        <h1 className="flex-1 text-xl font-semibold tracking-tight truncate min-w-0">
-          {loading ? '…' : (intersection?.name ?? 'Intersection')}
-        </h1>
-        <div className="flex rounded-md border border-border overflow-hidden shrink-0">
+        <div className="flex-1 flex items-center gap-2 min-w-0">
+          <h1 className="text-xl font-semibold tracking-tight truncate">
+            {loading ? '…' : (intersection?.name ?? 'Intersection')}
+          </h1>
+          {rec && (
+            <Badge className={cn('shrink-0 text-[10px]', BUCKET_BADGE_CLASS[statusBucket(rec)])}>
+              {BUCKET_LABEL[statusBucket(rec)]}
+            </Badge>
+          )}
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 text-xs gap-1.5"
+            onClick={generate}
+            disabled={generating}
+            title="Run warrant analysis"
+          >
+            {generating ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
+            {generating ? 'Analysing…' : 'Analyse'}
+          </Button>
           <button
             type="button"
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-foreground text-background"
+            onClick={() => setSettingsOpen(true)}
+            className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+            title="Settings"
           >
-            <MonitorPlay className="size-3" />
-            Live
+            <Settings2 className="size-4" />
           </button>
-          <button
-            type="button"
-            onClick={() => navigate(`/timing/${id}`)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs border-l border-border text-muted-foreground hover:text-foreground transition-colors"
-          >
-            <TrendingUp className="size-3" />
-            Timing
-          </button>
+          <div className="flex rounded-md border border-border overflow-hidden">
+            <button
+              type="button"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-foreground text-background"
+            >
+              <MonitorPlay className="size-3" />
+              Live
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate(`/timing/${id}`)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs border-l border-border text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <TrendingUp className="size-3" />
+              Timing
+            </button>
+          </div>
         </div>
       </div>
 
@@ -187,9 +270,20 @@ export function IntersectionDetailPage() {
             key={cam?.id ?? `empty-${i}`}
             cam={cam}
             count={liveCount}
+            onCameraClick={camId => navigate(`/intersections/${id}/cameras/${camId}`)}
           />
         ))}
       </div>
+
+      <SettingsSheet
+        inter={intersection}
+        streets={streets}
+        cameras={cameras}
+        rec={rec}
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        onRefresh={load}
+      />
     </div>
   );
 }

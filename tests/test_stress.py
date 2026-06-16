@@ -82,7 +82,7 @@ def test_high_saturation_clamps_to_max_cycle():
 
 
 def test_paired_phases_never_longer_than_solo():
-    """Opposing-pair grouping has ≤ lost time than 4 independent phases → shorter cycle."""
+    """group_phases cycle must not exceed the 4-independent-phases baseline."""
     from server.webster import compute_timing, group_phases
     rng = random.Random(7)
     dirs = {1: "northbound", 2: "southbound", 3: "eastbound", 4: "westbound"}
@@ -825,13 +825,16 @@ def test_phases_no_duplicate_street():
 
 
 def test_phases_all_unknown_single_concurrent_phase():
-    """All-unknown streets → one concurrent phase (no unnecessary lost time)."""
+    """All-unknown streets → each gets its own independent phase (safe fallback).
+
+    Because we cannot determine which arms conflict, each receives exclusive green.
+    """
     from server.webster import group_phases
     flows = {i: 300.0 for i in range(1, 5)}
     dirs  = {i: "unknown" for i in range(1, 5)}
     phases = group_phases(flows, dirs)
-    assert len(phases) == 1
-    assert sorted(phases[0]) == [1, 2, 3, 4]
+    assert len(phases) == 4
+    assert {frozenset(p) for p in phases} == {frozenset({i}) for i in range(1, 5)}
 
 
 # ─── 10. Bug regression tests ─────────────────────────────────────────────────
