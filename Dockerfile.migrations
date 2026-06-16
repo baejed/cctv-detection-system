@@ -1,0 +1,20 @@
+# syntax=docker/dockerfile:1
+# Runs alembic upgrade head against the test DB.
+# Connects directly to timescaledb (bypasses pgbouncer) for DDL safety.
+FROM python:3.11-slim
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install alembic sqlalchemy psycopg2-binary python-dotenv
+
+WORKDIR /app
+
+COPY common ./common
+COPY alembic ./alembic
+COPY alembic.ini .
+
+ENV PYTHONPATH=/app
+
+# If no revision exists yet (fresh DB seeded by init.sql through 0004),
+# stamp 0004 so alembic skips those migrations. If a revision already exists
+# (volume re-use), skip the stamp so upgrade is a no-op or incremental.
+CMD ["sh", "-c", "alembic current 2>&1 | grep -qE '[0-9a-f]{12}' || alembic stamp 0004; alembic upgrade head"]

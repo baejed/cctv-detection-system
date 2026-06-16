@@ -221,8 +221,10 @@ def _grab_snapshot(rtsp_url: str, cctv_id: int) -> bytes | None:
 
 
 @router.get("/{cctv_id}/snapshot")
-async def camera_snapshot(cctv_id: int):
+async def camera_snapshot(cctv_id: int, token: str = Query(default="")):
     """Return a single JPEG frame from the camera's RTSP stream."""
+    if not get_user_from_token(token):
+        raise HTTPException(status_code=401, detail="Not authenticated")
     db = SessionLocal()
     try:
         cctv = db.get(models.CCTV, cctv_id)

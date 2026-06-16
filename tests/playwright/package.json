@@ -1,0 +1,10 @@
+{
+  "name": "eyegila-e2e-runner",
+  "private": true,
+  "scripts": {
+    "test": "playwright test --config e2e/playwright.config.ts"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.0"
+  }
+}

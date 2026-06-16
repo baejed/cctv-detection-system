@@ -1,4 +1,4 @@
-"""Webster's formula engine for 2-phase signal timing.
+"""Webster's formula engine for 4-phase signal timing.
 
 Webster's optimal cycle:
   L      = n_phases × (lost_time_per_phase + all_red_clearance)
@@ -10,10 +10,9 @@ Green splits (proportional to critical flow ratio):
   effective_green = C_opt - L
   g_i = effective_green × (y_i / Y)
 
-Opposing approaches (NB+SB, EB+WB) share a phase and run concurrently,
-so both streets in a phase receive the same green time as the critical
-(higher-flow) approach in that phase.  Unrecognised directions fall back
-to one phase per street (graceful degradation).
+Each approach runs as an independent phase (4-phase plan), matching the
+existing signal controller at this intersection where only one direction
+is green at a time.  Phase order: N-arm → E-arm → S-arm → W-arm.
 
 Arrival model justification (Tagum City context):
   Webster's formula assumes Poisson (random) vehicle arrivals, which holds
@@ -41,12 +40,8 @@ from server.pce import resolve_pce
 SATURATION_FLOW = 1400  # PCU/hr per approach
 
 
-_OPPOSING: dict[str, str] = {
-    "northbound": "southbound",
-    "southbound": "northbound",
-    "eastbound":  "westbound",
-    "westbound":  "eastbound",
-}
+# Clockwise phase order matching the physical signal controller rotation.
+_PHASE_ORDER = ["southbound", "westbound", "northbound", "eastbound"]
 
 
 def get_street_directions(db: Session, intersection_id: int) -> dict[int, str]:
@@ -63,29 +58,28 @@ def group_phases(
     flows: dict[int, float],
     directions: dict[int, str],
 ) -> list[list[int]]:
-    """Group street IDs into signal phases by opposing-direction pairs.
+    """Return one independent phase per approach in clockwise rotation order.
 
-    Known N+S and E+W street pairs form 2 phases; streets with unrecognised
-    or duplicate directions each get their own phase (safe fallback).
+    Each direction gets its own exclusive green phase (4-phase plan), matching
+    the physical signal controller where only one arm is green at a time.
     """
     by_dir: dict[str, list[int]] = {}
     for sid in flows:
         d = directions.get(sid, "unknown")
         by_dir.setdefault(d, []).append(sid)
 
-    seen: set[str] = set()
+    seen: set[int] = set()
     phases: list[list[int]] = []
-    for direction, sids in by_dir.items():
-        if direction in seen:
-            continue
-        opp = _OPPOSING.get(direction)
-        if opp and opp in by_dir:
-            phases.append(sids + by_dir[opp])
-            seen.add(direction)
-            seen.add(opp)
-        else:
-            phases.append(sids)
-            seen.add(direction)
+
+    for direction in _PHASE_ORDER:
+        for sid in by_dir.get(direction, []):
+            if sid not in seen:
+                phases.append([sid])
+                seen.add(sid)
+
+    for sid in flows:
+        if sid not in seen:
+            phases.append([sid])
 
     return phases or [[sid] for sid in flows]
 

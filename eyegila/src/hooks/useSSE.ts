@@ -58,7 +58,7 @@ export function useSSE<T>(url: string, enabled = true) {
 
           while (true) {
             const { done, value } = await reader.read();
-            if (done) break;
+            if (done) { setData(null); break; }
 
             buffer += decoder.decode(value, { stream: true });
             const lines = buffer.split('\n');

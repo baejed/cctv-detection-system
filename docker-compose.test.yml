@@ -1,0 +1,178 @@
+# Full-stack E2E test stack — completely isolated from the dev stack.
+# Run via: ./scripts/run-tests.sh
+# Or manually: docker compose -f docker-compose.test.yml -p eyegila-test up --build
+
+name: eyegila-test
+
+services:
+
+  # ── Infrastructure ────────────────────────────────────────────────────────
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: eyegila-test-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: traffic_test
+    command: postgres -c password_encryption=md5
+    volumes:
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+      - test_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+      start_period: 10s
+
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    container_name: eyegila-test-pgbouncer
+    environment:
+      DB_HOST: timescaledb
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: traffic_test
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: "100"
+      DEFAULT_POOL_SIZE: "10"
+      AUTH_TYPE: md5
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 5432"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: eyegila-test-redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Migrations (one-shot, direct DB connection — no pgbouncer) ───────────
+
+  migrations:
+    build:
+      context: .
+      dockerfile: Dockerfile.migrations
+    container_name: eyegila-test-migrations
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@timescaledb:5432/traffic_test
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    restart: "no"
+
+  # ── Application ───────────────────────────────────────────────────────────
+
+  server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    container_name: eyegila-test-server
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@pgbouncer:5432/traffic_test
+      REDIS_URL: redis://redis:6379
+      SUPER_KEY: test-super-key-e2e
+      FERNET_KEY: WpzrD4mIagZp9KdKi7z8jfvkDwGUHNvhESnWFSc3Kxs=
+      CORS_ORIGINS: http://frontend:80,http://localhost:80
+      ANALYSIS_INTERVAL_MINUTES: "0"
+      SESSION_TTL_HOURS: "24"
+      TZ: Asia/Manila
+      TRUST_PROXY_HEADERS: "false"
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)\""
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    restart: "no"
+
+  frontend:
+    build:
+      context: ./eyegila
+      dockerfile: Dockerfile
+    container_name: eyegila-test-frontend
+    depends_on:
+      server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 80 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    restart: "no"
+
+  # ── Seeder (one-shot, runs after server is healthy) ───────────────────────
+
+  seeder:
+    build:
+      context: .
+      dockerfile: seeder/Dockerfile
+    container_name: eyegila-test-seeder
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@pgbouncer:5432/traffic_test
+    depends_on:
+      server:
+        condition: service_healthy
+    restart: "no"
+
+  # ── Test runners (one-shot, run after seeder completes) ───────────────────
+
+  pytest:
+    build:
+      context: .
+      dockerfile: tests/Dockerfile
+    container_name: eyegila-test-pytest
+    environment:
+      API_URL: http://server:8000
+      DATABASE_URL: postgresql://postgres:postgres@timescaledb:5432/traffic_test
+      ADMIN_USER: admin
+      ADMIN_PASS: admin
+    depends_on:
+      seeder:
+        condition: service_completed_successfully
+    restart: "no"
+
+  playwright:
+    build:
+      context: .
+      dockerfile: tests/playwright/Dockerfile
+    container_name: eyegila-test-playwright
+    environment:
+      BASE_URL: http://frontend:80
+      API_URL: http://server:8000
+      ADMIN_USER: admin
+      ADMIN_PASS: admin
+    volumes:
+      - ./test-results/playwright:/app/playwright-report
+    depends_on:
+      seeder:
+        condition: service_completed_successfully
+      frontend:
+        condition: service_healthy
+    restart: "no"
+
+networks:
+  default:
+    name: eyegila-test-network
+
+volumes:
+  test_db_data:

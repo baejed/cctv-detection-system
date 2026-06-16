@@ -23,6 +23,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import type { GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import type { TimingChunk } from '@/services/timing';
+import type { SimulationChunk } from '@/services/simulation';
 import type { Street } from '@/types';
 import type { VehicleType, TypeFractions } from './IntersectionCanvas';
 
@@ -30,14 +31,14 @@ import type { VehicleType, TypeFractions } from './IntersectionCanvas';
 
 const BOX          = 7.5;   // half-width of intersection box (m)
 const ARM          = 48;    // arm length from box edge (m)
-const ROAD_W       = 15;    // total road width (two lanes bi-directional)
+const ROAD_W       = 20;    // total road width (two lanes bi-directional)
 const LANE         = ROAD_W / 4;
 const AMBER_S      = 3;
 const ALL_RED      = 3;
-const XWALK_OFFSET = 2.5;   // m past stop line where crosswalk is centred
+const XWALK_OFFSET = 5.0;   // m past stop line where crosswalk is centred
 const PED_SPEED    = 1.2;   // m/s (DPWH pedestrian walking speed)
 const PED_SCALE       = 1.0;   // Quaternius models export at ~1:1 m scale
-const TRICYCLE_GREEN  = 0x16a34a;
+
 
 // ─── Approach ↔ direction mapping ────────────────────────────────────────────
 
@@ -47,14 +48,14 @@ const DIR_TO_APP: Record<string, number> = {
 
 // ─── Vehicle params ───────────────────────────────────────────────────────────
 
-interface VParams { len: number; spd: number; dec: number; gap: number }
+interface VParams { len: number; spd: number; accel: number; dec: number; gap: number }
 
 const VPARAMS: Record<VehicleType, VParams> = {
-  MC:    { len: 2.0,  spd: 22, dec: 7.5, gap: 1.5 },
-  CAR:   { len: 4.4,  spd: 18, dec: 6.0, gap: 2.0 },
-  JEP:   { len: 6.5,  spd: 14, dec: 5.0, gap: 2.5 },
-  BUS:   { len: 11.0, spd: 11, dec: 3.5, gap: 3.5 },
-  TRUCK: { len: 8.5,  spd: 11, dec: 3.5, gap: 3.0 },
+  MC:    { len: 2.0,  spd: 22, accel: 3.0, dec: 7.5, gap: 1.5 },
+  CAR:   { len: 4.4,  spd: 18, accel: 2.2, dec: 6.0, gap: 2.0 },
+  JEP:   { len: 6.5,  spd: 14, accel: 1.5, dec: 5.0, gap: 2.5 },
+  BUS:   { len: 11.0, spd: 11, accel: 1.0, dec: 3.5, gap: 3.5 },
+  TRUCK: { len: 8.5,  spd: 11, accel: 1.2, dec: 3.5, gap: 3.0 },
 };
 
 const VEH_TYPES: VehicleType[] = ['MC', 'CAR', 'JEP', 'BUS', 'TRUCK'];
@@ -300,7 +301,7 @@ const VEHICLE_MAKERS: Record<VehicleType, (c: number) => THREE.Group> = {
 };
 
 const VEH_COLORS: Record<VehicleType, number[]> = {
-  MC:    [0x1e293b, 0x7c3aed, 0xdc2626, 0x0369a1, 0x374151, 0xf97316],
+  MC:    [0xf97316, 0x7c3aed, 0xdc2626, 0x0ea5e9, 0xeab308, 0x22c55e],
   CAR:   [0x1d4ed8, 0xdc2626, 0xffffff, 0x166534, 0x374151, 0x92400e, 0x6d28d9],
   JEP:   [0xf1f5f9, 0xfef3c7, 0xfcfcfc, 0xe0e7ef],
   BUS:   [0xffd700, 0x15803d, 0xff8c00, 0xfff8dc],
@@ -322,105 +323,151 @@ interface TLRefs {
   ptR: THREE.PointLight;
   ptA: THREE.PointLight;
   ptG: THREE.PointLight;
+  countdownCtx: CanvasRenderingContext2D;
+  countdownTex: THREE.CanvasTexture;
 }
 
+// Countdown sprites use a shared canvas drawn each second to show phase seconds remaining
 function makeTrafficLight(): TLRefs {
+  const S = 1.5; // uniform scale-up multiplier for pole/housing
   const g = new THREE.Group();
   const darkMat = makeMat(0x1a1f2e);
   const poleMat = makeMat(0x4b5563);
 
-  addBox(g, 0.6, 0.12, 0.6, 0, 0.06, 0, 0x374151);
-  addCyl(g, 0.09, 0.11, 5.0, 8, 0, 2.56, 0, 0x374151);
+  // Base plate + taller pole for better visibility
+  addBox(g, 1.2*S, 0.20, 1.2*S, 0, 0.10, 0, 0x374151);
+  addCyl(g, 0.22*S, 0.26*S, 9.0, 8, 0, 4.56, 0, 0x374151);
 
-  const arm = mesh(new THREE.CylinderGeometry(0.055, 0.055, 2.2, 6), poleMat);
-  arm.rotation.z = Math.PI / 2; arm.position.set(-1.1, 5.10, 0); g.add(arm);
+  const armMesh = mesh(new THREE.CylinderGeometry(0.13*S, 0.13*S, 4.0*S, 6), poleMat);
+  armMesh.rotation.z = Math.PI / 2; armMesh.position.set(-2.0*S, 9.20, 0); g.add(armMesh);
 
-  const housing = mesh(bx(0.50, 1.55, 0.42), darkMat);
-  housing.position.set(-2.20, 5.10, 0); g.add(housing);
+  // Housing — scale up 1.5× for visibility
+  const HX = -4.0*S;
+  const housing = mesh(bx(1.10*S, 3.60*S, 1.10*S), darkMat);
+  housing.position.set(HX, 9.20, 0); g.add(housing);
 
-  addBox(g, 0.68, 0.08, 0.54, -2.20, 5.95, 0, 0x111827);
-  for (const y of [4.72, 5.10]) addBox(g, 0.50, 0.06, 0.42, -2.20, y, 0, 0x111827);
+  addBox(g, 1.30*S, 0.18*S, 1.20*S, HX, 11.10, 0, 0x111827);
+  for (const y of [9.90, 9.05]) addBox(g, 1.10*S, 0.12*S, 1.10*S, HX, y, 0, 0x111827);
 
-  const lensGeo = new THREE.SphereGeometry(0.155, 12, 10);
+  // Lenses — bigger (0.60 radius) for clear visibility at camera distance
+  const lensGeo = new THREE.SphereGeometry(0.60*S, 14, 10);
+  const matR = makeMat(0x7f1d1d, 0, 0, 0.90);
+  const matA = makeMat(0x78350f, 0, 0, 0.90);
+  const matG = makeMat(0x14532d, 0, 0, 0.90);
 
-  // Store materials so setTLPhase can mutate them in-place (no per-frame allocation)
-  const matR = makeMat(0x7f1d1d, 0, 0, 0.85);
-  const matA = makeMat(0x78350f, 0, 0, 0.85);
-  const matG = makeMat(0x14532d, 0, 0, 0.85);
+  for (const zOff of [0.55*S, -0.55*S]) {
+    const lR = mesh(lensGeo, matR); lR.position.set(HX, 10.60, zOff); lR.scale.z = 0.55; g.add(lR);
+    const lA = mesh(lensGeo, matA); lA.position.set(HX,  9.70, zOff); lA.scale.z = 0.55; g.add(lA);
+    const lG = mesh(lensGeo, matG); lG.position.set(HX,  8.80, zOff); lG.scale.z = 0.55; g.add(lG);
+  }
 
-  const lensR = mesh(lensGeo, matR);
-  lensR.position.set(-2.20, 5.60, 0.20); lensR.scale.z = 0.55; g.add(lensR);
+  // Point lights
+  const ptR = new THREE.PointLight(0xef4444, 0, 40, 2); ptR.position.set(HX, 10.60, 1.4); g.add(ptR);
+  const ptA = new THREE.PointLight(0xf59e0b, 0, 40, 2); ptA.position.set(HX,  9.70, 1.4); g.add(ptA);
+  const ptG = new THREE.PointLight(0x22c55e, 0, 40, 2); ptG.position.set(HX,  8.80, 1.4); g.add(ptG);
 
-  const lensA = mesh(lensGeo, matA);
-  lensA.position.set(-2.20, 5.13, 0.20); lensA.scale.z = 0.55; g.add(lensA);
+  // Countdown sprite — canvas texture always facing camera
+  const cdCanvas = document.createElement('canvas');
+  cdCanvas.width = 128; cdCanvas.height = 128;
+  const cdCtx = cdCanvas.getContext('2d')!;
+  const countdownTex = new THREE.CanvasTexture(cdCanvas);
+  const cdMat = new THREE.SpriteMaterial({ map: countdownTex, transparent: true, depthTest: false });
+  const cdSprite = new THREE.Sprite(cdMat);
+  cdSprite.scale.set(4.5, 4.5, 1);
+  cdSprite.position.set(HX, 13.0, 0); // above housing
+  g.add(cdSprite);
 
-  const lensG = mesh(lensGeo, matG);
-  lensG.position.set(-2.20, 4.66, 0.20); lensG.scale.z = 0.55; g.add(lensG);
-
-  const ptR = new THREE.PointLight(0xef4444, 0, 12, 2); ptR.position.set(-2.20, 5.60, 0.6); g.add(ptR);
-  const ptA = new THREE.PointLight(0xf59e0b, 0, 12, 2); ptA.position.set(-2.20, 5.13, 0.6); g.add(ptA);
-  // Fixed: was (0x22c55e, 0, 10, 10, 2) — PointLight only takes 4 args, 5th was silently dropped
-  // leaving decay=10 which killed the glow radius. Correct decay is 2 (physically-based).
-  const ptG = new THREE.PointLight(0x22c55e, 0, 12, 2); ptG.position.set(-2.20, 4.66, 0.6); g.add(ptG);
-
-  return { group: g, matR, matA, matG, ptR, ptA, ptG };
+  return { group: g, matR, matA, matG, ptR, ptA, ptG, countdownCtx: cdCtx, countdownTex };
 }
 
 type SignalPhase = 'red' | 'amber' | 'green';
 
-function setTLPhase(tl: TLRefs, phase: SignalPhase, blink = false): void {
+function setTLPhase(tl: TLRefs, phase: SignalPhase, blink = false, remaining = 0): void {
   const showAmber = phase === 'amber' || (phase === 'red' && blink);
   const isRed   = phase === 'red' && !blink;
   const isGreen = phase === 'green';
 
-  // Mutate existing materials — avoids allocating 12 new objects every frame
   tl.matR.color.setHex(isRed ? 0xef4444 : 0x7f1d1d);
   tl.matR.emissive.setHex(isRed ? 0xef4444 : 0x000000);
-  tl.matR.emissiveIntensity = isRed ? 0.6 : 0;
+  tl.matR.emissiveIntensity = isRed ? 4.0 : 0;
 
   tl.matA.color.setHex(showAmber ? 0xf59e0b : 0x78350f);
   tl.matA.emissive.setHex(showAmber ? 0xf59e0b : 0x000000);
-  tl.matA.emissiveIntensity = showAmber ? 0.6 : 0;
+  tl.matA.emissiveIntensity = showAmber ? 4.0 : 0;
 
   tl.matG.color.setHex(isGreen ? 0x22c55e : 0x14532d);
   tl.matG.emissive.setHex(isGreen ? 0x22c55e : 0x000000);
-  tl.matG.emissiveIntensity = isGreen ? 0.6 : 0;
+  tl.matG.emissiveIntensity = isGreen ? 4.0 : 0;
 
-  tl.ptR.intensity = isRed ? 2.5 : 0;
-  tl.ptA.intensity = showAmber ? 2.0 : 0;
-  tl.ptG.intensity = isGreen ? 3.0 : 0;
+  tl.ptR.intensity = isRed ? 10.0 : 0;
+  tl.ptA.intensity = showAmber ? 8.0 : 0;
+  tl.ptG.intensity = isGreen ? 12.0 : 0;
+
+  // Update countdown sprite (only when remaining changes by whole second to avoid spam)
+  const secs = Math.ceil(remaining);
+  const color = isGreen ? '#4ade80' : showAmber ? '#fbbf24' : '#f87171';
+  const label = phase === 'red' && !blink ? 'WAIT' : `${secs > 0 ? secs : ''}`;
+  const cdCtx = tl.countdownCtx;
+  cdCtx.clearRect(0, 0, 128, 128);
+  cdCtx.fillStyle = 'rgba(0,0,0,0.75)';
+  cdCtx.beginPath();
+  cdCtx.roundRect(6, 6, 116, 116, 20);
+  cdCtx.fill();
+  cdCtx.font = secs >= 10 ? 'bold 56px monospace' : 'bold 68px monospace';
+  cdCtx.fillStyle = color;
+  cdCtx.textAlign = 'center';
+  cdCtx.textBaseline = 'middle';
+  cdCtx.fillText(label, 64, 64);
+  tl.countdownTex.needsUpdate = true;
 }
 
-// ─── Phase logic ──────────────────────────────────────────────────────────────
+// ─── Phase logic (4-phase: SB → WB → NB → EB, one direction at a time) ───────
+
+type GreenTimes = [number, number, number, number];
+
+function phaseStart(appIdx: number, gTimes: GreenTimes): number {
+  let t = 0;
+  for (let i = 0; i < appIdx; i++) t += gTimes[i] + ALL_RED;
+  return t;
+}
+
+function phaseCycle(gTimes: GreenTimes): number {
+  return gTimes.reduce((s, g) => s + g + ALL_RED, 0);
+}
 
 function approachPhase(
   appIdx: number, t: number,
-  g0: number, g1: number,
+  gTimes: GreenTimes,
   signalOff: boolean, blinkOn: boolean,
 ): SignalPhase {
   if (signalOff) return blinkOn ? 'amber' : 'red';
-  const cycle = g0 + ALL_RED + g1 + ALL_RED;
+  const cycle = phaseCycle(gTimes);
   if (cycle <= 0 || !isFinite(cycle)) return 'red';
-  const tMod = ((t % cycle) + cycle) % cycle;
-  const isNS = appIdx === 0 || appIdx === 2;
-  if (isNS) {
-    if (tMod < g0 - AMBER_S) return 'green';
-    if (tMod < g0)            return 'amber';
-    return 'red';
-  } else {
-    const p1Start = g0 + ALL_RED;
-    const p1End   = p1Start + g1;
-    if (tMod >= p1Start && tMod < p1End - AMBER_S) return 'green';
-    if (tMod >= p1End - AMBER_S && tMod < p1End)   return 'amber';
-    return 'red';
-  }
+  const tMod  = ((t % cycle) + cycle) % cycle;
+  const start = phaseStart(appIdx, gTimes);
+  const end   = start + gTimes[appIdx];
+  if (tMod < start || tMod >= end) return 'red';
+  if (gTimes[appIdx] > AMBER_S && tMod >= end - AMBER_S) return 'amber';
+  return 'green';
 }
 
-function pedCanWalk(cwId: number, t: number, g0: number, g1: number, signalOff: boolean): boolean {
+function approachRemaining(appIdx: number, t: number, gTimes: GreenTimes): number {
+  const cycle = phaseCycle(gTimes);
+  if (cycle <= 0 || !isFinite(cycle)) return 0;
+  const tMod  = ((t % cycle) + cycle) % cycle;
+  const start = phaseStart(appIdx, gTimes);
+  const end   = start + gTimes[appIdx];
+  if (tMod >= start && tMod < end) return end - tMod;
+  if (tMod < start) return start - tMod;
+  return cycle - tMod + start;
+}
+
+function pedCanWalk(cwId: number, t: number, gTimes: GreenTimes, signalOff: boolean): boolean {
   if (signalOff) return false;
-  const blockedApp = CW_DEFS[cwId].blockedApp;
-  // Pedestrian WALK = the blocking vehicle phase is fully RED (not green, not amber)
-  return approachPhase(blockedApp, t, g0, g1, false, false) === 'red';
+  // NS crosswalks (blockedApp=0): safe only when both SB(0) and NB(2) are fully red
+  // EW crosswalks (blockedApp=1): safe only when both WB(1) and EB(3) are fully red
+  const conflicting = CW_DEFS[cwId].blockedApp === 0 ? [0, 2] : [1, 3];
+  return conflicting.every(ai => approachPhase(ai, t, gTimes, false, false) === 'red');
 }
 
 // ─── Road scene ───────────────────────────────────────────────────────────────
@@ -538,9 +585,15 @@ interface Veh {
   id: number;
   type: VehicleType;
   app: number;
-  dist: number;   // distance ahead of stop line (positive = queued)
+  dist: number;       // distance ahead of stop line (positive = queued, ≤0 = cleared)
   speed: number;
   obj: THREE.Group;
+  // Intersection traversal (active once vehicle crosses stop line)
+  turn: 'through' | 'left' | 'right' | null;
+  waypoints: THREE.Vector3[];
+  wpIdx: number;
+  rotOffset: number;  // extra Y-rotation for Z-elongated GLB models
+  yOffset: number;    // Y-lift so GLB model base sits on road surface
 }
 
 interface Ped {
@@ -562,11 +615,12 @@ const APP_ROT: number[] = [
 function placeVehicle(v: Veh): void {
   const p = VPARAMS[v.type];
   const d = v.dist + p.len / 2;
+  const y = v.yOffset;
   switch (v.app) {
-    case 0: v.obj.position.set( LANE, 0, -(BOX + d)); break;
-    case 1: v.obj.position.set( BOX + d, 0, -LANE);   break;
-    case 2: v.obj.position.set(-LANE, 0,  BOX + d);   break;
-    case 3: v.obj.position.set(-(BOX + d), 0,  LANE); break;
+    case 0: v.obj.position.set( LANE, y, -(BOX + d)); break;
+    case 1: v.obj.position.set( BOX + d, y, -LANE);   break;
+    case 2: v.obj.position.set(-LANE, y,  BOX + d);   break;
+    case 3: v.obj.position.set(-(BOX + d), y,  LANE); break;
   }
 }
 
@@ -579,22 +633,155 @@ function placePed(p: Ped): void {
   );
 }
 
+// ─── Intersection traversal geometry ─────────────────────────────────────────
+//
+// Coordinate system: +X = East, +Z = South.  Right-hand traffic (PH).
+// Per-approach stop-line positions (vehicle front bumper at dist = 0):
+//   App 0 southbound  (+Z): (LANE, 0, -BOX)
+//   App 1 westbound   (-X): (BOX,  0, -LANE)
+//   App 2 northbound  (-Z): (-LANE, 0, BOX)
+//   App 3 eastbound   (+X): (-BOX, 0,  LANE)
+// Lane convention (consistent with placeVehicle):
+//   Southbound / Northbound: x = ±LANE
+//   Westbound / Eastbound:   z = ±LANE
+
+const APP_ENTRY_XZ: [number, number][] = [
+  [ LANE, -BOX],   // 0 southbound
+  [ BOX,  -LANE],  // 1 westbound
+  [-LANE,  BOX],   // 2 northbound
+  [-BOX,   LANE],  // 3 eastbound
+];
+
+// Per-approach turn arc data: [cpX, cpZ, p2X, p2Z, farX, farZ]
+//   cp  = Bezier control point (corner anchor)
+//   p2  = Bezier end = box edge where vehicle enters the exit arm
+//   far = far end of exit arm (removal boundary)
+type ArcRow = [number, number, number, number, number, number];
+const ARC_DATA: Record<number, { left: ArcRow; right: ArcRow; throughFar: [number, number] }> = {
+  0: { // southbound: stop at (LANE, -BOX), traveling +Z
+    throughFar: [LANE,       BOX + ARM],
+    left:       [ BOX, -BOX,  BOX,  LANE,  BOX + ARM,     LANE],   // → east
+    right:      [-BOX, -BOX, -BOX, -LANE, -(BOX + ARM),  -LANE],   // → west
+  },
+  1: { // westbound: stop at (BOX, -LANE), traveling -X
+    throughFar: [-(BOX + ARM), -LANE],
+    left:       [ BOX,  BOX,  LANE,  BOX,   LANE,      BOX + ARM],  // → south
+    right:      [ BOX, -BOX, -LANE, -BOX,  -LANE,    -(BOX + ARM)], // → north
+  },
+  2: { // northbound: stop at (-LANE, BOX), traveling -Z
+    throughFar: [-LANE, -(BOX + ARM)],
+    left:       [-BOX,  BOX, -BOX, -LANE, -(BOX + ARM),  -LANE],   // → west
+    right:      [ BOX,  BOX,  BOX,  LANE,   BOX + ARM,    LANE],   // → east
+  },
+  3: { // eastbound: stop at (-BOX, LANE), traveling +X
+    throughFar: [BOX + ARM, LANE],
+    left:       [-BOX, -BOX, -LANE, -BOX,  -LANE,    -(BOX + ARM)], // → north
+    right:      [-BOX,  BOX,  LANE,  BOX,   LANE,      BOX + ARM],  // → south
+  },
+};
+
+const ARC_N = 12; // Bezier sample count per arc
+
+function buildPath3D(app: number, turn: 'through' | 'left' | 'right'): THREE.Vector3[] {
+  const data = ARC_DATA[app];
+  const [p0x, p0z] = APP_ENTRY_XZ[app];
+
+  if (turn === 'through') {
+    const [fx, fz] = data.throughFar;
+    return [new THREE.Vector3(fx, 0, fz)];
+  }
+
+  const [cpx, cpz, p2x, p2z, farx, farz] = turn === 'left' ? data.left : data.right;
+  const pts: THREE.Vector3[] = [];
+  for (let i = 1; i <= ARC_N; i++) {
+    const t = i / ARC_N, mt = 1 - t;
+    pts.push(new THREE.Vector3(
+      mt*mt*p0x + 2*mt*t*cpx + t*t*p2x,
+      0,
+      mt*mt*p0z + 2*mt*t*cpz + t*t*p2z,
+    ));
+  }
+  pts.push(new THREE.Vector3(farx, 0, farz));
+  return pts;
+}
+
 // ─── GLB model helpers ───────────────────────────────────────────────────────
 
 function cloneGLBWithColor(gltf: GLTF, hexColor: number): THREE.Group {
-  const obj = gltf.scene.clone(true) as THREE.Group;
+  // skeletonClone handles SkinnedMesh correctly; plain .clone(true) breaks skinned rigs
+  const obj = skeletonClone(gltf.scene) as THREE.Group;
   obj.traverse((child) => {
+    child.visible = true;
     const m = child as THREE.Mesh;
     if (!m.isMesh) return;
-    const mats = Array.isArray(m.material) ? m.material : [m.material];
-    m.material = mats.map((mat) => {
-      const clone = (mat as THREE.Material).clone();
-      if ('color' in clone) (clone as THREE.MeshStandardMaterial).color.setHex(hexColor);
-      return clone;
+    // Replace each material with a flat-colored MeshStandardMaterial.
+    // We cannot just set .color because the original texture (map) multiplies
+    // against it — a dark baked texture would make even a bright .color invisible.
+    const matCount = Array.isArray(m.material) ? m.material.length : 1;
+    const flat = new THREE.MeshStandardMaterial({
+      color: hexColor,
+      roughness: 0.65,
+      metalness: 0.20,
     });
+    m.material = matCount > 1 ? Array(matCount).fill(flat) : flat;
     m.castShadow = true;
   });
   return obj;
+}
+
+// ─── 3D HUD overlay ──────────────────────────────────────────────────────────
+
+function buildHudHTML(vehicles: Veh[], sim: SimulationChunk | null | undefined, showBefore: boolean): string {
+  const LABELS = ['SB', 'WB', 'NB', 'EB'];
+  const queues = LABELS.map((_, i) =>
+    vehicles.filter(v => v.app === i && v.waypoints.length === 0).length,
+  );
+
+  const card = 'background:rgba(0,0,0,0.72);border:1px solid rgba(255,255,255,0.07);border-radius:8px;padding:8px 12px;backdrop-filter:blur(6px)';
+  const label = 'font-size:9px;color:#475569;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:5px';
+
+  const qTiles = LABELS.map((l, i) =>
+    `<span style="display:inline-flex;flex-direction:column;align-items:center;gap:1px;min-width:34px">
+      <span style="font-size:15px;font-weight:700;color:#f1f5f9;line-height:1">${queues[i]}</span>
+      <span style="font-size:9px;color:#64748b">${l}</span>
+    </span>`,
+  ).join('');
+
+  let html = `<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-start">
+    <div style="${card}">
+      <div style="${label}">Live Queue</div>
+      <div style="display:flex;gap:8px">${qTiles}</div>
+    </div>`;
+
+  if (sim) {
+    const saved   = sim.delay_before - sim.delay_after;
+    const pctSave = sim.delay_before > 0 ? (saved / sim.delay_before) * 100 : 0;
+    const phpSave = Math.round(sim.vehicle_hours_saved * 65);
+
+    if (!showBefore) {
+      html += `<div style="${card}">
+        <div style="${label}">Webster vs Current</div>
+        <div style="display:flex;gap:6px;align-items:baseline;flex-wrap:wrap">
+          <span style="font-size:9px;color:#64748b">Before</span>
+          <span style="font-size:14px;font-weight:600;color:#94a3b8">${sim.delay_before.toFixed(1)}s</span>
+          <span style="font-size:10px;color:#475569">→</span>
+          <span style="font-size:9px;color:#64748b">After</span>
+          <span style="font-size:14px;font-weight:600;color:#10b981">${sim.delay_after.toFixed(1)}s</span>
+          <span style="font-size:11px;font-weight:600;color:#34d399">−${saved.toFixed(1)}s (${pctSave.toFixed(0)}%)</span>
+        </div>
+        <div style="margin-top:4px;font-size:11px;color:#34d399">₱${phpSave.toLocaleString()} saved/hr · ${sim.vehicle_hours_saved.toFixed(1)} veh-hr</div>
+      </div>`;
+    } else {
+      html += `<div style="${card}">
+        <div style="${label}">Current Timing</div>
+        <div style="font-size:14px;font-weight:600;color:#94a3b8">${sim.delay_before.toFixed(1)} s/veh · LOS ${sim.los_before}</div>
+        <div style="margin-top:2px;font-size:10px;color:#64748b">Webster would save ${saved.toFixed(1)}s/veh (${pctSave.toFixed(0)}%)</div>
+      </div>`;
+    }
+  }
+
+  html += '</div>';
+  return html;
 }
 
 // ─── React component ──────────────────────────────────────────────────────────
@@ -612,20 +799,26 @@ export interface IntersectionScene3DProps {
   paused?: boolean;
   speed?: number;
   height?: number;
+  sim?: SimulationChunk | null;
 }
 
 export function IntersectionScene3D({
   timing, streets, signalOff, volumePcuHr, typeMix,
   showBefore = false, signalStatus, existingCycleS, existingGreenSplits,
-  paused = false, speed = 1, height = 480,
+  paused = false, speed = 1, height = 480, sim,
 }: IntersectionScene3DProps) {
-  const mountRef = useRef<HTMLDivElement>(null);
+  const mountRef   = useRef<HTMLDivElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
 
-  // Refs let us change pause/speed without tearing down the whole WebGL scene
-  const pausedRef = useRef(false);
-  const speedRef  = useRef(1);
-  useEffect(() => { pausedRef.current = paused; }, [paused]);
-  useEffect(() => { speedRef.current  = speed;  }, [speed]);
+  // Refs let us change pause/speed/volume/typeMix without tearing down the whole WebGL scene
+  const pausedRef  = useRef(false);
+  const speedRef   = useRef(1);
+  const volumeRef  = useRef(volumePcuHr);
+  const typeMixRef = useRef(typeMix);
+  useEffect(() => { pausedRef.current  = paused;     }, [paused]);
+  useEffect(() => { speedRef.current   = speed;      }, [speed]);
+  useEffect(() => { volumeRef.current  = volumePcuHr; }, [volumePcuHr]);
+  useEffect(() => { typeMixRef.current = typeMix;    }, [typeMix]);
 
   useEffect(() => {
     const el = mountRef.current;
@@ -661,7 +854,7 @@ export function IntersectionScene3D({
 
     function tryStart() {
       loadedCount++;
-      if (loadedCount >= TOTAL && !disposed) cleanupFn = run(el, gltfs);
+      if (loadedCount >= TOTAL && !disposed) cleanupFn = run(el!, gltfs);
     }
 
     for (const [key, url] of Object.entries(MODEL_URLS) as [MKey, string][]) {
@@ -731,32 +924,77 @@ export function IntersectionScene3D({
       window.addEventListener('mousemove', onMouseMove);
       renderer.domElement.addEventListener('wheel', onWheel, { passive: false });
 
-      // Scene
+      // Touch orbit + pinch zoom
+      let touchX = 0, touchY = 0, lastPinch = 0;
+      const onTouchStart = (e: TouchEvent) => {
+        lastPinch = 0;
+        if (e.touches.length === 1) { touchX = e.touches[0].clientX; touchY = e.touches[0].clientY; }
+      };
+      const onTouchMove = (e: TouchEvent) => {
+        e.preventDefault();
+        if (e.touches.length === 2) {
+          const dx = e.touches[0].clientX - e.touches[1].clientX;
+          const dy = e.touches[0].clientY - e.touches[1].clientY;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (lastPinch > 0) { radius = Math.max(50, Math.min(220, radius - (dist - lastPinch) * 0.4)); updateCamera(); }
+          lastPinch = dist;
+          return;
+        }
+        lastPinch = 0;
+        if (e.touches.length !== 1) return;
+        const cx = e.touches[0].clientX, cy = e.touches[0].clientY;
+        theta -= (cx - touchX) * 0.008;
+        phi    = Math.max(0.15, Math.min(Math.PI / 2 - 0.05, phi - (cy - touchY) * 0.006));
+        touchX = cx; touchY = cy;
+        updateCamera();
+      };
+      renderer.domElement.addEventListener('touchstart', onTouchStart, { passive: true });
+      renderer.domElement.addEventListener('touchmove',  onTouchMove,  { passive: false });
+
+      // Scene — time-of-day ambient based on chunk name
+      const chunkN = timing.chunk_name ?? '';
+      const isNightChunk = /night|midnight|pre.?dawn/i.test(chunkN);
+      const isDuskDawn   = /dusk|dawn|evening|early.?morning/i.test(chunkN);
+
+      const fogColor    = isNightChunk ? 0x03060f : isDuskDawn ? 0x1a0a18 : 0x0a0f1a;
+      const ambColor    = isNightChunk ? 0x0a0e1a : isDuskDawn ? 0x2a1a2e : 0x1e2d45;
+      const ambInt      = isNightChunk ? 0.6      : isDuskDawn ? 1.4      : 2.2;
+      const sunColor    = isNightChunk ? 0x0d1b2a : isDuskDawn ? 0xff6030 : 0xfdf4dc;
+      const sunInt      = isNightChunk ? 0.2      : isDuskDawn ? 1.2      : 2.5;
+      const sunPos: [number, number, number] = isNightChunk
+        ? [-20, 5, 10]   // moon-like low backlight
+        : isDuskDawn
+          ? [80, 15, -20] // low angle sun at horizon
+          : [40, 80, 30]; // midday high sun
+
       const scene = new THREE.Scene();
-      scene.fog = new THREE.FogExp2(0x0a0f1a, 0.006);
-      scene.add(new THREE.AmbientLight(0x1e2d45, 2.2));
-      const sun = new THREE.DirectionalLight(0xfdf4dc, 2.5);
-      sun.position.set(40, 80, 30);
+      scene.fog = new THREE.FogExp2(fogColor, 0.006);
+      scene.add(new THREE.AmbientLight(ambColor, ambInt));
+      const sun = new THREE.DirectionalLight(sunColor, sunInt);
+      sun.position.set(...sunPos);
       sun.castShadow = true;
       sun.shadow.mapSize.setScalar(2048);
       sun.shadow.camera.near = 1; sun.shadow.camera.far = 300;
       const sc = 90; Object.assign(sun.shadow.camera, { left: -sc, right: sc, top: sc, bottom: -sc });
       scene.add(sun);
-      scene.add(new THREE.DirectionalLight(0x3b6ca8, 0.6).position.set(-30, 20, -40));
+      // Fill light — blue-tinted sky bounce
+      const fillLight = new THREE.DirectionalLight(0x3b6ca8, isNightChunk ? 0.1 : 0.6);
+      fillLight.position.set(-30, 20, -40);
+      scene.add(fillLight);
 
       buildRoadScene(scene);
 
-      // Traffic lights — one per corner, arm points toward intersection centre.
-      // arm direction (local -X) → world (-cos ry, 0, sin ry); correct ry per corner:
-      //   NE (+x, -z): arm → SW (-1/√2, 0, +1/√2)  → ry = π/4
-      //   SE (+x, +z): arm → NW (-1/√2, 0, -1/√2)  → ry = -π/4
-      //   SW (-x, +z): arm → NE (+1/√2, 0, -1/√2)  → ry = -3π/4
-      //   NW (-x, -z): arm → SE (+1/√2, 0, +1/√2)  → ry = 3π/4
+      // Traffic lights — curb-mounted on the driver's right, arm extends over the approaching lane.
+      // Lenses face toward approaching vehicles; back-face lenses (same material) face away — both visible.
+      //   rotY = 0:      arm → -X (west),  lenses → +Z (south) — for SB traffic
+      //   rotY = π/2:    arm → +Z (south), lenses → +X (east)  — for WB traffic
+      //   rotY = π:      arm → +X (east),  lenses → -Z (north) — for NB traffic
+      //   rotY = -π/2:   arm → -Z (north), lenses → -X (west)  — for EB traffic
       const tlConfigs = [
-        { x:  BOX + 2.0, z: -(BOX + 2.0), rotY:  Math.PI / 4 },          // NE — SB
-        { x:  BOX + 2.0, z:  BOX + 2.0,   rotY: -Math.PI / 4 },          // SE — WB
-        { x: -(BOX + 2.0), z:  BOX + 2.0, rotY: -3 * Math.PI / 4 },      // SW — NB
-        { x: -(BOX + 2.0), z: -(BOX + 2.0), rotY: 3 * Math.PI / 4 },     // NW — EB
+        { x:  ROAD_W / 2 + 0.8, z: -(BOX + 1.5),   rotY: 0             },  // SB — east curb of N arm
+        { x:  BOX + 1.5,        z: -(ROAD_W / 2 + 0.8), rotY: Math.PI / 2 }, // WB — north curb of E arm
+        { x: -(ROAD_W / 2 + 0.8), z: BOX + 1.5,    rotY: Math.PI       },  // NB — west curb of S arm
+        { x: -(BOX + 1.5),      z:  ROAD_W / 2 + 0.8, rotY: -Math.PI / 2 }, // EB — south curb of W arm
       ];
       const tls: TLRefs[] = tlConfigs.map(cfg => {
         const tl = makeTrafficLight();
@@ -785,21 +1023,24 @@ export function IntersectionScene3D({
         }
       }
       const effectiveCycle = (showBefore ? existingCycleS : null) ?? timing.cycle_length ?? 90;
-      const rawG0 = approachGreen[0] ?? approachGreen[2] ?? effectiveCycle * 0.55;
-      const rawG1 = approachGreen[1] ?? approachGreen[3] ?? effectiveCycle * 0.45;
-      const g0 = Math.max(isFinite(rawG0) ? rawG0 : 45, 5);
-      const g1 = Math.max(isFinite(rawG1) ? rawG1 : 35, 5);
+      const fallbackG = Math.max((effectiveCycle - 4 * ALL_RED) / 4, 5);
+      const gTimes: GreenTimes = [0, 1, 2, 3].map(ai => {
+        const raw = approachGreen[ai];
+        return Math.max(raw != null && isFinite(raw) ? raw : fallbackG, 5);
+      }) as GreenTimes;
 
       // Vehicle pool
       const vehicles: Veh[] = [];
       let nextVehId = 0;
       const nextSpawn: number[] = [0, 0, 0, 0].map(() => 0);
-      const perApproachVolume = Math.max(volumePcuHr / 4, 150);
 
-      const avgMix: TypeFractions = { ...DEFAULT_MIX };
-      const mixVals = Object.values(typeMix);
-      if (mixVals.length > 0) {
-        for (const t of VEH_TYPES) avgMix[t] = mixVals.reduce((s, m) => s + (m[t] ?? 0), 0) / mixVals.length;
+      function getAvgMix(): TypeFractions {
+        const mix: TypeFractions = { ...DEFAULT_MIX };
+        const vals = Object.values(typeMixRef.current);
+        if (vals.length > 0) {
+          for (const t of VEH_TYPES) mix[t] = vals.reduce((s, m) => s + (m[t] ?? 0), 0) / vals.length;
+        }
+        return mix;
       }
 
       // Pedestrian pool
@@ -807,8 +1048,8 @@ export function IntersectionScene3D({
       let nextPedId = 0;
       // Track whether each crosswalk was walkable last tick (to detect phase transitions)
       const cwWalkablePrev: boolean[] = [false, false, false, false];
-      // Stagger spawn offsets per crosswalk
-      const pedSpawnCooldown: number[] = [0, 0, 0, 0];
+      // Per-crosswalk queue of remaining delay times for staged ped spawns
+      const pedSpawnQueue: number[][] = [[], [], [], []];
 
       // Pedestrian model pool — pick randomly from available man GLBs
       const pedGLTFs = (['man', 'man2', 'manSleeves', 'manSuit'] as const)
@@ -844,43 +1085,48 @@ export function IntersectionScene3D({
         sportsCar: 4.2, sportsCar2: 4.2, policeCar: 4.8,
         truck: 8.5, scooter: 1.8, tricycle: 2.2,
       };
-      type GLBEntry = { gltf: GLTF; scale: number; rotOffset: number };
+      type GLBEntry = { gltf: GLTF; scale: number; rotOffset: number; yOffset: number };
       function makeEntry(key: string): GLBEntry | null {
         const gltf = gltfs[key as keyof typeof gltfs];
         if (!gltf) return null;
         const target = GLB_TARGET_LEN[key];
-        if (!target) return { gltf, scale: 1, rotOffset: 0 };
+        if (!target) return { gltf, scale: 1, rotOffset: 0, yOffset: 0 };
         const box  = new THREE.Box3().setFromObject(gltf.scene);
         const size = box.getSize(new THREE.Vector3());
         const facingZ = size.z > size.x;           // model is elongated along Z → faces +Z
         const major   = Math.max(size.x, size.z);
         const scale   = major > 0.01 ? target / major : 1;
         const rotOffset = facingZ ? Math.PI / 2 : 0;
-        return { gltf, scale, rotOffset };
+        // Lift model so its lowest point sits exactly on the road surface (Y=0)
+        const yOffset = box.isEmpty() ? 0 : -box.min.y * scale;
+        return { gltf, scale, rotOffset, yOffset };
       }
       function buildPool(keys: readonly string[]): GLBEntry[] {
         return keys.map(makeEntry).filter((e): e is GLBEntry => e !== null);
       }
 
       const CAR_POOL   = buildPool(['car', 'car2', 'suv', 'taxi', 'sportsCar', 'sportsCar2', 'policeCar']);
-      const MC_POOL    = buildPool(['scooter', 'tricycle']);
+      const MC_POOL    = buildPool(['scooter']);   // scooter only — tricycle.glb has 210 meshes/draw call
       const TRUCK_POOL = buildPool(['truck']);
 
       function pickEntry(pool: GLBEntry[]): GLBEntry { return pool[Math.floor(Math.random() * pool.length)]; }
 
       function spawnVehicle(app: number) {
-        const type = sampleType(avgMix);
+        const type = sampleType(getAvgMix());
 
         let obj: THREE.Group;
+        let vehRotOffset = 0;
+        let vehYOffset   = 0;
         let pool: GLBEntry[] | null = null;
         if      (type === 'CAR'   && CAR_POOL.length)   pool = CAR_POOL;
         else if (type === 'MC'    && MC_POOL.length)     pool = MC_POOL;
         else if (type === 'TRUCK' && TRUCK_POOL.length)  pool = TRUCK_POOL;
 
         if (pool) {
-          const { gltf: src, scale, rotOffset } = pickEntry(pool);
-          const isTricycle = src === gltfs['tricycle'];
-          obj = cloneGLBWithColor(src, isTricycle ? TRICYCLE_GREEN : pickColor(type));
+          const { gltf: src, scale, rotOffset, yOffset } = pickEntry(pool);
+          vehRotOffset = rotOffset;
+          vehYOffset   = yOffset;
+          obj = cloneGLBWithColor(src, pickColor(type));
           obj.scale.setScalar(scale);
           obj.rotation.y = APP_ROT[app] + rotOffset;
         } else {
@@ -895,99 +1141,197 @@ export function IntersectionScene3D({
           .reduce((mx, v) => Math.max(mx, v.dist + VPARAMS[v.type].len / 2), 0);
         const p    = VPARAMS[type];
         const dist = Math.max(tail + p.gap + p.len / 2, ARM - p.len / 2);
-        vehicles.push({ id: nextVehId++, type, app, dist, speed: 0, obj });
+        const veh: Veh = { id: nextVehId++, type, app, dist, speed: 0, obj, turn: null, waypoints: [], wpIdx: 0, rotOffset: vehRotOffset, yOffset: vehYOffset };
+        vehicles.push(veh);
+        placeVehicle(veh);  // position immediately so vehicles appear on first render
       }
 
-      // Pre-populate: fill each approach arm with vehicles so the scene isn't empty on load
+      // Pre-populate: 6 per arm (24 total) — keeps draw calls reasonable at startup
       for (let app = 0; app < 4; app++) {
-        for (let i = 0; i < 10; i++) spawnVehicle(app);
+        for (let i = 0; i < 6; i++) spawnVehicle(app);
       }
 
-      let simTime = 0, blinkOn = true, lastT = performance.now();
+      let simTime = 0, blinkOn = true, lastT = performance.now(), lastHudSec = -1;
 
-      // pausedRef and speedRef are stable ref objects from the component scope.
+      // pausedRef, speedRef, volumeRef are stable refs from the component scope.
       // Reading .current inside animate always gets the latest value without a remount.
 
       function update(dt: number) {
         simTime += dt;
         blinkOn  = Math.floor(simTime) % 2 === 0;
+        const perApproachVolume = Math.max(volumeRef.current / 4, 1);
 
         // Update traffic lights
         for (let ai = 0; ai < 4; ai++) {
-          const phase = approachPhase(ai, simTime, g0, g1, effectiveSignalOff, blinkOn);
-          setTLPhase(tls[ai], phase, effectiveSignalOff && !blinkOn);
+          const phase = approachPhase(ai, simTime, gTimes, effectiveSignalOff, blinkOn);
+          const rem   = approachRemaining(ai, simTime, gTimes);
+          setTLPhase(tls[ai], phase, effectiveSignalOff && !blinkOn, rem);
         }
 
         // Vehicle spawning
         for (let app = 0; app < 4; app++) {
           nextSpawn[app] -= dt;
           if (nextSpawn[app] <= 0) {
-            if (vehicles.filter(v => v.app === app).length < 18) spawnVehicle(app);
+            if (vehicles.filter(v => v.app === app).length < 25) spawnVehicle(app);
             const rate = perApproachVolume / 3600;
             nextSpawn[app] = -Math.log(Math.random() + 0.001) / rate;
           }
         }
 
-        // Vehicle physics
+        // Vehicle physics — IDM queuing + Bezier arc intersection traversal
         for (let i = vehicles.length - 1; i >= 0; i--) {
           const v = vehicles[i];
           const p = VPARAMS[v.type];
-          const phase = approachPhase(v.app, simTime, g0, g1, effectiveSignalOff, blinkOn);
-          // Signal-off: alternate NS/EW priority every 10 sim-s to prevent all four approaches
-          // entering the box at the same time. Vehicles already past the stop line always clear.
-          const gapAxis = Math.floor(simTime / 10) % 2; // 0 = N-S, 1 = E-W
-          const canGo = phase === 'green'
-            || (effectiveSignalOff && (v.dist < 0 || v.app % 2 === gapAxis));
 
-          let gapAhead = Infinity;
-          for (const other of vehicles) {
-            if (other === v || other.app !== v.app) continue;
-            const gap = (other.dist - VPARAMS[other.type].len / 2) - (v.dist + p.len / 2);
-            if (gap > -0.5 && gap < gapAhead) gapAhead = gap;
-          }
+          // ── Waypoint traversal (vehicle is clearing the intersection or exiting) ──
+          if (v.waypoints.length > 0) {
+            // IDM free-flow acceleration (no leader in exit arm)
+            const freeAcc = p.accel * (1 - Math.pow(Math.max(v.speed, 0) / p.spd, 4));
+            v.speed = Math.max(0, v.speed + freeAcc * dt);
 
-          let target = 0;
-          if (v.dist > 0) {
-            if (canGo && gapAhead > p.gap) target = p.spd;
-          } else {
-            target = p.spd * 0.8;
-          }
-          if (gapAhead < p.gap + 0.5) target = Math.min(target, Math.max(0, (gapAhead - p.gap) * 3));
+            // Advance along arc waypoints
+            let rem = v.speed * dt;
+            while (rem > 1e-9 && v.wpIdx < v.waypoints.length) {
+              const wp = v.waypoints[v.wpIdx];
+              const dx = wp.x - v.obj.position.x;
+              const dz = wp.z - v.obj.position.z;
+              const d  = Math.sqrt(dx * dx + dz * dz);
+              if (d < 1e-6) { v.wpIdx++; continue; }
+              if (rem >= d) {
+                v.obj.position.set(wp.x, v.yOffset, wp.z);
+                v.wpIdx++;
+                rem -= d;
+              } else {
+                v.obj.position.x += (dx / d) * rem;
+                v.obj.position.z += (dz / d) * rem;
+                rem = 0;
+              }
+            }
 
-          if (v.speed < target) v.speed = Math.min(target, v.speed + p.dec * 0.4 * dt);
-          else                   v.speed = Math.max(target, v.speed - p.dec * dt);
-          v.speed = Math.max(0, v.speed);
-          v.dist -= v.speed * dt;
+            // Rotate vehicle to face its next waypoint.
+            // rotOffset corrects for GLB models that are elongated along Z instead of X.
+            if (v.wpIdx < v.waypoints.length) {
+              const wp = v.waypoints[v.wpIdx];
+              const dx = wp.x - v.obj.position.x;
+              const dz = wp.z - v.obj.position.z;
+              if (Math.abs(dx) > 1e-4 || Math.abs(dz) > 1e-4) {
+                v.obj.rotation.y = -Math.atan2(dz, dx) + v.rotOffset;
+              }
+            }
 
-          if (v.dist < -(ARM + p.len)) {
-            scene.remove(v.obj);
-            v.obj.traverse(c => { if ((c as THREE.Mesh).isMesh) (c as THREE.Mesh).geometry.dispose(); });
-            vehicles.splice(i, 1);
+            if (v.wpIdx >= v.waypoints.length) {
+              scene.remove(v.obj);
+              v.obj.traverse(c => {
+                const m = c as THREE.Mesh;
+                if (!m.isMesh) return;
+                m.geometry.dispose();
+                const mats = Array.isArray(m.material) ? m.material : [m.material];
+                mats.forEach(mat => (mat as THREE.Material).dispose());
+              });
+              vehicles.splice(i, 1);
+            }
             continue;
           }
+
+          // ── Queuing vehicle (approaching or stopped at stop line) ──
+          const phase   = approachPhase(v.app, simTime, gTimes, effectiveSignalOff, blinkOn);
+          const gapAxis = Math.floor(simTime / 10) % 2;
+          const canGo   = phase === 'green'
+            || (effectiveSignalOff && v.app % 2 === gapAxis);
+
+          // Find nearest queuing leader on same approach (bumper-to-bumper)
+          let sGap = Infinity, vLead = Infinity;
+          let leader3D: Veh | null = null;
+          for (const other of vehicles) {
+            if (other === v || other.app !== v.app || other.waypoints.length > 0) continue;
+            // bumper-to-bumper gap: follower front (v.dist) minus leader rear (other.dist + other.len)
+            const gap = v.dist - (other.dist + VPARAMS[other.type].len);
+            if (gap >= -p.gap && gap < sGap) { sGap = gap; vLead = other.speed; leader3D = other; }
+          }
+
+          // Stop-line as virtual wall when not permitted
+          if (!canGo) {
+            const toStop = v.dist;
+            if (toStop < sGap) { sGap = Math.max(toStop, 0.01); vLead = 0; }
+          }
+
+          // IDM acceleration
+          const dv    = v.speed - (isFinite(vLead) ? vLead : 0);
+          const sStar = p.gap + Math.max(0, v.speed * 1.2 + v.speed * dv / (2 * Math.sqrt(p.accel * p.dec)));
+          const acc   = p.accel * (1 - Math.pow(Math.max(v.speed, 0) / p.spd, 4) - Math.pow(sStar / Math.max(sGap, 0.01), 2));
+          v.speed = Math.max(0, v.speed + acc * dt);
+
+          const rawNext3D = v.dist - v.speed * dt;
+
+          // Hard no-overlap constraint: pin to leader's rear / stop line, match speed
+          if (leader3D) {
+            const leaderRear = leader3D.dist + VPARAMS[leader3D.type].len;
+            if (rawNext3D < leaderRear) {
+              v.dist  = leaderRear;
+              v.speed = Math.min(v.speed, leader3D.speed);
+            } else {
+              v.dist = rawNext3D;
+            }
+          } else {
+            v.dist = rawNext3D;
+          }
+
+          // Hard stop at stop line when not permitted
+          if (!canGo && v.dist < 0) { v.dist = 0; v.speed = 0; }
+
+          // Initiate intersection traversal when vehicle clears stop line
+          if (canGo && v.dist < 0 && v.turn === null) {
+            const [epx, epz] = APP_ENTRY_XZ[v.app];
+            // Entry gate: don't enter if another same-approach vehicle is still near the box entry
+            const entryBlocked = vehicles.some(other =>
+              other !== v && other.app === v.app && other.waypoints.length > 0 && other.wpIdx < 4 &&
+              Math.hypot(other.obj.position.x - epx, other.obj.position.z - epz) < p.len + p.gap,
+            );
+            if (entryBlocked) { v.dist = 0; v.speed = 0; placeVehicle(v); continue; }
+
+            // Box-clear check: hold if any vehicle from a different approach is still inside the
+            // intersection box. With 4 independent phases, any cross-traffic could be in transit.
+            const boxFull = vehicles.some(other =>
+              other !== v &&
+              other.app !== v.app &&
+              other.waypoints.length > 0 &&
+              Math.abs(other.obj.position.x) < BOX + 2 &&
+              Math.abs(other.obj.position.z) < BOX + 2,
+            );
+            if (boxFull) { v.dist = 0; v.speed = 0; placeVehicle(v); continue; }
+
+            const r = Math.random();
+            v.turn = r < 0.70 ? 'through' : r < 0.85 ? 'left' : 'right';
+            v.waypoints = buildPath3D(v.app, v.turn);
+            v.wpIdx = 0;
+            v.obj.position.set(epx, v.yOffset, epz);
+            continue;
+          }
+
           placeVehicle(v);
         }
 
         // Pedestrian crossings
         if (pedGLTFs.length > 0) {
           for (let cwId = 0; cwId < 4; cwId++) {
-            const canWalk = pedCanWalk(cwId, simTime, g0, g1, effectiveSignalOff);
+            const canWalk = pedCanWalk(cwId, simTime, gTimes, effectiveSignalOff);
             const wasWalkable = cwWalkablePrev[cwId];
 
-            // Spawn 1–2 peds at the start of each WALK phase
+            // Queue 1–2 staggered ped spawns at the start of each WALK phase
             if (canWalk && !wasWalkable) {
-              const count = peds.filter(p => p.cwId === cwId).length;
+              const count = peds.filter(p => p.cwId === cwId).length + pedSpawnQueue[cwId].length;
               const toSpawn = Math.floor(Math.random() * 2) + 1;
               for (let k = 0; k < toSpawn && count + k < 3; k++) {
-                pedSpawnCooldown[cwId] = k * 0.8; // slight stagger
+                pedSpawnQueue[cwId].push(k * 0.8);
               }
             }
 
-            if (canWalk && pedSpawnCooldown[cwId] > 0) {
-              pedSpawnCooldown[cwId] -= dt;
-              if (pedSpawnCooldown[cwId] <= 0) {
-                const count = peds.filter(p => p.cwId === cwId).length;
-                if (count < 3) spawnPed(cwId);
+            // Drain the spawn queue — each entry is a countdown; fire when it hits zero
+            for (let qi = pedSpawnQueue[cwId].length - 1; qi >= 0; qi--) {
+              pedSpawnQueue[cwId][qi] -= dt;
+              if (pedSpawnQueue[cwId][qi] <= 0) {
+                if (peds.filter(p => p.cwId === cwId).length < 3) spawnPed(cwId);
+                pedSpawnQueue[cwId].splice(qi, 1);
               }
             }
 
@@ -997,7 +1341,7 @@ export function IntersectionScene3D({
           // Move and update pedestrians
           for (let i = peds.length - 1; i >= 0; i--) {
             const p = peds[i];
-            const canWalk = pedCanWalk(p.cwId, simTime, g0, g1, effectiveSignalOff);
+            const canWalk = pedCanWalk(p.cwId, simTime, gTimes, effectiveSignalOff);
 
             if (canWalk) {
               p.progress += (PED_SPEED / ROAD_W) * dt;
@@ -1016,14 +1360,27 @@ export function IntersectionScene3D({
             }
           }
         }
+
+        // HUD overlay — update once per simulated second
+        const curSec = Math.floor(simTime);
+        if (curSec !== lastHudSec) {
+          lastHudSec = curSec;
+          const hudEl = overlayRef.current;
+          if (hudEl) hudEl.innerHTML = buildHudHTML(vehicles, sim, showBefore);
+        }
       }
 
+      const MAX_PHYS_DT = 0.05; // physics sub-step cap (seconds) — prevents penetration at speed
       let rafId = 0;
       function animate(now: number) {
         rafId = requestAnimationFrame(animate);
         const rawDt = Math.min((now - lastT) / 1000, 0.1);
         lastT = now;
-        if (!pausedRef.current) update(rawDt * speedRef.current);
+        if (!pausedRef.current) {
+          // Match 2D canvas: speed=1 → 60 sim-seconds per real-second (sps=60 × speed)
+          let rem = Math.min(rawDt * speedRef.current * 60, 1.0);
+          while (rem > 0) { const step = Math.min(rem, MAX_PHYS_DT); update(step); rem -= step; }
+        }
         renderer.render(scene, camera);
       }
       rafId = requestAnimationFrame(animate);
@@ -1035,6 +1392,16 @@ export function IntersectionScene3D({
         window.removeEventListener('mouseup', onMouseUp);
         window.removeEventListener('mousemove', onMouseMove);
         renderer.domElement.removeEventListener('wheel', onWheel);
+        renderer.domElement.removeEventListener('touchstart', onTouchStart);
+        renderer.domElement.removeEventListener('touchmove', onTouchMove);
+        scene.traverse(obj => {
+          const m = obj as THREE.Mesh;
+          if (m.isMesh) {
+            m.geometry.dispose();
+            const mats = Array.isArray(m.material) ? m.material : [m.material];
+            mats.forEach(mat => (mat as THREE.Material).dispose());
+          }
+        });
         renderer.dispose();
         if (renderer.domElement.parentNode === container) container.removeChild(renderer.domElement);
       };
@@ -1043,9 +1410,15 @@ export function IntersectionScene3D({
   }, [timing.id, signalOff, showBefore]);
 
   return (
-    <div
-      ref={mountRef}
-      style={{ width: '100%', height, borderRadius: 8, cursor: 'grab', background: '#0a0f1a' }}
-    />
+    <div style={{ position: 'relative', width: '100%', height }}>
+      <div
+        ref={mountRef}
+        style={{ width: '100%', height: '100%', borderRadius: 8, cursor: 'grab', background: '#0a0f1a' }}
+      />
+      <div
+        ref={overlayRef}
+        style={{ position: 'absolute', top: 10, left: 10, pointerEvents: 'none', zIndex: 1 }}
+      />
+    </div>
   );
 }

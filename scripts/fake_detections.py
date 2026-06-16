@@ -290,7 +290,12 @@ def seed_base_data(db) -> list[tuple]:
               f"({intersection.latitude}, {intersection.longitude})")
 
         for s in spec["streets"]:
-            street = Street(intersection_id=intersection.id, name=s["name"])
+            # arm_direction goes on the Street (used by Webster's phase grouping)
+            street = Street(
+                intersection_id=intersection.id,
+                name=s["name"],
+                arm_direction=s.get("direction", "unknown"),
+            )
             db.add(street)
             db.flush()
 
@@ -303,8 +308,9 @@ def seed_base_data(db) -> list[tuple]:
             db.add(cctv)
             db.flush()
 
-            region = Region(cctv_id=cctv.id, street_id=street.id,
-                            direction=s.get("direction", "unknown"))
+            # region.direction = 'inbound': camera counts vehicles approaching the
+            # intersection (used by pcu_flow_per_street to filter the right side)
+            region = Region(cctv_id=cctv.id, street_id=street.id, direction="inbound")
             db.add(region)
             db.flush()
 
@@ -349,6 +355,15 @@ def fill_all(db, days: int, weights: dict):
     print(f"  Range: {start.strftime('%Y-%m-%d %H:%M')} → {now.strftime('%Y-%m-%d %H:%M')} UTC")
     print()
 
+    # Single query to find all (cctv_id, hour_bucket) pairs that already have data.
+    existing_rows = db.execute(text("""
+        SELECT DISTINCT cctv_id,
+               DATE_TRUNC('hour', time) AS hr
+        FROM detections
+        WHERE time >= :start AND time < :now
+    """), {"start": start, "now": now}).fetchall()
+    existing_hours: set[tuple] = {(r.cctv_id, r.hr.replace(tzinfo=timezone.utc)) for r in existing_rows}
+
     for pair_idx, (cctv_id, region_id) in enumerate(pairs):
         hour_cursor = start
         pair_inserted = 0
@@ -356,12 +371,7 @@ def fill_all(db, days: int, weights: dict):
         while hour_cursor < now:
             hour_end = hour_cursor + timedelta(hours=1)
 
-            # Skip this hour if detections already exist for this camera
-            existing = db.execute(
-                text("SELECT 1 FROM detections WHERE cctv_id = :cid AND time >= :start AND time < :end LIMIT 1"),
-                {"cid": cctv_id, "start": hour_cursor, "end": hour_end},
-            ).first()
-            if existing:
+            if (cctv_id, hour_cursor) in existing_hours:
                 hour_cursor = hour_end
                 continue
 
@@ -453,37 +463,36 @@ def insert_detections(db, cctv_id, region_id, count, hours, weights):
 # Scenario seeding (warranted + borderline demo intersections)
 # ---------------------------------------------------------------------------
 
-# Feature targets determined by probing the warrant MLP directly:
-#   Warranted:  major≈650, minor≈280, peds≈49, vpm≈11, phf≈1.0 → rec=1.000
-#   Borderline: major≈500, minor≈165, peds≈35, vpm≈9,  phf≈1.0 → rec=0.491, w1=0.320
-#
-# Detections are inserted without jitter so the aggregate for the last complete
-# hour is deterministic.  Run the analysis from the UI after ~60 s for the
-# TimescaleDB continuous aggregate to refresh.
-
 SCENARIO_INTERSECTIONS = [
     {
+        # Heavy 4-way arterial: NS is the dominant axis.
+        # Equal-split 4-phase existing timing gives all approaches the same green;
+        # Webster redistributes proportionally → NB/SB get ~2× more green than EW.
+        # Peaks are calibrated so 4-phase Y ≈ 0.60, producing a ~120s Webster cycle.
         "name": "Visayan Avenue Junction",
         "latitude":  7.4521,
         "longitude": 125.8133,
         "expected": "warranted",
         "streets": [
-            {"name": "Northbound — Visayan Ave",  "cam": "Cam V1 — Visayan NB", "peak": 684, "direction": "northbound"},
-            {"name": "Southbound — Visayan Ave",  "cam": "Cam V2 — Visayan SB", "peak": 98,  "direction": "southbound"},
-            {"name": "Eastbound — Digos Road",    "cam": "Cam V3 — Digos EB",   "peak": 98,  "direction": "eastbound"},
-            {"name": "Westbound — Digos Road",    "cam": "Cam V4 — Digos WB",   "peak": 98,  "direction": "westbound"},
+            {"name": "Northbound — Visayan Ave",  "cam": "Cam V1 — Visayan NB", "peak": 320, "direction": "northbound"},
+            {"name": "Southbound — Visayan Ave",  "cam": "Cam V2 — Visayan SB", "peak": 270, "direction": "southbound"},
+            {"name": "Eastbound — Digos Road",    "cam": "Cam V3 — Digos EB",   "peak": 100, "direction": "eastbound"},
+            {"name": "Westbound — Digos Road",    "cam": "Cam V4 — Digos WB",   "peak":  85, "direction": "westbound"},
         ],
     },
     {
+        # Moderate 4-way collector: NS still dominant but EW carries meaningful load.
+        # Warrant is borderline — Webster still improves flow but the gain is smaller.
+        # Peaks calibrated so 4-phase Y ≈ 0.49, producing a ~100s Webster cycle.
         "name": "Caryving Road Junction",
         "latitude":  7.4498,
         "longitude": 125.8071,
         "expected": "borderline",
         "streets": [
-            {"name": "Northbound — Caryving Rd",  "cam": "Cam C1 — Caryving NB", "peak": 526, "direction": "northbound"},
-            {"name": "Southbound — Caryving Rd",  "cam": "Cam C2 — Caryving SB", "peak": 58,  "direction": "southbound"},
-            {"name": "Eastbound — Buhangin St",   "cam": "Cam C3 — Buhangin EB", "peak": 58,  "direction": "eastbound"},
-            {"name": "Westbound — Buhangin St",   "cam": "Cam C4 — Buhangin WB", "peak": 58,  "direction": "westbound"},
+            {"name": "Northbound — Caryving Rd",  "cam": "Cam C1 — Caryving NB", "peak": 250, "direction": "northbound"},
+            {"name": "Southbound — Caryving Rd",  "cam": "Cam C2 — Caryving SB", "peak": 210, "direction": "southbound"},
+            {"name": "Eastbound — Buhangin St",   "cam": "Cam C3 — Buhangin EB", "peak":  90, "direction": "eastbound"},
+            {"name": "Westbound — Buhangin St",   "cam": "Cam C4 — Buhangin WB", "peak":  75, "direction": "westbound"},
         ],
     },
 ]
@@ -520,18 +529,22 @@ def _insert_exact_hour(db, cctv_id: int, region_id: int, hour_start: "datetime",
 
 def seed_scenarios(db, weights: dict):
     """
-    Create (or reuse) two demo intersections and insert exact detection counts
-    for the last 3 complete hours so the warrant model reliably produces
-    'warranted' and 'borderline' classifications.
+    Create (or reuse) two demo intersections and fill a full 7-day detection
+    history using time-of-day patterns — so every TOD chunk (AM Peak, Midday,
+    PM Peak, etc.) has enough data for the 7-day rolling average used by
+    generate_simulation().
 
-    Safe to re-run — existing detections in those hours are deleted first.
+    Existing detections for these intersections are wiped first so re-runs
+    produce clean, deterministic results.
     """
     from sqlalchemy import text
 
+    FILL_DAYS = 7
     now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
-    hours_to_fill = [now - timedelta(hours=h) for h in range(1, 4)]  # last 3 complete hours
+    fill_start = now - timedelta(days=FILL_DAYS)
 
     print("Seeding scenario intersections …")
+    print(f"  Filling {FILL_DAYS} days: {fill_start.strftime('%Y-%m-%d')} → {now.strftime('%Y-%m-%d %H:%M')} UTC")
     print()
 
     for spec in SCENARIO_INTERSECTIONS:
@@ -551,14 +564,29 @@ def seed_scenarios(db, weights: dict):
             seed_tod_chunks(db, intersection.id)
             print(f"  [new]   '{spec['name']}' id={intersection.id}")
 
+        # Wipe all existing detections for this intersection so re-runs are clean
+        cctv_ids = [c.id for c in intersection.cctvs]
+        if cctv_ids:
+            db.execute(text(
+                "DELETE FROM detections WHERE cctv_id = ANY(:ids)"
+            ), {"ids": cctv_ids})
+            db.flush()
+
         for s in spec["streets"]:
             # Reuse or create street / CCTV / region
             street = db.query(Street).filter_by(
                 intersection_id=intersection.id, name=s["name"]
             ).first()
             if not street:
-                street = Street(intersection_id=intersection.id, name=s["name"])
+                street = Street(
+                    intersection_id=intersection.id,
+                    name=s["name"],
+                    arm_direction=s.get("direction", "unknown"),
+                )
                 db.add(street)
+                db.flush()
+            elif street.arm_direction == "unknown" and s.get("direction"):
+                street.arm_direction = s["direction"]
                 db.flush()
 
             cctv = db.query(CCTV).filter_by(
@@ -576,55 +604,81 @@ def seed_scenarios(db, weights: dict):
 
             region = db.query(Region).filter_by(cctv_id=cctv.id, street_id=street.id).first()
             if not region:
-                region = Region(cctv_id=cctv.id, street_id=street.id,
-                                direction=s.get("direction", "unknown"))
+                region = Region(cctv_id=cctv.id, street_id=street.id, direction="inbound")
                 db.add(region)
                 db.flush()
                 for x, y in [(0.1, 0.1), (0.9, 0.1), (0.9, 0.9), (0.1, 0.9)]:
                     db.add(RegionPoint(region_id=region.id, x=x, y=y))
                 db.flush()
-            elif region.direction == "unknown" and s.get("direction"):
-                region.direction = s["direction"]
+            elif region.direction != "inbound":
+                region.direction = "inbound"
                 db.flush()
 
-            # Delete any existing detections in the target hours, then re-insert exactly
-            for h_start in hours_to_fill:
-                h_end = h_start + timedelta(hours=1)
-                db.execute(text(
-                    "DELETE FROM detections WHERE cctv_id = :cid AND time >= :s AND time < :e"
-                ), {"cid": cctv.id, "s": h_start, "e": h_end})
-                db.flush()
-                _insert_exact_hour(db, cctv.id, region.id, h_start, s["peak"], weights)
+            # Fill 7 days × 24 hours with time-of-day patterns
+            total_inserted = 0
+            cursor = fill_start
+            while cursor < now:
+                hour_factor = HOUR_MULTIPLIERS[cursor.hour]
+                dow_factor  = WEEKEND_MULTIPLIER if cursor.weekday() >= 5 else WEEKDAY_MULTIPLIER
+                jitter      = random.uniform(0.90, 1.10)
+                count       = max(0, round(s["peak"] * hour_factor * dow_factor * jitter))
+                if count > 0:
+                    _insert_exact_hour(db, cctv.id, region.id, cursor, count, weights)
+                    total_inserted += count
+                cursor += timedelta(hours=1)
 
-            print(f"    {s['name']:<35} {s['peak']:>4} det/hr × {len(hours_to_fill)} hrs")
+            print(f"    {s['name']:<38} peak={s['peak']:>4} det/hr  "
+                  f"total={total_inserted:>7,} det over {FILL_DAYS}d")
 
-        # Warranted: model as fixed_time with equal splits so the dominant approach
-        # is severely undersatisfied before — Webster's then shows clear improvement.
-        if spec["expected"] == "warranted":
-            n_streets = len(spec["streets"])
-            existing_cycle = 90
-            lost_time_each = 7   # lost_time_per_phase(4) + all_red_clearance(3)
-            g_equal = round((existing_cycle - n_streets * lost_time_each) / n_streets, 1)
-            g_equal = max(g_equal, 10.0)
-            street_ids = [
-                db.query(Street).filter_by(
-                    intersection_id=intersection.id, name=s["name"]
-                ).first().id
-                for s in spec["streets"]
-            ]
-            intersection.signal_status = "fixed_time"
-            intersection.existing_cycle_length = existing_cycle
-            intersection.existing_green_splits = {str(sid): g_equal for sid in street_ids}
-            db.flush()
-            print(f"  → existing timing: fixed_time, C={existing_cycle}s, "
-                  f"equal splits={g_equal}s (will be oversaturated at dominant approach)")
+        # Set existing (pre-optimisation) signal timing.
+        # 4-phase equal-split: each direction gets the same green time so the
+        # dominant NS approach is under-served — Webster then redistributes
+        # green time proportionally to produce a clear before/after difference.
+        #
+        # 4 phases × (lost_time + all_red) = 4 × 7 = 28 s overhead
+        # g_per_phase = max((cycle - 28) / 4, ped_min_17s)
+        existing_cycle  = 100
+        lost_per_phase  = 4 + 3   # lost_time_per_phase + all_red_clearance
+        n_phases        = 4
+        g_phase = max(
+            round((existing_cycle - n_phases * lost_per_phase) / n_phases, 1),
+            17.0,  # DPWH pedestrian minimum (12 m crossing at 1.2 m/s + 7 s)
+        )
+
+        # Wipe stale timing recommendations so the page shows fresh results
+        db.execute(text(
+            "DELETE FROM timing_recommendations WHERE intersection_id = :iid"
+        ), {"iid": intersection.id})
+
+        # Collect street IDs
+        streets_in_db = {
+            s_spec["name"]: db.query(Street).filter_by(
+                intersection_id=intersection.id, name=s_spec["name"]
+            ).first()
+            for s_spec in spec["streets"]
+        }
+
+        splits: dict[str, float] = {}
+        for s_spec in spec["streets"]:
+            st = streets_in_db[s_spec["name"]]
+            if st:
+                splits[str(st.id)] = g_phase
+
+        intersection.signal_status         = "fixed_time"
+        intersection.existing_cycle_length = existing_cycle
+        intersection.existing_green_splits = splits
+        db.flush()
+
+        print(f"  → existing timing: fixed_time  C={existing_cycle}s  "
+              f"equal 4-phase splits={g_phase}s each  "
+              f"(NS under-served vs Webster optimum)")
 
         db.commit()
         print(f"  → expected classification: {spec['expected'].upper()}")
         print()
 
-    print("Done. Wait ~60 s for the TimescaleDB aggregate to refresh, then run")
-    print("'Generate all' on the Recommendations page to see results.")
+    print("Done. Wait ~60 s for the TimescaleDB continuous aggregate to refresh,")
+    print("then run 'Generate all' on the Recommendations page to see results.")
     print()
 
 
@@ -640,13 +694,15 @@ def list_data(db):
         print("No data found. Run --seed first.")
         return
 
+    counts_rows = db.execute(text(
+        "SELECT cctv_id, COUNT(*) AS cnt FROM detections GROUP BY cctv_id"
+    )).fetchall()
+    det_counts: dict[int, int] = {r.cctv_id: r.cnt for r in counts_rows}
+
     for i in intersections:
         print(f"\nIntersection id={i.id} '{i.name}' ({i.latitude}, {i.longitude})")
         for cctv in i.cctvs:
-            det_count = db.execute(
-                text("SELECT COUNT(*) FROM detections WHERE cctv_id = :id"),
-                {"id": cctv.id}
-            ).scalar()
+            det_count = det_counts.get(cctv.id, 0)
             print(f"  CCTV id={cctv.id} '{cctv.name}' status={cctv.status} "
                   f"detections={det_count:,}")
             for region in cctv.regions:
@@ -676,7 +732,7 @@ def main():
                         help="Bulk-fill all cameras/regions with realistic traffic data")
     parser.add_argument("--full",      action="store_true",
                         help="--seed then --fill (recommended for a clean DB)")
-    parser.add_argument("--scenarios", action="store_true",
+    parser.add_argument("--scenarios", "--scenario", action="store_true",
                         help="Seed 'Visayan Ave' (warranted) + 'Caryving Rd' (borderline) demo intersections")
     parser.add_argument("--list",      action="store_true",
                         help="List existing data and counts")

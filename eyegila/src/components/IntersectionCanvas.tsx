@@ -1,9 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { RotateCcw, Maximize2, Minimize2 } from 'lucide-react';
+import { RotateCcw, Maximize2, Minimize2, Play, Pause } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import type { SimulationChunk } from '@/services/simulation';
 import type { TimingChunk } from '@/services/timing';
+import type { Street } from '@/types';
+
+// Physical arm position → which direction of traffic queues there (right-hand traffic).
+// Approach 0 = North arm → SB vehicles; 1 = East arm → WB; 2 = South arm → NB; 3 = West arm → EB.
+const ARM_DIR_TO_APPROACH: Record<string, number> = {
+  southbound: 0, westbound: 1, northbound: 2, eastbound: 3,
+};
+// 4-phase plan: each arm runs independently (matches the physical signal controller).
+// Order: SB (N-arm) → WB (E-arm) → NB (S-arm) → EB (W-arm).
+const PHASE_GROUPS: number[][] = [[0], [1], [2], [3]];
 
 const COLORS = ['#6366f1', '#f59e0b', '#10b981', '#ef4444'];
 const DIR_LABELS = ['N', 'E', 'S', 'W'];
@@ -24,13 +34,24 @@ const GAP_PHASE_S = 10; // each axis (N-S or E-W) gets this many sim-seconds of 
 // Conflicting approach indices for gap-acceptance (perpendicular pairs)
 const CONFLICTS: number[][] = [[1, 3], [0, 2], [1, 3], [0, 2]];
 
-// Turn routing geometry (canvas units from intersection center)
-const ARM_ENTRY: [number, number][] = [
-  [0, -BOX_UNITS], [BOX_UNITS, 0], [0, BOX_UNITS], [-BOX_UNITS, 0],
+// Lane offset in canvas units (= aw/4 / sc = 72/4). Half-lane from road center.
+// PH right-hand traffic: SB/WB vehicles are in the west/south lane (negative offset);
+// NB/EB vehicles are in the east/north lane (positive offset).
+const LANE_OFF   = 18;
+const AMBER_S    = 3;    // amber transition seconds at end of green
+const PED2D_SPD  = 0.035; // fractional crosswalk distance per sim-second
+
+// Box-edge points where each approach's inbound lane meets the intersection box
+const ARM_ENTRY_IN: [number, number][] = [
+  [-LANE_OFF, -BOX_UNITS], [BOX_UNITS,  LANE_OFF], [ LANE_OFF,  BOX_UNITS], [-BOX_UNITS, -LANE_OFF],
+];
+// Box-edge points where vehicles exit the intersection into each arm's outbound lane
+const ARM_ENTRY_OUT: [number, number][] = [
+  [ LANE_OFF, -BOX_UNITS], [BOX_UNITS, -LANE_OFF], [-LANE_OFF,  BOX_UNITS], [-BOX_UNITS,  LANE_OFF],
 ];
 const ARM_EXIT_PT: [number, number][] = [
-  [0, -(BOX_UNITS + ARM_UNITS)], [BOX_UNITS + ARM_UNITS, 0],
-  [0, BOX_UNITS + ARM_UNITS],    [-(BOX_UNITS + ARM_UNITS), 0],
+  [ LANE_OFF, -(BOX_UNITS + ARM_UNITS)], [BOX_UNITS + ARM_UNITS, -LANE_OFF],
+  [-LANE_OFF,   BOX_UNITS + ARM_UNITS],  [-(BOX_UNITS + ARM_UNITS), LANE_OFF],
 ];
 // Exit arm index per approach: [through, left, right]
 const TURN_EXIT: [number, number, number][] = [
@@ -67,35 +88,75 @@ interface Vehicle {
   px: number;   // canvas units from center; valid when clearing
   py: number;
   waypoints: { x: number; y: number }[];
+  critGap: number;  // stochastic critical gap for gap-acceptance (sim-seconds)
 }
 
 const VEHICLE_PARAMS: Record<VehicleType, {
-  length: number; width: number; maxSpeed: number; decel: number; minGap: number;
+  length: number; width: number; maxSpeed: number; accel: number; decel: number; minGap: number; T: number;
 }> = {
-  MC:    { length: 14, width: 8,  maxSpeed: 90, decel: 180, minGap: 8  },
-  CAR:   { length: 18, width: 10, maxSpeed: 70, decel: 140, minGap: 12 },
-  JEP:   { length: 22, width: 12, maxSpeed: 55, decel: 110, minGap: 16 },
-  BUS:   { length: 28, width: 14, maxSpeed: 45, decel: 90,  minGap: 20 },
-  TRUCK: { length: 28, width: 14, maxSpeed: 45, decel: 90,  minGap: 20 },
+  MC:    { length: 14, width: 8,  maxSpeed: 90, accel: 72,  decel: 180, minGap: 8,  T: 0.9 },
+  CAR:   { length: 18, width: 10, maxSpeed: 70, accel: 50,  decel: 140, minGap: 12, T: 1.2 },
+  JEP:   { length: 22, width: 12, maxSpeed: 55, accel: 36,  decel: 110, minGap: 16, T: 1.5 },
+  BUS:   { length: 28, width: 14, maxSpeed: 45, accel: 25,  decel: 90,  minGap: 20, T: 1.8 },
+  TRUCK: { length: 28, width: 14, maxSpeed: 45, accel: 25,  decel: 90,  minGap: 20, T: 1.8 },
 };
 
 // --- Turn routing ---
 
+// Quadratic Bezier sample
+function qBez(t: number, p0x: number, p0y: number, p1x: number, p1y: number, p2x: number, p2y: number): { x: number; y: number } {
+  const mt = 1 - t;
+  return { x: mt*mt*p0x + 2*mt*t*p1x + t*t*p2x, y: mt*mt*p0y + 2*mt*t*p1y + t*t*p2y };
+}
+
+const ARC_SAMPLES = 10;
+
+// Bezier control point (corner anchor) per approach × turn direction.
+// Each entry is [cpX, cpY] in canvas units relative to intersection center.
+const TURN_CP: Record<'left' | 'right', [number, number][]> = {
+  left:  [[BOX_UNITS,-BOX_UNITS],[BOX_UNITS,BOX_UNITS],[-BOX_UNITS,BOX_UNITS],[-BOX_UNITS,-BOX_UNITS]],
+  right: [[-BOX_UNITS,-BOX_UNITS],[BOX_UNITS,-BOX_UNITS],[BOX_UNITS,BOX_UNITS],[-BOX_UNITS,BOX_UNITS]],
+};
+
 function buildWaypoints(approach: number, turn: 'through' | 'left' | 'right'): { x: number; y: number }[] {
-  const exitArm = TURN_EXIT[approach][turn === 'through' ? 0 : turn === 'left' ? 1 : 2];
-  const [sx, sy] = ARM_ENTRY[exitArm];
-  const [ex, ey] = ARM_EXIT_PT[exitArm];
+  const exitArmIdx = TURN_EXIT[approach][turn === 'through' ? 0 : turn === 'left' ? 1 : 2];
+  const [p2x, p2y] = ARM_ENTRY_OUT[exitArmIdx];
+  const [ex, ey]   = ARM_EXIT_PT[exitArmIdx];
+
   if (turn === 'through') {
-    return [{ x: sx, y: sy }, { x: ex, y: ey }];
+    return [{ x: p2x, y: p2y }, { x: ex, y: ey }];
   }
-  return [{ x: 0, y: 0 }, { x: sx, y: sy }, { x: ex, y: ey }];
+
+  // Quadratic Bezier arc from approach entry → corner control point → exit arm entry
+  const [p0x, p0y] = ARM_ENTRY_IN[approach];
+  const [cpx, cpy] = TURN_CP[turn][approach];
+  const pts: { x: number; y: number }[] = [];
+  for (let i = 1; i <= ARC_SAMPLES; i++) {
+    pts.push(qBez(i / ARC_SAMPLES, p0x, p0y, cpx, cpy, p2x, p2y));
+  }
+  pts.push({ x: ex, y: ey });
+  return pts;
 }
 
 function initClearing(v: Vehicle): void {
   const r = (v.id * 1337 + 42) % 100;
   v.turn = r < 70 ? 'through' : r < 85 ? 'left' : 'right';
-  [v.px, v.py] = ARM_ENTRY[v.approach];
+  [v.px, v.py] = ARM_ENTRY_IN[v.approach];
   v.waypoints = buildWaypoints(v.approach, v.turn);
+}
+
+// --- IDM (Intelligent Driver Model — Treiber et al. 2000) ---
+// Returns acceleration in canvas units/s² (positive = accelerate, negative = brake).
+function idmAccel(
+  v: number,     // current speed (cu/s)
+  vLead: number, // leader speed; Infinity = no leader
+  s: number,     // bumper-to-bumper gap; Infinity = no leader
+  p: { maxSpeed: number; accel: number; decel: number; minGap: number; T: number },
+): number {
+  const dv    = v - (isFinite(vLead) ? vLead : 0);
+  const sStar = p.minGap + Math.max(0, v * p.T + v * dv / (2 * Math.sqrt(p.accel * p.decel)));
+  const sEff  = isFinite(s) ? Math.max(s, 0.01) : 1e6;
+  return p.accel * (1 - Math.pow(Math.max(v, 0) / p.maxSpeed, 4) - Math.pow(sStar / sEff, 2));
 }
 
 // --- Gap acceptance ---
@@ -103,22 +164,24 @@ function initClearing(v: Vehicle): void {
 // Alternates priority between N-S (approaches 0&2) and E-W (approaches 1&3) every
 // GAP_PHASE_S sim-seconds.  Without this, all four approaches stop, nobody blocks
 // anyone (speed=0), and all discharge simultaneously through the box.
-function conflictingGapOk(approach: number, vehicles: Vehicle[], gapTime: number): boolean {
+function conflictingGapOk(approach: number, vehicles: Vehicle[], gapTime: number, critGap: number): boolean {
   // axis 0 = N-S (approach % 2 === 0); axis 1 = E-W (approach % 2 === 1)
   const axisNow = Math.floor(gapTime / GAP_PHASE_S) % 2;
   if (approach % 2 !== axisNow) return false;
 
   const conflicts = CONFLICTS[approach] ?? [];
   for (const ca of conflicts) {
+    // Perpendicular-axis approaches can't proceed right now — their vehicles decelerate
+    // to a stop at the line, so they are not a real gap threat (avoids deadlock where
+    // both axes block each other indefinitely).
+    if (ca % 2 !== axisNow) continue;
     const cvs = vehicles.filter(v => v.approach === ca && !v.clearing);
     if (cvs.length === 0) continue;
     cvs.sort((a, b) => a.distFromStop - b.distFromStop);
     const lead = cvs[0];
     const leadLen = VEHICLE_PARAMS[lead.type].length;
-    // Lead is physically at/past the stop line — conflict zone occupied
-    if (lead.distFromStop < leadLen) return false;
-    // Lead approaching within threshold
-    if (lead.currSpeed > 0 && lead.distFromStop / lead.currSpeed < GAP_THRESHOLD_S) return false;
+    if (lead.currSpeed > 0 && lead.distFromStop < leadLen) return false;
+    if (lead.currSpeed > 0 && lead.distFromStop / lead.currSpeed < critGap) return false;
   }
   return true;
 }
@@ -136,7 +199,8 @@ function stepPhysics(
   for (const v of vehicles) {
     if (!v.clearing) continue;
     const p = VEHICLE_PARAMS[v.type];
-    v.currSpeed = Math.min(v.currSpeed + p.decel * 0.6 * dt, p.maxSpeed);
+    // Accelerate using IDM free-flow term (no leader)
+    v.currSpeed = Math.min(v.currSpeed + p.accel * (1 - Math.pow(Math.max(v.currSpeed,0)/p.maxSpeed, 4)) * dt, p.maxSpeed);
     let rem = v.currSpeed * dt;
     while (rem > 1e-9 && v.waypoints.length > 0) {
       const wp = v.waypoints[0];
@@ -161,7 +225,7 @@ function stepPhysics(
     if (vehicles[i].clearing && vehicles[i].waypoints.length === 0) vehicles.splice(i, 1);
   }
 
-  // Car-following for queuing vehicles
+  // Car-following for queuing vehicles — Intelligent Driver Model (Treiber et al. 2000)
   const byApproach = new Map<number, Vehicle[]>();
   for (const v of vehicles) {
     if (v.clearing) continue;
@@ -171,39 +235,46 @@ function stepPhysics(
   }
 
   for (const [ap, apVehicles] of byApproach) {
+    // Sort ascending by distFromStop: index 0 = lead (closest to stop line)
     const queuing = apVehicles.sort((a, b) => a.distFromStop - b.distFromStop);
+    // Use the lead vehicle's personal critical gap for gap-acceptance
+    const leadCritGap = queuing[0]?.critGap ?? GAP_THRESHOLD_S;
     const canProceed = gapMode
-      ? conflictingGapOk(ap, vehicles, gapTime)
+      ? conflictingGapOk(ap, vehicles, gapTime, leadCritGap)
       : (greenFlags[ap] ?? false);
 
     for (let k = 0; k < queuing.length; k++) {
       const v = queuing[k];
       const p = VEHICLE_PARAMS[v.type];
 
-      let obstaclePos: number;
+      // Determine IDM leader (gap s = bumper-to-bumper, vLead = leader speed)
+      // and the hard positional floor that physically prevents overlap.
+      let s: number, vLead: number, hardMin: number;
       if (k === 0) {
-        obstaclePos = canProceed ? -99999 : 0;
+        if (canProceed) {
+          s = Infinity; vLead = Infinity; hardMin = -99999; // free flow
+        } else {
+          s = Math.max(v.distFromStop, 0.01); vLead = 0; hardMin = 0; // stop at line
+        }
       } else {
         const ahead = queuing[k - 1];
-        obstaclePos = ahead.distFromStop + VEHICLE_PARAMS[ahead.type].length + p.minGap;
+        const aheadRear = ahead.distFromStop + VEHICLE_PARAMS[ahead.type].length;
+        s       = v.distFromStop - aheadRear;    // bumper-to-bumper gap
+        vLead   = ahead.currSpeed;
+        hardMin = aheadRear;                     // never let follower pass leader's rear
       }
 
-      const gap = v.distFromStop - obstaclePos;
-      let targetSpeed: number;
-      if (gap <= 0) {
-        targetSpeed = 0;
+      const acc = idmAccel(v.currSpeed, vLead, s, p);
+      v.currSpeed = Math.max(0, v.currSpeed + acc * dt);
+
+      const rawNext = v.distFromStop - v.currSpeed * dt;
+      if (rawNext < hardMin) {
+        // Hard constraint hit: pin to leader / stop line and match speed
+        v.distFromStop = hardMin;
+        v.currSpeed    = k > 0 ? Math.min(v.currSpeed, queuing[k - 1].currSpeed) : 0;
       } else {
-        const brakeDist = (p.maxSpeed * p.maxSpeed) / (2 * p.decel);
-        targetSpeed = gap < brakeDist ? Math.sqrt(2 * p.decel * gap) : p.maxSpeed;
+        v.distFromStop = rawNext;
       }
-
-      if (v.currSpeed > targetSpeed) {
-        v.currSpeed = Math.max(v.currSpeed - p.decel * dt, targetSpeed);
-      } else {
-        v.currSpeed = Math.min(v.currSpeed + p.decel * 0.6 * dt, targetSpeed);
-      }
-
-      v.distFromStop = Math.max(v.distFromStop - v.currSpeed * dt, obstaclePos);
 
       if (k === 0 && canProceed && v.distFromStop < 0) {
         v.clearing = true;
@@ -245,10 +316,13 @@ function spawnVehicles(
         if (spawnDist - maxBack < p.minGap) continue;
       }
 
+      // Sample critical gap from a uniform distribution [5.0, 8.5] s — driver heterogeneity
+      const critGap = 5.0 + Math.random() * 3.5;
       vehicles.push({
         id: nextId.current++, type, approach: i,
         distFromStop: spawnDist, currSpeed: 0, clearing: false,
         turn: null, px: 0, py: 0, waypoints: [],
+        critGap,
       });
     }
   }
@@ -261,26 +335,56 @@ function computeGreenState(
   cycleLength: number,
   splits: Record<string, number>,
   simTime: number,
+  phaseGroups?: number[][],
 ): boolean[] {
+  return computeGreenStateExt(ids, cycleLength, splits, simTime, phaseGroups).flags;
+}
+
+type SignalState = 'green' | 'amber' | 'red';
+
+// Extended green-state: returns per-approach signal states and physics flags.
+// phaseGroups: approach indices that run concurrently (e.g. [[0,2],[1,3]] for N-S / E-W).
+// Amber phase = last AMBER_S seconds of green; amber counts as red for physics.
+function computeGreenStateExt(
+  ids: string[], cycleLength: number, splits: Record<string, number>, simTime: number,
+  phaseGroups?: number[][],
+): { states: SignalState[]; flags: boolean[]; remaining: number } {
   const n = ids.length;
-  if (n === 0) return [];
-  // Normalise splits so they sum exactly to cycleLength — prevents float gaps
-  // where tInCycle falls between phases and no approach gets green.
-  const raw = ids.map(id => Math.max(splits[id] ?? cycleLength / n, 0));
-  const total = raw.reduce((a, b) => a + b, 0) || cycleLength;
-  const norm = raw.map(g => (g / total) * cycleLength);
+  const redAll = (): { states: SignalState[]; flags: boolean[]; remaining: number } => ({
+    states: new Array<SignalState>(n).fill('red'),
+    flags:  new Array<boolean>(n).fill(false),
+    remaining: 0,
+  });
+  if (n === 0) return { states: [], flags: [], remaining: 0 };
+
+  // Use provided phase groups, or fall back to one approach per phase.
+  const groups = phaseGroups ?? ids.map((_, i) => [i]);
+
+  // Green time per phase = max split among members (or equal share if no split data).
+  const phaseGreen = groups.map(group =>
+    Math.max(...group.map(i => Math.max(splits[ids[i]] ?? cycleLength / groups.length, 0)), 0),
+  );
+  const total = phaseGreen.reduce((a, b) => a + b, 0) || cycleLength;
+  const normG  = phaseGreen.map(g => (g / total) * cycleLength);
 
   const tInCycle = simTime % cycleLength;
-  const out = new Array<boolean>(n).fill(false);
+  const states: SignalState[] = new Array<SignalState>(n).fill('red');
   let elapsed = 0;
-  for (let i = 0; i < n; i++) {
-    const end = i === n - 1 ? cycleLength : elapsed + norm[i];
-    if (tInCycle >= elapsed && tInCycle < end) { out[i] = true; return out; }
-    elapsed += norm[i];
+
+  for (let pi = 0; pi < groups.length; pi++) {
+    const end = pi === groups.length - 1 ? cycleLength : elapsed + normG[pi];
+    if (tInCycle >= elapsed && tInCycle < end) {
+      const remaining = end - tInCycle;
+      const signalState: SignalState = (remaining <= AMBER_S && normG[pi] > AMBER_S) ? 'amber' : 'green';
+      for (const i of groups[pi]) {
+        if (i < n) states[i] = signalState;
+      }
+      const flags = states.map(s => s === 'green');
+      return { states, flags, remaining };
+    }
+    elapsed += normG[pi];
   }
-  // Fallback: last phase catches floating-point edge at tInCycle ≈ cycleLength
-  out[n - 1] = true;
-  return out;
+  return redAll();
 }
 
 // --- Draw ---
@@ -292,6 +396,10 @@ function paint(
   simTime: number,
   ids: string[],
   vehicles: Vehicle[],
+  chunkName = '',
+  phaseGroups?: number[][],
+  existingCycleS?: number | null,
+  existingGreenSplits?: Record<string, number> | null,
 ) {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
@@ -304,19 +412,36 @@ function paint(
 
   const box = BOX_UNITS * sc;
   const arm = ARM_UNITS * sc;
-  const aw  = 42 * sc;
+  const aw  = 72 * sc;
+
+  const isNight = /night|midnight|pre.?dawn|early.?morning/i.test(chunkName);
 
   ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = '#0f172a';
+  ctx.fillStyle = isNight ? '#030508' : '#0f172a';
   ctx.fillRect(0, 0, W, H);
 
-  const showCycles = mode === 'after' && timing != null && !timing.signal_off;
-  const gs = showCycles
-    ? computeGreenState(ids, timing!.cycle_length, timing!.green_splits, simTime)
-    : ids.map(() => false);
+  const hasExistingTiming = existingCycleS != null && existingGreenSplits != null;
+  const showCycles = (mode === 'after' && timing != null) || (mode === 'before' && hasExistingTiming);
+  let gs: boolean[];
+  let phaseStates: SignalState[];
+  let phaseRemaining = 0;
+  if (showCycles) {
+    let ext: ReturnType<typeof computeGreenStateExt>;
+    if (mode === 'after' && timing) {
+      ext = computeGreenStateExt(ids, timing.cycle_length, timing.green_splits, simTime, phaseGroups);
+    } else {
+      ext = computeGreenStateExt(ids, existingCycleS!, existingGreenSplits!, simTime, phaseGroups);
+    }
+    gs = ext.flags;
+    phaseStates = ext.states;
+    phaseRemaining = ext.remaining;
+  } else {
+    gs = ids.map(() => false);
+    phaseStates = ids.map(() => 'red' as SignalState);
+  }
 
   // Roads
-  ctx.fillStyle = '#1e293b';
+  ctx.fillStyle = isNight ? '#0c111c' : '#1e293b';
   ctx.fillRect(cx - aw/2, cy - box - arm, aw, arm);
   ctx.fillRect(cx - aw/2, cy + box,       aw, arm);
   ctx.fillRect(cx + box,  cy - aw/2,      arm, aw);
@@ -332,19 +457,49 @@ function paint(
   ctx.beginPath(); ctx.strokeRect(cx - box - arm, cy - aw/2, arm, aw);
   ctx.stroke();
 
-  // Center lines
-  ctx.setLineDash([6*sc, 7*sc]);
-  ctx.strokeStyle = '#ca8a04';
-  ctx.lineWidth = 1.5;
+  // White road-edge dashes along each arm
+  ctx.setLineDash([6 * sc, 5 * sc]);
+  ctx.strokeStyle = '#475569';
+  ctx.lineWidth = sc;
+  const edgeOff = aw / 2;
   for (const [x1, y1, x2, y2] of [
-    [cx, cy - box,    cx, cy - box - arm],
-    [cx, cy + box,    cx, cy + box + arm],
-    [cx + box, cy,    cx + box + arm, cy],
-    [cx - box, cy,    cx - box - arm, cy],
+    // N arm edges
+    [cx - edgeOff, cy - box, cx - edgeOff, cy - box - arm],
+    [cx + edgeOff, cy - box, cx + edgeOff, cy - box - arm],
+    // S arm edges
+    [cx - edgeOff, cy + box, cx - edgeOff, cy + box + arm],
+    [cx + edgeOff, cy + box, cx + edgeOff, cy + box + arm],
+    // E arm edges
+    [cx + box, cy - edgeOff, cx + box + arm, cy - edgeOff],
+    [cx + box, cy + edgeOff, cx + box + arm, cy + edgeOff],
+    // W arm edges
+    [cx - box, cy - edgeOff, cx - box - arm, cy - edgeOff],
+    [cx - box, cy + edgeOff, cx - box - arm, cy + edgeOff],
   ] as [number, number, number, number][]) {
     ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
   }
   ctx.setLineDash([]);
+
+  // Double yellow center dividers — solid, no-overtaking lane separator
+  const yOffset = 2 * sc;
+  ctx.strokeStyle = '#ca8a04';
+  ctx.lineWidth = 1.5 * sc;
+  for (const [x1, y1, x2, y2, horiz] of [
+    [cx, cy - box,    cx, cy - box - arm,  false],
+    [cx, cy + box,    cx, cy + box + arm,  false],
+    [cx + box, cy,    cx + box + arm, cy,  true],
+    [cx - box, cy,    cx - box - arm, cy,  true],
+  ] as [number, number, number, number, boolean][]) {
+    for (const off of [-yOffset, yOffset]) {
+      ctx.beginPath();
+      if (horiz) {
+        ctx.moveTo(x1, y1 + off); ctx.lineTo(x2, y2 + off);
+      } else {
+        ctx.moveTo(x1 + off, y1); ctx.lineTo(x2 + off, y2);
+      }
+      ctx.stroke();
+    }
+  }
 
   // Stop lines
   ctx.strokeStyle = '#cbd5e1';
@@ -358,17 +513,127 @@ function paint(
     ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
   }
 
+  // Zebra crosswalk stripes (4 stripes per arm, just outside the stop line)
+  const zW = aw / 8;
+  const zH = 3.5 * sc;
+  ctx.fillStyle = 'rgba(226,232,240,0.28)';
+  // N arm: horizontal stripes just above stop line
+  for (let s = 0; s < 4; s++) {
+    if (s % 2 === 0) ctx.fillRect(cx - aw/2 + s * zW, cy - box - zH, zW, zH);
+  }
+  // S arm: just below stop line
+  for (let s = 0; s < 4; s++) {
+    if (s % 2 === 0) ctx.fillRect(cx - aw/2 + s * zW, cy + box, zW, zH);
+  }
+  // E arm: vertical stripes just right of stop line
+  for (let s = 0; s < 4; s++) {
+    if (s % 2 === 0) ctx.fillRect(cx + box, cy - aw/2 + s * zW, zH, zW);
+  }
+  // W arm: just left of stop line
+  for (let s = 0; s < 4; s++) {
+    if (s % 2 === 0) ctx.fillRect(cx - box - zH, cy - aw/2 + s * zW, zH, zW);
+  }
+
+  // Pedestrian crossing dots — animated with simTime
+  // Signalised: peds walk when their crosswalk direction has a red vehicle phase.
+  // Before mode (gap acceptance): alternate by gap-phase axis — peds cross on the
+  // perpendicular axis to whichever vehicle stream currently has priority.
+  const gapAxis = Math.floor(simTime / GAP_PHASE_S) % 2;
+  const nsBlocked = showCycles
+    ? (phaseStates[0] !== 'red' || phaseStates[2] !== 'red')
+    : gapAxis === 0; // axis-0 = N-S vehicles move → N-S peds wait
+  const ewBlocked = showCycles
+    ? (phaseStates[1] !== 'red' || phaseStates[3] !== 'red')
+    : gapAxis === 1; // axis-1 = E-W vehicles move → E-W peds wait
+  const pedR = 2 * sc;
+  const NUM_PEDS = 2;
+  for (let p = 0; p < NUM_PEDS; p++) {
+    const prog = ((simTime * PED2D_SPD + p * 0.5) % 1.0);
+    // N arm crosswalk (cross x direction)
+    {
+      const walkX = nsBlocked ? (p * 0.6 * aw) : (prog * aw);
+      const px = cx - aw/2 + walkX;
+      const py = cy - box - zH / 2;
+      ctx.beginPath(); ctx.arc(px, py, pedR, 0, Math.PI * 2);
+      ctx.fillStyle = nsBlocked ? '#fca5a5' : '#a7f3d0';
+      ctx.fill();
+    }
+    // S arm crosswalk
+    {
+      const walkX = nsBlocked ? (p * 0.6 * aw) : (prog * aw);
+      const px = cx + aw/2 - walkX;
+      const py = cy + box + zH / 2;
+      ctx.beginPath(); ctx.arc(px, py, pedR, 0, Math.PI * 2);
+      ctx.fillStyle = nsBlocked ? '#fca5a5' : '#a7f3d0';
+      ctx.fill();
+    }
+    // E arm crosswalk (cross y direction)
+    {
+      const walkY = ewBlocked ? (p * 0.6 * aw) : (prog * aw);
+      const px = cx + box + zH / 2;
+      const py = cy - aw/2 + walkY;
+      ctx.beginPath(); ctx.arc(px, py, pedR, 0, Math.PI * 2);
+      ctx.fillStyle = ewBlocked ? '#fca5a5' : '#a7f3d0';
+      ctx.fill();
+    }
+    // W arm crosswalk
+    {
+      const walkY = ewBlocked ? (p * 0.6 * aw) : (prog * aw);
+      const px = cx - box - zH / 2;
+      const py = cy + aw/2 - walkY;
+      ctx.beginPath(); ctx.arc(px, py, pedR, 0, Math.PI * 2);
+      ctx.fillStyle = ewBlocked ? '#fca5a5' : '#a7f3d0';
+      ctx.fill();
+    }
+  }
+
+  // CCTV camera FOV cone — camera at NE corner pointing SW
+  {
+    const camX = cx + box + 5 * sc;
+    const camY = cy - box - 5 * sc;
+    const fovDist = box + arm * 0.65;
+    const fovCenter = Math.PI * 0.75; // SW direction in canvas coords
+    const fovHalf   = Math.PI / 5;    // ±36° half-angle = 72° total
+    ctx.save();
+    ctx.globalAlpha = 0.07;
+    ctx.fillStyle = '#93c5fd';
+    ctx.beginPath();
+    ctx.moveTo(camX, camY);
+    ctx.arc(camX, camY, fovDist, fovCenter - fovHalf, fovCenter + fovHalf);
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalAlpha = 0.5;
+    ctx.strokeStyle = '#3b82f6';
+    ctx.lineWidth = 0.8 * sc;
+    ctx.setLineDash([3 * sc, 2 * sc]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+    // Camera body
+    ctx.fillStyle = '#1d4ed8';
+    ctx.fillRect(camX - 5 * sc, camY - 3 * sc, 8 * sc, 5 * sc);
+    ctx.fillStyle = '#93c5fd';
+    ctx.beginPath(); ctx.arc(camX + 4.5 * sc, camY - 0.5 * sc, 3 * sc, 0, Math.PI * 2); ctx.fill();
+    // Camera label
+    ctx.fillStyle = '#60a5fa';
+    ctx.font = `bold ${7 * sc}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText('CCTV', camX, camY + 4.5 * sc);
+  }
+
   // Queuing vehicles (approach-aligned rects)
   for (const v of vehicles) {
     if (v.clearing) continue;
     const p = VEHICLE_PARAMS[v.type];
     const d = v.distFromStop;
     let x = 0, y = 0, w = 0, h = 0;
+    const loff = aw / 4; // half-lane offset in pixels (right-hand traffic lane discipline)
     switch (v.approach) {
-      case 0: x = cx - (p.width*sc)/2; y = cy - box - (d + p.length)*sc; w = p.width*sc; h = p.length*sc; break;
-      case 1: x = cx + box + d*sc;     y = cy - (p.width*sc)/2;          w = p.length*sc; h = p.width*sc; break;
-      case 2: x = cx - (p.width*sc)/2; y = cy + box + d*sc;              w = p.width*sc; h = p.length*sc; break;
-      case 3: x = cx - box - (d + p.length)*sc; y = cy - (p.width*sc)/2; w = p.length*sc; h = p.width*sc; break;
+      case 0: x = cx - loff - (p.width*sc)/2; y = cy - box - (d + p.length)*sc; w = p.width*sc; h = p.length*sc; break; // SB → west lane
+      case 1: x = cx + box + d*sc;            y = cy + loff - (p.width*sc)/2;   w = p.length*sc; h = p.width*sc; break; // WB → south lane
+      case 2: x = cx + loff - (p.width*sc)/2; y = cy + box + d*sc;              w = p.width*sc; h = p.length*sc; break; // NB → east lane
+      case 3: x = cx - box - (d + p.length)*sc; y = cy - loff - (p.width*sc)/2; w = p.length*sc; h = p.width*sc; break; // EB → north lane
       default: continue;
     }
     ctx.globalAlpha = 0.9;
@@ -378,6 +643,28 @@ function paint(
     ctx.strokeStyle = '#0f172a';
     ctx.lineWidth = 0.8;
     ctx.strokeRect(x, y, w, h);
+    // Night headlights — small bright ellipses at the front (stop-line side) of the vehicle
+    if (isNight) {
+      const hlR = 2 * sc;
+      const hlOffsets: [number, number][] =
+        v.approach === 0 ? [[-aw/4 * 0.45, -h + hlR], [aw/4 * 0.45, -h + hlR]] :
+        v.approach === 1 ? [[w - hlR, -w/4 * 0.45], [w - hlR, w/4 * 0.45]] :
+        v.approach === 2 ? [[-aw/4 * 0.45, h - hlR], [aw/4 * 0.45, h - hlR]] :
+                           [[hlR - w, -h/4 * 0.45], [hlR - w, h/4 * 0.45]];
+      ctx.save();
+      ctx.shadowBlur = 6 * sc;
+      ctx.shadowColor = '#fef9c3';
+      for (const [hx2, hy2] of hlOffsets) {
+        const grad = ctx.createRadialGradient(x + w/2 + hx2, y + h/2 + hy2, 0, x + w/2 + hx2, y + h/2 + hy2, hlR * 2.5);
+        grad.addColorStop(0, 'rgba(255,253,220,0.9)');
+        grad.addColorStop(1, 'rgba(255,253,220,0)');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(x + w/2 + hx2, y + h/2 + hy2, hlR * 2.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
     const minDim = Math.min(w, h);
     if (minDim >= 8) {
       ctx.font = `bold ${Math.max(minDim * 0.5, 5)}px sans-serif`;
@@ -418,40 +705,95 @@ function paint(
       ctx.textBaseline = 'middle';
       ctx.fillText(v.type, 0, 0);
     }
+    // Turn blinkers — amber flash on front corner of turning vehicles
+    if (v.turn !== 'through' && Math.floor(simTime * 4) % 2 === 0) {
+      const bx2 = p.length * sc * 0.42;
+      const by2 = (v.turn === 'right' ? 1 : -1) * p.width * sc * 0.38;
+      ctx.save();
+      ctx.shadowBlur = 5 * sc;
+      ctx.shadowColor = '#f59e0b';
+      ctx.fillStyle = '#f59e0b';
+      ctx.globalAlpha = 0.92;
+      ctx.beginPath();
+      ctx.arc(bx2, by2, 2.2 * sc, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
     ctx.restore();
   }
 
-  // Signal dots + direction labels
+  // Traffic light indicators — 3-circle housing (R/Y/G) + phase countdown
   ids.slice(0, 4).forEach((_id, i) => {
-    const isGreen = gs[i] ?? false;
-    const r = 5 * sc;
-    let sx = 0, sy = 0;
-    switch (i) {
-      case 0: sx = cx + aw/2 - r - 2*sc;  sy = cy - box - r - 3*sc;  break;
-      case 1: sx = cx + box  + r + 3*sc;  sy = cy - aw/2 + r + 2*sc; break;
-      case 2: sx = cx + aw/2 - r - 2*sc;  sy = cy + box  + r + 3*sc; break;
-      case 3: sx = cx - box  - r - 3*sc;  sy = cy - aw/2 + r + 2*sc; break;
-    }
-    ctx.beginPath();
-    ctx.arc(sx, sy, r, 0, Math.PI * 2);
-    ctx.fillStyle = showCycles ? (isGreen ? '#22c55e' : '#ef4444') : '#ca8a04';
-    ctx.fill();
-    ctx.strokeStyle = '#0f172a';
-    ctx.lineWidth = 1;
-    ctx.stroke();
+    const state: SignalState = phaseStates[i] ?? 'red';
+    const lR   = 5 * sc;
+    const lGap = lR * 2 + 4 * sc;
+    const hW   = lR * 2 + 10 * sc;
+    const hH   = lGap * 2 + lR * 2 + 8 * sc;
 
-    let lx = 0, ly = 0;
+    let hx = 0, hy = 0;
     switch (i) {
-      case 0: lx = cx;                     ly = cy - box - arm * 0.82; break;
-      case 1: lx = cx + box + arm * 0.82;  ly = cy;                    break;
-      case 2: lx = cx;                     ly = cy + box + arm * 0.82; break;
-      case 3: lx = cx - box - arm * 0.82;  ly = cy;                    break;
+      case 0: hx = cx - aw / 2 + sc;           hy = cy - box - hH - 6 * sc; break;
+      case 1: hx = cx + box + 4 * sc;           hy = cy - aw / 2 + sc;      break;
+      case 2: hx = cx + aw / 2 - hW - sc;      hy = cy + box + 6 * sc;     break;
+      case 3: hx = cx - box - hW - 4 * sc;     hy = cy + aw / 2 - hH - sc; break;
+    }
+
+    if (showCycles) {
+      // Housing — glow on active signal in night mode
+      ctx.fillStyle = '#111827';
+      ctx.strokeStyle = '#374151';
+      ctx.lineWidth = sc;
+      if (isNight) {
+        ctx.shadowBlur = 18 * sc;
+        ctx.shadowColor = state === 'green' ? '#22c55e' : state === 'amber' ? '#f59e0b' : '#ef4444';
+      }
+      ctx.beginPath();
+      ctx.roundRect(hx, hy, hW, hH, 3 * sc);
+      ctx.fill();
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+
+      const lensX = hx + hW / 2;
+      const lensColors = ['#ef4444', '#f59e0b', '#22c55e'];
+      const lensDark   = ['#7f1d1d', '#78350f', '#14532d'];
+      for (let li = 0; li < 3; li++) {
+        const ly = hy + 4 * sc + lR + li * lGap;
+        const active = li === 0 ? state === 'red' : li === 1 ? state === 'amber' : state === 'green';
+        if (active) {
+          ctx.shadowBlur = isNight ? 18 * sc : 10 * sc;
+          ctx.shadowColor = lensColors[li];
+        }
+        ctx.beginPath();
+        ctx.arc(lensX, ly, lR, 0, Math.PI * 2);
+        ctx.fillStyle = active ? lensColors[li] : lensDark[li];
+        ctx.fill();
+        ctx.shadowBlur = 0;
+      }
+
+      // Phase countdown
+      if (phaseRemaining > 0) {
+        const secs = Math.ceil(phaseRemaining);
+        ctx.font = `bold ${Math.max(9 * sc, 7)}px monospace`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        ctx.fillStyle = state === 'green' ? '#22c55e' : state === 'amber' ? '#f59e0b' : '#ef4444';
+        ctx.fillText(`${secs}s`, lensX, hy + hH + 2 * sc);
+      }
+    }
+
+    // Direction label at far end of arm (always shown)
+    let lx = 0, ly2 = 0;
+    switch (i) {
+      case 0: lx = cx;                     ly2 = cy - box - arm * 0.82; break;
+      case 1: lx = cx + box + arm * 0.82;  ly2 = cy;                    break;
+      case 2: lx = cx;                     ly2 = cy + box + arm * 0.82; break;
+      case 3: lx = cx - box - arm * 0.82;  ly2 = cy;                    break;
     }
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.font = `bold ${14 * sc}px sans-serif`;
     ctx.fillStyle = '#f1f5f9';
-    ctx.fillText(DIR_LABELS[i] ?? `A${i}`, lx, ly);
+    ctx.fillText(DIR_LABELS[i] ?? `A${i}`, lx, ly2);
   });
 
   // HUD
@@ -496,11 +838,17 @@ export function IntersectionCanvas({
   timing,
   signalStatus: _signalStatus,
   typeMix = {},
+  streets = [],
+  existingCycleS = null,
+  existingGreenSplits = null,
 }: {
   chunk: SimulationChunk;
   timing: TimingChunk | null;
   signalStatus: string;
   typeMix?: Record<string, TypeFractions>;
+  streets?: Street[];
+  existingCycleS?: number | null;
+  existingGreenSplits?: Record<string, number> | null;
 }) {
   const wrapperRef   = useRef<HTMLDivElement>(null);
   const canvasRef    = useRef<HTMLCanvasElement>(null);
@@ -508,17 +856,24 @@ export function IntersectionCanvas({
   const rafRef       = useRef<number>(0);
   const lastRtRef    = useRef<number>(0);
 
-  const playingRef = useRef(false);
-  const spsRef     = useRef(6);
-  const modeRef    = useRef<'before' | 'after'>('after');
-  const simTRef    = useRef(0);
+  const playingRef      = useRef(false);
+  const spsRef          = useRef(6);
+  const modeRef         = useRef<'before' | 'after'>('after');
+  const simTRef         = useRef(0);
+  const pausePaintedRef = useRef(false);
 
-  const timingRef  = useRef(timing);
-  const idsRef     = useRef<string[]>([]);
-  const typeMixRef = useRef<Record<string, TypeFractions>>(typeMix);
+  const timingRef              = useRef(timing);
+  const idsRef                 = useRef<string[]>([]);
+  const typeMixRef             = useRef<Record<string, TypeFractions>>(typeMix);
+  const chunkNameRef           = useRef(chunk.chunk_name);
+  const existingCycleSRef      = useRef(existingCycleS);
+  const existingGreenSplitsRef = useRef(existingGreenSplits);
 
-  timingRef.current  = timing;
-  typeMixRef.current = typeMix;
+  timingRef.current              = timing;
+  typeMixRef.current             = typeMix;
+  chunkNameRef.current           = chunk.chunk_name;
+  existingCycleSRef.current      = existingCycleS;
+  existingGreenSplitsRef.current = existingGreenSplits;
 
   // Physics state
   const vehiclesRef          = useRef<Vehicle[]>([]);
@@ -529,8 +884,20 @@ export function IntersectionCanvas({
 
   const ids = useMemo(() => {
     const s = chunk.queue_series_after ?? chunk.queue_series_before;
-    return s ? Object.keys(s).sort() : [];
-  }, [chunk]);
+    if (!s) return [];
+    // Order by physical arm position (N=0, E=1, S=2, W=3) using street directions.
+    const ordered = Array<string | null>(4).fill(null);
+    let placed = 0;
+    for (const st of streets) {
+      const ap = ARM_DIR_TO_APPROACH[st.arm_direction];
+      if (ap !== undefined && s[String(st.id)] !== undefined) {
+        ordered[ap] = String(st.id);
+        placed++;
+      }
+    }
+    if (placed > 0) return ordered.filter((id): id is string => id !== null);
+    return Object.keys(s).sort();
+  }, [chunk, streets]);
 
   idsRef.current = ids;
 
@@ -564,6 +931,7 @@ export function IntersectionCanvas({
     nextVehicleIdRef.current  = 0;
     simTRef.current           = 0;
     playingRef.current        = false;
+    pausePaintedRef.current   = false;
     setPlaying(false);
   }, [chunk.chunk_name]);
 
@@ -575,8 +943,8 @@ export function IntersectionCanvas({
     const resize = () => {
       const dpr  = window.devicePixelRatio || 1;
       const full = !!document.fullscreenElement;
-      const w    = full ? container.clientWidth  : Math.min(container.clientWidth, 420);
-      const h    = full ? container.clientHeight : Math.round(w * 0.58);
+      const w    = full ? container.clientWidth  : Math.min(container.clientWidth, 560);
+      const h    = full ? container.clientHeight : Math.round(w * 0.72);
       if (w > 0 && h > 0) {
         canvas.width  = Math.round(w * dpr);
         canvas.height = Math.round(h * dpr);
@@ -601,8 +969,8 @@ export function IntersectionCanvas({
       const canvas    = canvasRef.current;
       if (!container || !canvas) return;
       const dpr = window.devicePixelRatio || 1;
-      const w   = full ? container.clientWidth  : Math.min(container.clientWidth, 420);
-      const h   = full ? container.clientHeight : Math.round(w * 0.58);
+      const w   = full ? container.clientWidth  : Math.min(container.clientWidth, 560);
+      const h   = full ? container.clientHeight : Math.round(w * 0.72);
       if (w > 0 && h > 0) {
         canvas.width  = Math.round(w * dpr);
         canvas.height = Math.round(h * dpr);
@@ -628,9 +996,16 @@ export function IntersectionCanvas({
           while (remaining > 0) {
             const step = Math.min(remaining, MAX_PHYSICS_DT);
             const t = timingRef.current;
-            const useGapMode = modeRef.current === 'before' || !t || t.signal_off;
-            const greenFlags = (!useGapMode && t)
-              ? computeGreenState(idsRef.current, t.cycle_length, t.green_splits, subT)
+            const pg = idsRef.current.length === 4 ? PHASE_GROUPS : undefined;
+            const exCycle  = existingCycleSRef.current;
+            const exSplits = existingGreenSplitsRef.current;
+            const hasExisting = exCycle != null && exSplits != null;
+            const isBeforeMode = modeRef.current === 'before';
+            const useGapMode = isBeforeMode ? !hasExisting : (!t || t.signal_off);
+            const greenFlags = !useGapMode
+              ? (isBeforeMode
+                  ? computeGreenState(idsRef.current, exCycle!, exSplits!, subT, pg)
+                  : computeGreenState(idsRef.current, t!.cycle_length, t!.green_splits, subT, pg))
               : new Array(idsRef.current.length).fill(false);
 
             const mixPerApproach = idsRef.current.map(
@@ -657,9 +1032,11 @@ export function IntersectionCanvas({
             playingRef.current = false;
             setPlaying(false);
           }
+          pausePaintedRef.current = false;
         }
         lastRtRef.current = now;
-        if (idsRef.current.length > 0) {
+        if (idsRef.current.length > 0 && (playingRef.current || !pausePaintedRef.current)) {
+          const pg = idsRef.current.length === 4 ? PHASE_GROUPS : undefined;
           paint(
             canvas,
             timingRef.current,
@@ -667,7 +1044,12 @@ export function IntersectionCanvas({
             simTRef.current,
             idsRef.current,
             vehiclesRef.current,
+            chunkNameRef.current,
+            pg,
+            existingCycleSRef.current,
+            existingGreenSplitsRef.current,
           );
+          if (!playingRef.current) pausePaintedRef.current = true;
         }
       }
       rafRef.current = requestAnimationFrame(loop);
@@ -683,6 +1065,7 @@ export function IntersectionCanvas({
     nextVehicleIdRef.current = 0;
     simTRef.current          = 0;
     playingRef.current       = false;
+    pausePaintedRef.current  = false;
     setPlaying(false);
   };
 
@@ -695,7 +1078,7 @@ export function IntersectionCanvas({
   const handlePause      = () => { playingRef.current = false; setPlaying(false); };
   const handleReset      = resetState;
   const handleSpeed      = (v: number) => { spsRef.current = v; setSps(v); };
-  const handleMode       = (m: 'before' | 'after') => { modeRef.current = m; setMode(m); };
+  const handleMode       = (m: 'before' | 'after') => { modeRef.current = m; pausePaintedRef.current = false; setMode(m); };
   const handleFullscreen = () => {
     if (!document.fullscreenElement) {
       wrapperRef.current?.requestFullscreen();
@@ -804,8 +1187,8 @@ function createSimState() {
 
 function applyCanvasSize(container: HTMLDivElement, canvas: HTMLCanvasElement, fullscreen: boolean) {
   const dpr = window.devicePixelRatio || 1;
-  const w   = fullscreen ? container.clientWidth : container.clientWidth;
-  const h   = Math.round(w * 0.72);
+  const w   = container.clientWidth;
+  const h   = fullscreen ? container.clientHeight : Math.round(w * 0.72);
   if (w > 0 && h > 0) {
     canvas.width  = Math.round(w * dpr);
     canvas.height = Math.round(h * dpr);
@@ -821,6 +1204,9 @@ export function DualIntersectionCanvas({
   typeMix = {},
   paused = false,
   speed = 1,
+  streets = [],
+  existingCycleS = null,
+  existingGreenSplits = null,
 }: {
   chunk: SimulationChunk;
   timing: TimingChunk | null;
@@ -828,6 +1214,9 @@ export function DualIntersectionCanvas({
   typeMix?: Record<string, TypeFractions>;
   paused?: boolean;
   speed?: 1 | 2 | 4;
+  streets?: Street[];
+  existingCycleS?: number | null;
+  existingGreenSplits?: Record<string, number> | null;
 }) {
   const wrapperRef        = useRef<HTMLDivElement>(null);
   const canvasBeforeRef   = useRef<HTMLCanvasElement>(null);
@@ -838,30 +1227,55 @@ export function DualIntersectionCanvas({
   const beforeSim = useRef(createSimState());
   const afterSim  = useRef(createSimState());
 
-  const rafRef     = useRef<number>(0);
-  const lastRtRef  = useRef<number>(0);
-  const playingRef = useRef(false);
-  const spsRef     = useRef(6);
-  const simTRef    = useRef(0);
-  const frameRef   = useRef(0);
+  const rafRef          = useRef<number>(0);
+  const lastRtRef       = useRef<number>(0);
+  const playingRef      = useRef(false);
+  const spsRef          = useRef(6);
+  const simTRef         = useRef(0);
+  const frameRef        = useRef(0);
+  const pausePaintedRef = useRef(false);
 
-  const timingRef  = useRef(timing);
-  const idsRef     = useRef<string[]>([]);
-  const typeMixRef = useRef<Record<string, TypeFractions>>(typeMix);
-  timingRef.current  = timing;
-  typeMixRef.current = typeMix;
+  const timingRef             = useRef(timing);
+  const idsRef                = useRef<string[]>([]);
+  const typeMixRef            = useRef<Record<string, TypeFractions>>(typeMix);
+  const chunkNameRef          = useRef(chunk.chunk_name);
+  const existingCycleSRef     = useRef(existingCycleS);
+  const existingGreenSplitsRef = useRef(existingGreenSplits);
+  timingRef.current            = timing;
+  typeMixRef.current           = typeMix;
+  chunkNameRef.current         = chunk.chunk_name;
+  existingCycleSRef.current    = existingCycleS;
+  existingGreenSplitsRef.current = existingGreenSplits;
 
   const spawnIntervalsRef   = useRef<number[]>([Infinity, Infinity, Infinity, Infinity]);
   const activeApproachesRef = useRef<Set<number>>(new Set());
 
   const ids = useMemo(() => {
     const s = chunk.queue_series_after ?? chunk.queue_series_before;
-    return s ? Object.keys(s).sort() : [];
-  }, [chunk]);
+    if (!s) return [];
+    const ordered = Array<string | null>(4).fill(null);
+    let placed = 0;
+    for (const st of streets) {
+      const ap = ARM_DIR_TO_APPROACH[st.arm_direction];
+      if (ap !== undefined && s[String(st.id)] !== undefined) {
+        ordered[ap] = String(st.id);
+        placed++;
+      }
+    }
+    if (placed > 0) return ordered.filter((id): id is string => id !== null);
+    return Object.keys(s).sort();
+  }, [chunk, streets]);
   idsRef.current = ids;
 
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [liveQ, setLiveQ]             = useState({ before: 0, after: 0 });
+  const [viewMode, setViewMode]       = useState<'before' | 'dual' | 'after'>('dual');
+
+  type CycleRecord = { cycle: number; peakBefore: number; peakAfter: number };
+  const [cycleHistory, setCycleHistory] = useState<CycleRecord[]>([]);
+  const prevCycleRef    = useRef(-1);
+  const peakBeforeRef   = useRef(0);
+  const peakAfterRef    = useRef(0);
 
   // Sync external paused / speed props into refs used by the RAF loop
   useEffect(() => { playingRef.current = !paused; }, [paused]);
@@ -883,14 +1297,21 @@ export function DualIntersectionCanvas({
   }, [chunk, ids]);
 
   useEffect(() => {
-    beforeSim.current  = createSimState();
-    afterSim.current   = createSimState();
-    simTRef.current    = 0;
-    playingRef.current = !paused;
+    beforeSim.current     = createSimState();
+    afterSim.current      = createSimState();
+    simTRef.current       = 0;
+    frameRef.current      = 0;
+    playingRef.current    = !paused;
+    pausePaintedRef.current = false;
+    prevCycleRef.current  = -1;
+    peakBeforeRef.current = 0;
+    peakAfterRef.current  = 0;
     setLiveQ({ before: 0, after: 0 });
+    setCycleHistory([]);
   }, [chunk.chunk_name]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Canvas sizing — observe both containers
+  // Canvas sizing — observe mounted containers; re-run when viewMode changes so
+  // observers reconnect after conditional rendering swaps a canvas in or out.
   useEffect(() => {
     const pairs: [React.RefObject<HTMLDivElement | null>, React.RefObject<HTMLCanvasElement | null>][] = [
       [ctnBeforeRef, canvasBeforeRef],
@@ -908,7 +1329,7 @@ export function DualIntersectionCanvas({
       observers.push(ro);
     }
     return () => observers.forEach(ro => ro.disconnect());
-  }, []);
+  }, [viewMode]);
 
   useEffect(() => {
     const onFsChange = () => {
@@ -930,50 +1351,84 @@ export function DualIntersectionCanvas({
 
   useEffect(() => {
     const loop = (now: number) => {
-      const cvB = canvasBeforeRef.current;
-      const cvA = canvasAfterRef.current;
-      if (cvB && cvA && cvB.width > 0 && cvA.width > 0) {
-        if (playingRef.current) {
-          const dt    = lastRtRef.current > 0 ? (now - lastRtRef.current) / 1000 : 0;
-          const dtSim = Math.min(dt * spsRef.current, 1.0);
-          let remaining = dtSim;
-          let subT      = simTRef.current;
-          while (remaining > 0) {
-            const step    = Math.min(remaining, MAX_PHYSICS_DT);
-            const t       = timingRef.current;
-            const gapAfter = !t || t.signal_off;
-            const greenA  = !gapAfter
-              ? computeGreenState(idsRef.current, t!.cycle_length, t!.green_splits, subT)
-              : new Array(idsRef.current.length).fill(false);
-            const greenB  = new Array(idsRef.current.length).fill(false);
-            const mix     = idsRef.current.map(sid => typeMixRef.current[sid] ?? DEFAULT_TYPE_MIX);
+      // Physics always runs when playing — independent of which canvases are mounted.
+      // This allows "Before" / "After" single-view modes to keep physics alive even
+      // when one of the two canvases is unmounted.
+      if (playingRef.current) {
+        const dt    = lastRtRef.current > 0 ? (now - lastRtRef.current) / 1000 : 0;
+        const dtSim = Math.min(dt * spsRef.current, 1.0);
+        let remaining = dtSim;
+        let subT      = simTRef.current;
+        while (remaining > 0) {
+          const step    = Math.min(remaining, MAX_PHYSICS_DT);
+          const t       = timingRef.current;
+          const gapAfter = !t || t.signal_off;
+          const pg      = idsRef.current.length === 4 ? PHASE_GROUPS : undefined;
+          const greenA  = !gapAfter
+            ? computeGreenState(idsRef.current, t!.cycle_length, t!.green_splits, subT, pg)
+            : new Array(idsRef.current.length).fill(false);
+          // Before: use existing timing if available, else fall back to gap-acceptance
+          const exCycle  = existingCycleSRef.current;
+          const exSplits = existingGreenSplitsRef.current;
+          const hasExisting = exCycle != null && exSplits != null;
+          const greenB  = hasExisting
+            ? computeGreenState(idsRef.current, exCycle!, exSplits!, subT, pg)
+            : new Array(idsRef.current.length).fill(false);
+          const mix     = idsRef.current.map(sid => typeMixRef.current[sid] ?? DEFAULT_TYPE_MIX);
 
-            spawnVehicles(beforeSim.current.vehicles, beforeSim.current.timers,
-              beforeSim.current.nextId, idsRef.current,
-              activeApproachesRef.current, spawnIntervalsRef.current, mix, step);
-            spawnVehicles(afterSim.current.vehicles, afterSim.current.timers,
-              afterSim.current.nextId, idsRef.current,
-              activeApproachesRef.current, spawnIntervalsRef.current, mix, step);
+          spawnVehicles(beforeSim.current.vehicles, beforeSim.current.timers,
+            beforeSim.current.nextId, idsRef.current,
+            activeApproachesRef.current, spawnIntervalsRef.current, mix, step);
+          spawnVehicles(afterSim.current.vehicles, afterSim.current.timers,
+            afterSim.current.nextId, idsRef.current,
+            activeApproachesRef.current, spawnIntervalsRef.current, mix, step);
 
-            stepPhysics(beforeSim.current.vehicles, step, greenB, true,     subT);
-            stepPhysics(afterSim.current.vehicles,  step, greenA, gapAfter, subT);
+          stepPhysics(beforeSim.current.vehicles, step, greenB, !hasExisting, subT);
+          stepPhysics(afterSim.current.vehicles,  step, greenA, gapAfter,     subT);
 
-            subT      += step;
-            remaining -= step;
-          }
-          simTRef.current = Math.min(simTRef.current + dtSim, SIM_DURATION);
-          if (simTRef.current >= SIM_DURATION) { playingRef.current = false; }
+          subT      += step;
+          remaining -= step;
         }
-        lastRtRef.current = now;
-        if (idsRef.current.length > 0) {
-          paint(cvB, timingRef.current, 'before', simTRef.current, idsRef.current, beforeSim.current.vehicles);
-          paint(cvA, timingRef.current, 'after',  simTRef.current, idsRef.current, afterSim.current.vehicles);
-          frameRef.current++;
-          if (frameRef.current % 30 === 0) {
-            setLiveQ({
-              before: beforeSim.current.vehicles.filter(v => !v.clearing).length,
-              after:  afterSim.current.vehicles.filter(v  => !v.clearing).length,
-            });
+        simTRef.current = Math.min(simTRef.current + dtSim, SIM_DURATION);
+        if (simTRef.current >= SIM_DURATION) { playingRef.current = false; }
+        pausePaintedRef.current = false;
+      }
+      lastRtRef.current = now;
+      if (idsRef.current.length > 0 && (playingRef.current || !pausePaintedRef.current)) {
+        const cvB = canvasBeforeRef.current;
+        const cvA = canvasAfterRef.current;
+        const pg2 = idsRef.current.length === 4 ? PHASE_GROUPS : undefined;
+        if (cvB && cvB.width > 0 && cvB.height > 0) {
+          paint(cvB, timingRef.current, 'before', simTRef.current, idsRef.current, beforeSim.current.vehicles, chunkNameRef.current, pg2, existingCycleSRef.current, existingGreenSplitsRef.current);
+        }
+        if (cvA && cvA.width > 0 && cvA.height > 0) {
+          paint(cvA, timingRef.current, 'after',  simTRef.current, idsRef.current, afterSim.current.vehicles, chunkNameRef.current, pg2);
+        }
+        if (!playingRef.current) pausePaintedRef.current = true;
+        frameRef.current++;
+        if (frameRef.current % 30 === 0) {
+          const qB = beforeSim.current.vehicles.filter(v => !v.clearing).length;
+          const qA = afterSim.current.vehicles.filter(v  => !v.clearing).length;
+          setLiveQ({ before: qB, after: qA });
+
+          // Per-cycle peak tracking
+          peakBeforeRef.current = Math.max(peakBeforeRef.current, qB);
+          peakAfterRef.current  = Math.max(peakAfterRef.current,  qA);
+
+          const tNow = timingRef.current;
+          if (tNow && tNow.cycle_length > 0) {
+            const curCycle = Math.floor(simTRef.current / tNow.cycle_length);
+            if (curCycle !== prevCycleRef.current && curCycle > 0) {
+              const rec: CycleRecord = {
+                cycle:       curCycle,
+                peakBefore:  peakBeforeRef.current,
+                peakAfter:   peakAfterRef.current,
+              };
+              setCycleHistory(prev => [...prev.slice(-4), rec]);
+              peakBeforeRef.current = 0;
+              peakAfterRef.current  = 0;
+              prevCycleRef.current  = curCycle;
+            }
           }
         }
       }
@@ -988,6 +1443,7 @@ export function DualIntersectionCanvas({
     beforeSim.current  = createSimState();
     afterSim.current   = createSimState();
     simTRef.current    = 0;
+    frameRef.current   = 0;
     playingRef.current = !paused;
     setLiveQ({ before: 0, after: 0 });
   };
@@ -1006,42 +1462,97 @@ export function DualIntersectionCanvas({
       ref={wrapperRef}
       className={cn('space-y-3', isFullscreen && 'bg-[#0f172a] flex flex-col p-4 h-full')}
     >
-      {/* Side-by-side canvases */}
-      <div className={cn('grid grid-cols-2 gap-2', isFullscreen && 'flex-1')}>
-        <div className={cn('flex flex-col', isFullscreen && 'flex-1')}>
-          <p className="text-[10px] font-medium text-muted-foreground mb-1 uppercase tracking-wide">
-            Before — gap acceptance
-          </p>
-          <div ref={ctnBeforeRef} className="rounded-md overflow-hidden w-full">
-            <canvas ref={canvasBeforeRef} className="block" />
+      {/* Canvases — dual side-by-side or single before/after */}
+      <div className={cn(
+        'grid gap-2',
+        viewMode === 'dual' ? 'grid-cols-2' : 'grid-cols-1',
+        isFullscreen && 'flex-1',
+      )}>
+        {viewMode !== 'after' && (
+          <div className={cn('flex flex-col', isFullscreen && 'flex-1')}>
+            <p className="text-[10px] font-medium text-muted-foreground mb-1 uppercase tracking-wide">
+              Before — gap acceptance
+            </p>
+            <div ref={ctnBeforeRef} className="rounded-md overflow-hidden w-full">
+              <canvas ref={canvasBeforeRef} className="block" />
+            </div>
           </div>
-        </div>
-        <div className={cn('flex flex-col', isFullscreen && 'flex-1')}>
-          <p className="text-[10px] font-medium text-green-500 mb-1 uppercase tracking-wide">
-            After — Webster's signal
-          </p>
-          <div ref={ctnAfterRef} className="rounded-md overflow-hidden w-full">
-            <canvas ref={canvasAfterRef} className="block" />
+        )}
+        {viewMode !== 'before' && (
+          <div className={cn('flex flex-col', isFullscreen && 'flex-1')}>
+            <p className="text-[10px] font-medium text-green-500 mb-1 uppercase tracking-wide">
+              After — Webster's signal
+            </p>
+            <div ref={ctnAfterRef} className="rounded-md overflow-hidden w-full">
+              <canvas ref={canvasAfterRef} className="block" />
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       {/* Live queue comparison */}
-      <div className="grid grid-cols-2 gap-2">
+      <div className="grid grid-cols-3 gap-2">
         <div className="rounded-md border border-border bg-card px-3 py-2">
-          <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Queuing</p>
+          <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Before queue</p>
           <p className="text-2xl font-semibold tabular-nums mt-0.5">{liveQ.before}</p>
         </div>
         <div className="rounded-md border border-green-500/30 bg-card px-3 py-2">
-          <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Queuing</p>
-          <div className="flex items-end gap-1.5 mt-0.5">
-            <span className="text-2xl font-semibold tabular-nums text-green-500">{liveQ.after}</span>
-            {qDiff > 0 && (
-              <span className="text-green-500 text-xs font-medium mb-0.5">−{qDiff} fewer</span>
-            )}
-          </div>
+          <p className="text-[10px] text-muted-foreground uppercase tracking-wide">After queue</p>
+          <p className="text-2xl font-semibold tabular-nums mt-0.5 text-green-500">{liveQ.after}</p>
+        </div>
+        <div className={cn(
+          'rounded-md border px-3 py-2',
+          qDiff > 0 ? 'border-green-500/40 bg-green-950/20'
+          : qDiff < 0 ? 'border-red-500/40 bg-red-950/20' : 'border-border bg-card',
+        )}>
+          <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Live diff</p>
+          <p className={cn(
+            'text-2xl font-semibold tabular-nums mt-0.5',
+            qDiff > 0 ? 'text-green-500' : qDiff < 0 ? 'text-red-400' : 'text-muted-foreground',
+          )}>
+            {qDiff > 0 ? `−${qDiff}` : qDiff < 0 ? `+${Math.abs(qDiff)}` : '0'}
+          </p>
         </div>
       </div>
+
+      {/* Per-cycle peak queue history */}
+      {cycleHistory.length > 0 && (
+        <div className="rounded-md border border-border bg-card px-3 py-2">
+          <p className="text-[10px] text-muted-foreground uppercase tracking-wide mb-2">
+            Cycle peak queue — before → after
+          </p>
+          <div className="space-y-1.5">
+            {cycleHistory.map(r => {
+              const diff = r.peakBefore - r.peakAfter;
+              return (
+                <div key={r.cycle} className="flex items-center gap-2 text-xs">
+                  <span className="text-muted-foreground tabular-nums w-10">C#{r.cycle}</span>
+                  <span className="tabular-nums font-medium w-5 text-right text-slate-400">{r.peakBefore}</span>
+                  <span className="text-muted-foreground">→</span>
+                  <span className={cn(
+                    'tabular-nums font-medium w-5 text-right',
+                    diff > 0 ? 'text-green-400' : diff < 0 ? 'text-red-400' : 'text-slate-400',
+                  )}>{r.peakAfter}</span>
+                  {diff !== 0 && (
+                    <span className={cn(
+                      'font-bold tabular-nums ml-1',
+                      diff > 0 ? 'text-green-400' : 'text-red-400',
+                    )}>
+                      {diff > 0 ? `−${diff}` : `+${Math.abs(diff)}`}
+                    </span>
+                  )}
+                  <div className="flex-1 h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                    <div
+                      className={cn('h-full rounded-full transition-all', diff > 0 ? 'bg-green-500' : 'bg-red-500')}
+                      style={{ width: `${Math.min(100, Math.abs(diff) / Math.max(r.peakBefore, 1) * 100)}%` }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Savings strip */}
       <div className="grid grid-cols-3 gap-2">
@@ -1066,8 +1577,27 @@ export function DualIntersectionCanvas({
         </div>
       </div>
 
-      {/* Controls: reset + fullscreen only — play/pause and speed are in the parent strip */}
-      <div className="flex items-center gap-2">
+      {/* Controls: view toggle + reset + fullscreen */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex rounded-md border border-border overflow-hidden">
+          {(['before', 'dual', 'after'] as const).map(m => (
+            <button
+              key={m}
+              onClick={() => setViewMode(m)}
+              className={cn(
+                'px-2.5 py-1 text-xs font-medium transition-colors border-l first:border-l-0 border-border',
+                viewMode === m
+                  ? 'bg-primary text-primary-foreground'
+                  : 'text-muted-foreground hover:bg-muted',
+              )}
+            >
+              {m === 'dual' ? 'Both' : m.charAt(0).toUpperCase() + m.slice(1)}
+            </button>
+          ))}
+        </div>
+
+        <div className="h-5 w-px bg-border" />
+
         <Button size="sm" variant="ghost" className="size-8 p-0" title="Reset simulation" onClick={resetState}>
           <RotateCcw className="size-3.5" />
         </Button>

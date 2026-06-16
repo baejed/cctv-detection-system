@@ -9,8 +9,8 @@ import { timingApi, type TimingChunk } from '@/services/timing';
 import { aggregationApi } from '@/services/aggregation';
 import { streetsApi } from '@/services/streets';
 import { intersectionsApi } from '@/services/intersections';
+import type { SignalTimingPayload } from '@/services/intersections';
 import { DualIntersectionCanvas, type VehicleType, type TypeFractions } from '@/components/IntersectionCanvas';
-import { IntersectionSignal3D } from '@/components/TrafficSignal3D';
 import { IntersectionScene3D } from '@/components/IntersectionScene3D';
 import type { AggregationRow, Street, Intersection } from '@/types';
 import { Button } from '@/components/ui/button';
@@ -18,8 +18,14 @@ import { Skeleton } from '@/components/ui/skeleton';
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
-import { ArrowLeft, TrendingDown, Printer, Play, Pause, Columns2, MonitorPlay, TrendingUp, X } from 'lucide-react';
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
+} from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { ArrowLeft, TrendingDown, Printer, Play, Pause, Columns2, MonitorPlay, TrendingUp, X, Pencil } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { toast } from 'sonner';
 
 const APPROACH_COLORS = ['#6366f1', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6', '#06b6d4'];
 
@@ -213,6 +219,11 @@ export function SignalTimingPage() {
   const [paused3D, setPaused3D] = useState(false);
   const [speed3D, setSpeed3D] = useState<1 | 2 | 4>(1);
   const [presentMode, setPresentMode] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editSaving, setEditSaving] = useState(false);
+  const [editStatus, setEditStatus] = useState<string>('fixed_time');
+  const [editCycle, setEditCycle] = useState('');
+  const [editSplits, setEditSplits] = useState<Record<number, string>>({});
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setPresentMode(false); };
@@ -261,6 +272,48 @@ export function SignalTimingPage() {
   const activeChunk   = data?.chunks.find(c => c.chunk_name === selectedChunk) ?? null;
   const activeTiming  = timingData.find(t => t.chunk_name === selectedChunk) ?? null;
 
+  function openEdit() {
+    if (!intersection) return;
+    setEditStatus(intersection.signal_status ?? 'fixed_time');
+    const cycle = intersection.existing_cycle_length ?? 90;
+    setEditCycle(String(cycle));
+    const splits: Record<number, string> = {};
+    const defaultGreen = Math.round(cycle / Math.max(streets.length, 1));
+    for (const s of streets) {
+      splits[s.id] = String(
+        (intersection.existing_green_splits as Record<string, number> | null)?.[String(s.id)]
+        ?? defaultGreen,
+      );
+    }
+    setEditSplits(splits);
+    setEditOpen(true);
+  }
+
+  async function saveEdit() {
+    if (!intersectionId) return;
+    setEditSaving(true);
+    try {
+      const isSignalized = editStatus !== 'unsignalized';
+      const cycle = isSignalized ? (parseInt(editCycle) || null) : null;
+      const splits: Record<string, number> | null = isSignalized && cycle != null
+        ? Object.fromEntries(streets.map(s => [String(s.id), parseInt(editSplits[s.id] ?? '0') || 0]))
+        : null;
+      const payload: SignalTimingPayload = {
+        signal_status: editStatus as SignalTimingPayload['signal_status'],
+        existing_cycle_length: cycle,
+        existing_green_splits: splits,
+      };
+      const updated = await intersectionsApi.patchTiming(intersectionId, payload);
+      setIntersection(updated);
+      setEditOpen(false);
+      toast.success('Signal timing updated');
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Failed to save');
+    } finally {
+      setEditSaving(false);
+    }
+  }
+
   return (
     <div className="flex flex-col gap-5">
       {/* Header */}
@@ -278,6 +331,12 @@ export function SignalTimingPage() {
             </p>
           )}
         </div>
+        {intersection && (
+          <Button variant="outline" size="sm" onClick={openEdit}>
+            <Pencil className="size-3.5 mr-1.5" />
+            Edit timing
+          </Button>
+        )}
         {data && (
           <Button variant="outline" size="sm" onClick={() => window.print()}>
             <Printer className="size-3.5 mr-1.5" />
@@ -307,7 +366,7 @@ export function SignalTimingPage() {
       <div className="hidden print:block mb-4">
         <h1 className="text-lg font-bold">{data?.intersection_name} — Signal Timing Report</h1>
         <p className="text-xs text-gray-500 mt-0.5">
-          Generated {new Date().toLocaleString()} · Webster's formula · {data?.signal_status.replace('_', ' ')}
+          Generated {new Date().toLocaleString('en-PH', { timeZoneName: 'short' })} · Webster's formula · {data?.signal_status.replace('_', ' ')}
         </p>
       </div>
 
@@ -335,10 +394,13 @@ export function SignalTimingPage() {
               This intersection is marked as {data.signal_status.replace('_', '-')} but no existing cycle length
               or green splits have been entered. The "before" delay is computed using an equal-split default
               and will understate or overstate the real improvement.{' '}
-              <span className="font-medium">
-                Go to Intersections → Signal Timing and enter the current cycle length and per-approach splits
-                to get an accurate comparison.
-              </span>
+              <button
+                type="button"
+                onClick={openEdit}
+                className="font-medium underline underline-offset-2 hover:opacity-80 transition-opacity"
+              >
+                Click "Edit timing" above to enter the current cycle length and per-approach splits.
+              </button>
             </div>
           )}
 
@@ -382,6 +444,23 @@ export function SignalTimingPage() {
             </div>
           </div>
 
+          {/* LOS legend */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+            <span className="font-medium text-foreground">LOS grade:</span>
+            {([
+              ['A', '≤10s — free flow'],
+              ['B', '10–20s — stable'],
+              ['C', '20–35s — acceptable'],
+              ['D', '35–55s — approaching unstable'],
+              ['E', '55–80s — unstable'],
+              ['F', '>80s — forced/breakdown'],
+            ] as const).map(([g, desc]) => (
+              <span key={g} className="flex items-center gap-1">
+                <LosBadge grade={g} /><span>{desc}</span>
+              </span>
+            ))}
+          </div>
+
           {/* Per-chunk table — click a row to select it for the chart / simulation */}
           <div className="rounded-lg border border-border overflow-hidden">
             <Table>
@@ -391,6 +470,7 @@ export function SignalTimingPage() {
                   <TableHead className="text-right">Before delay</TableHead>
                   <TableHead className="text-right">After delay</TableHead>
                   <TableHead className="text-right">Improvement</TableHead>
+                  <TableHead className="text-right">v/c ratio</TableHead>
                   <TableHead className="text-right">Veh-hrs saved</TableHead>
                 </TableRow>
               </TableHeader>
@@ -416,6 +496,14 @@ export function SignalTimingPage() {
                       <TableCell className={cn('text-right tabular-nums', improvement > 0 ? 'text-emerald-600' : 'text-muted-foreground')}>
                         {improvement > 0 ? `−${improvement.toFixed(1)}s (${pct}%)` : '—'}
                       </TableCell>
+                      <TableCell className="text-right tabular-nums text-xs">
+                        {fmtVc(chunk.vc_ratio_before)}
+                        {chunk.vc_ratio_before != null && chunk.vc_ratio_after != null && (
+                          <span className={cn('ml-1', chunk.vc_ratio_after < chunk.vc_ratio_before ? 'text-emerald-600' : 'text-rose-600')}>
+                            → {fmtVc(chunk.vc_ratio_after)}
+                          </span>
+                        )}
+                      </TableCell>
                       <TableCell className={cn('text-right tabular-nums', chunk.vehicle_hours_saved > 0 && 'text-emerald-600')}>
                         {chunk.vehicle_hours_saved > 0 ? `${chunk.vehicle_hours_saved.toFixed(2)} vh` : '—'}
                       </TableCell>
@@ -433,6 +521,7 @@ export function SignalTimingPage() {
                     <LosBadge grade={data.daily_summary.los_after} />
                   </TableCell>
                   <TableCell className="text-right text-muted-foreground">avg</TableCell>
+                  <TableCell className="text-right text-muted-foreground">—</TableCell>
                   <TableCell className={cn('text-right tabular-nums', data.daily_summary.total_vehicle_hours_saved > 0 && 'text-emerald-600')}>
                     {data.daily_summary.total_vehicle_hours_saved.toFixed(2)} vh
                   </TableCell>
@@ -454,7 +543,7 @@ export function SignalTimingPage() {
                       .filter(s => s.arm_direction !== 'unknown')
                       .map(s => ({
                         label: `${ARM_SHORT[s.arm_direction] ?? '?'} — ${s.name}`,
-                        greenSec: (intersection.existing_green_splits as Record<string, number>)[s.arm_direction] ?? 0,
+                        greenSec: (intersection.existing_green_splits as Record<string, number>)[String(s.id)] ?? 0,
                       }))}
                   />
                 ) : (
@@ -605,10 +694,13 @@ export function SignalTimingPage() {
                   typeMix={typeMix}
                   paused={paused3D}
                   speed={speed3D}
+                  streets={streets}
+                  existingCycleS={intersection?.existing_cycle_length ?? null}
+                  existingGreenSplits={intersection?.existing_green_splits ?? null}
                 />
               )}
 
-              {view3D && activeTiming && !sbs3D && (
+              {view3D && activeTiming && activeChunk && !sbs3D && (
                 <IntersectionScene3D
                   timing={activeTiming}
                   streets={streets}
@@ -621,10 +713,11 @@ export function SignalTimingPage() {
                   existingGreenSplits={intersection?.existing_green_splits ?? null}
                   paused={paused3D}
                   speed={speed3D}
+                  sim={activeChunk}
                 />
               )}
 
-              {view3D && activeTiming && sbs3D && (
+              {view3D && activeTiming && activeChunk && sbs3D && (
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <p className="text-xs text-muted-foreground text-center mb-1.5">Current timing (before)</p>
@@ -641,6 +734,7 @@ export function SignalTimingPage() {
                       paused={paused3D}
                       speed={speed3D}
                       height={340}
+                      sim={activeChunk}
                     />
                   </div>
                   <div>
@@ -658,6 +752,7 @@ export function SignalTimingPage() {
                       paused={paused3D}
                       speed={speed3D}
                       height={340}
+                      sim={activeChunk}
                     />
                   </div>
                 </div>
@@ -698,17 +793,23 @@ export function SignalTimingPage() {
                     Observed approach flows — 7-day average (PCU/hr)
                   </div>
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    {Object.entries(activeTiming.measured_flows).map(([sid, flow], idx) => (
-                      <div key={sid} className="rounded-md border border-border bg-muted/30 px-2 py-1.5 text-center">
-                        <div
-                          className="text-[9px] uppercase tracking-wide leading-tight"
-                          style={{ color: APPROACH_COLORS[idx % APPROACH_COLORS.length] }}
-                        >
-                          Approach {sid}
+                    {Object.entries(activeTiming.measured_flows).map(([sid, flow], idx) => {
+                      const st = streets.find(s => String(s.id) === sid);
+                      const label = st
+                        ? `${ARM_SHORT[st.arm_direction] ?? '?'} — ${st.name}`
+                        : `Approach ${sid}`;
+                      return (
+                        <div key={sid} className="rounded-md border border-border bg-muted/30 px-2 py-1.5 text-center">
+                          <div
+                            className="text-[9px] uppercase tracking-wide leading-tight"
+                            style={{ color: APPROACH_COLORS[idx % APPROACH_COLORS.length] }}
+                          >
+                            {label}
+                          </div>
+                          <div className="text-xs font-semibold mt-0.5">{flow} PCU/hr</div>
                         </div>
-                        <div className="text-xs font-semibold mt-0.5">{flow} PCU/hr</div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               ) : (
@@ -820,9 +921,12 @@ export function SignalTimingPage() {
                 typeMix={typeMix}
                 paused={paused3D}
                 speed={speed3D}
+                streets={streets}
+                existingCycleS={intersection?.existing_cycle_length ?? null}
+                existingGreenSplits={intersection?.existing_green_splits ?? null}
               />
             )}
-            {view3D && activeTiming && !sbs3D && (
+            {view3D && activeTiming && activeChunk && !sbs3D && (
               <IntersectionScene3D
                 timing={activeTiming}
                 streets={streets}
@@ -836,9 +940,10 @@ export function SignalTimingPage() {
                 paused={paused3D}
                 speed={speed3D}
                 height={window.innerHeight - 140}
+                sim={activeChunk}
               />
             )}
-            {view3D && activeTiming && sbs3D && (
+            {view3D && activeTiming && activeChunk && sbs3D && (
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <p className="text-[11px] text-white/40 text-center mb-1.5">Current timing (before)</p>
@@ -855,6 +960,7 @@ export function SignalTimingPage() {
                     paused={paused3D}
                     speed={speed3D}
                     height={window.innerHeight - 160}
+                    sim={activeChunk}
                   />
                 </div>
                 <div>
@@ -872,6 +978,7 @@ export function SignalTimingPage() {
                     paused={paused3D}
                     speed={speed3D}
                     height={window.innerHeight - 160}
+                    sim={activeChunk}
                   />
                 </div>
               </div>
@@ -884,6 +991,83 @@ export function SignalTimingPage() {
           </div>
         </div>
       )}
+
+      {/* Edit signal timing dialog */}
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit signal timing</DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col gap-4 py-2">
+            <div className="flex flex-col gap-1.5">
+              <Label>Signal type</Label>
+              <div className="flex gap-2">
+                {(['fixed_time', 'actuated', 'unsignalized'] as const).map(s => (
+                  <button
+                    key={s}
+                    type="button"
+                    onClick={() => setEditStatus(s)}
+                    className={cn(
+                      'flex-1 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors',
+                      editStatus === s
+                        ? 'bg-foreground text-background border-foreground'
+                        : 'border-border text-muted-foreground hover:text-foreground',
+                    )}
+                  >
+                    {s === 'fixed_time' ? 'Fixed-time' : s === 'actuated' ? 'Actuated' : 'Unsignalized'}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {editStatus !== 'unsignalized' && (
+              <>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="edit-cycle">Cycle length (seconds)</Label>
+                  <Input
+                    id="edit-cycle"
+                    type="number"
+                    min={20}
+                    max={180}
+                    value={editCycle}
+                    onChange={e => setEditCycle(e.target.value)}
+                    placeholder="e.g. 90"
+                  />
+                </div>
+
+                {streets.length > 0 && (
+                  <div className="flex flex-col gap-2">
+                    <Label>Green time per approach (seconds)</Label>
+                    {streets.map(s => (
+                      <div key={s.id} className="flex items-center gap-3">
+                        <span className="text-xs text-muted-foreground w-28 shrink-0 truncate capitalize">
+                          {s.arm_direction !== 'unknown' ? s.arm_direction : s.name}
+                        </span>
+                        <Input
+                          type="number"
+                          min={5}
+                          max={120}
+                          value={editSplits[s.id] ?? ''}
+                          onChange={e => setEditSplits(prev => ({ ...prev, [s.id]: e.target.value }))}
+                          placeholder="e.g. 22"
+                          className="h-8 text-sm"
+                        />
+                        <span className="text-xs text-muted-foreground shrink-0">s</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setEditOpen(false)}>Cancel</Button>
+            <Button size="sm" onClick={saveEdit} disabled={editSaving}>
+              {editSaving ? 'Saving…' : 'Save'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

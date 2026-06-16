@@ -34,6 +34,7 @@ def create_region(
 @router.get("/", response_model=list[RegionResponse])
 def get_regions(
     db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
 ) -> list[RegionResponse]:
     return db.query(Region).all()
 
@@ -42,6 +43,7 @@ def get_regions(
 def get_region(
     region_id: int,
     db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
 ) -> RegionResponse:
     db_region = db.get(Region, region_id)
 

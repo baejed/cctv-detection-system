@@ -4,7 +4,6 @@ import { intersectionsApi } from '@/services/intersections';
 import { recommendationsApi, type RecommendationResponse } from '@/services/recommendations';
 import type { Intersection } from '@/types';
 import { Button } from '@/components/ui/button';
-import { Skeleton } from '@/components/ui/skeleton';
 import { Loader2, RefreshCw, Lightbulb } from 'lucide-react';
 import { LoadingRobot } from '@/components/LoadingRobot';
 import { SummaryStrip } from '@/components/recommendations/SummaryStrip';
@@ -15,7 +14,7 @@ import { statusBucket, type StatusBucket } from '@/components/recommendations/st
 
 const DEBUG = import.meta.env.DEV || import.meta.env.VITE_DEBUG_RECOMMENDATIONS === '1';
 function dlog(...args: unknown[]) { if (DEBUG) console.log('[recommendations]', ...args); }
-function derr(...args: unknown[]) { console.error('[recommendations]', ...args); }
+function derr(...args: unknown[]) { if (DEBUG) console.error('[recommendations]', ...args); }
 
 export function RecommendationsPage() {
   const [intersections, setIntersections] = useState<Intersection[]>([]);

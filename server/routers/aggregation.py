@@ -1,15 +1,19 @@
-# server/routers/aggregation.py
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
-from common.database import SessionLocal
-from common import models
-from server.utils import get_bearer_token, get_current_user, get_user_from_token
-from sqlalchemy import text
-from datetime import datetime
-from typing import Annotated, Optional, Literal
 import asyncio
 import json
+import logging
 import os
+from datetime import datetime
+from typing import Annotated, Literal, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
+from sqlalchemy import text
+
+from common import models
+from common.database import SessionLocal
+from server.utils import get_bearer_token, get_current_user, get_user_from_token
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/aggregation", tags=["Aggregation"])
 
@@ -31,8 +35,8 @@ async def aggregation_pusher():
                     street_id,
                     direction,
                     object_type,
-                    DATE_TRUNC('day', NOW() AT TIME ZONE :tz) AS window_start,
-                    COUNT(*)::int                             AS count
+                    DATE_TRUNC('minute', NOW() AT TIME ZONE :tz) AS window_start,
+                    COUNT(*)::int                                 AS count
                 FROM detection_street_view
                 WHERE time >= DATE_TRUNC('day', NOW() AT TIME ZONE :tz) AT TIME ZONE :tz
                 GROUP BY intersection_id, intersection_name, street_id, direction, object_type
@@ -56,7 +60,7 @@ async def aggregation_pusher():
                 await queue.put(payload)
 
         except Exception as e:
-            print(f"[SSE] aggregation query failed: {e}")
+            logger.error("SSE aggregation query failed: %s", e)
         finally:
             db.close()
 
@@ -97,7 +101,10 @@ async def stream_aggregation(
         except asyncio.CancelledError:
             pass
         finally:
-            connected_clients.remove(queue)
+            try:
+                connected_clients.remove(queue)
+            except ValueError:
+                pass
 
     return StreamingResponse(
         event_generator(),
@@ -119,8 +126,8 @@ def get_history(
     user: models.User = Depends(get_current_user),
 ):
     """Return aggregation_summaries for a date range, bucketed by hour/day/week."""
-    # bucket is a Literal so it is safe to interpolate
-    trunc = bucket
+    _TRUNC_ALLOWLIST = {"hour": "hour", "day": "day", "week": "week"}
+    trunc = _TRUNC_ALLOWLIST[bucket]
 
     conditions = ["a.window_start >= :start", "a.window_start < :end"]
     params: dict = {"start": start, "end": end}

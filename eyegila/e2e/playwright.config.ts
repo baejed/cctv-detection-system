@@ -18,10 +18,12 @@ export default defineConfig({
   retries: 1,
   timeout: 30_000,
   use: {
-    baseURL: 'http://localhost:5173',
+    baseURL: process.env.BASE_URL || 'http://localhost:5173',
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
   },
+  reporter: process.env.CI ? 'github' : 'list',
+  outputDir: process.env.PLAYWRIGHT_OUTPUT_DIR || 'test-results',
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
   ],

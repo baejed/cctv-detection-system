@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from common.database import SessionLocal, get_db
 from common import models
 from server.utils import get_current_user
+from server.rate_limit import limiter
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from datetime import datetime, timedelta, timezone
@@ -426,6 +427,7 @@ def run_generate_all(db: Session, artifacts) -> list[dict]:
 
 
 @router.post("/generate-all", response_model=list[RecommendationResponse])
+@limiter.limit("2/minute")
 def generate_all_recommendations(
     request: Request,
     db: Annotated[Session, Depends(get_db)],

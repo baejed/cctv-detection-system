@@ -12,6 +12,7 @@
 import { test, expect, type Page } from '@playwright/test';
 
 const BASE_URL  = process.env.BASE_URL  || 'http://localhost:5173';
+const API_URL   = process.env.API_URL   || 'http://localhost:8000';
 const ADMIN_USER = process.env.ADMIN_USER || 'admin';
 const ADMIN_PASS = process.env.ADMIN_PASS || 'admin';
 
@@ -19,9 +20,9 @@ const ADMIN_PASS = process.env.ADMIN_PASS || 'admin';
 
 async function login(page: Page) {
   await page.goto(`${BASE_URL}/login`);
-  await page.getByPlaceholder(/username/i).fill(ADMIN_USER);
-  await page.getByPlaceholder(/password/i).fill(ADMIN_PASS);
-  await page.getByRole('button', { name: /login|sign in/i }).click();
+  await page.locator('#username').fill(ADMIN_USER);
+  await page.locator('#password').fill(ADMIN_PASS);
+  await page.getByRole('button', { name: /sign in/i }).click();
   // Wait until we're redirected away from /login
   await expect(page).not.toHaveURL(/login/, { timeout: 10_000 });
 }
@@ -31,16 +32,16 @@ async function login(page: Page) {
 test.describe('Login', () => {
   test('login page renders username and password fields', async ({ page }) => {
     await page.goto(`${BASE_URL}/login`);
-    await expect(page.getByPlaceholder(/username/i)).toBeVisible();
-    await expect(page.getByPlaceholder(/password/i)).toBeVisible();
-    await expect(page.getByRole('button', { name: /login|sign in/i })).toBeEnabled();
+    await expect(page.locator('#username')).toBeVisible();
+    await expect(page.locator('#password')).toBeVisible();
+    await expect(page.getByRole('button', { name: /sign in/i })).toBeEnabled();
   });
 
   test('wrong password shows error message', async ({ page }) => {
     await page.goto(`${BASE_URL}/login`);
-    await page.getByPlaceholder(/username/i).fill('admin');
-    await page.getByPlaceholder(/password/i).fill('wrong-password');
-    await page.getByRole('button', { name: /login|sign in/i }).click();
+    await page.locator('#username').fill('admin');
+    await page.locator('#password').fill('wrong-password');
+    await page.getByRole('button', { name: /sign in/i }).click();
     // Some visible indication of failure (toast, error text, or still on /login)
     await expect(page).toHaveURL(/login/, { timeout: 5_000 });
   });
@@ -106,8 +107,7 @@ test.describe('Signal Timing', () => {
   async function goToFirstSignalTiming(page: Page): Promise<boolean> {
     // Navigate via API to get the first intersection id, then go directly
     const token = await page.evaluate(() => localStorage.getItem('eyegila_token'));
-    const apiUrl = 'http://localhost:8000';
-    const res = await page.request.get(`${apiUrl}/intersections/`, {
+    const res = await page.request.get(`${API_URL}/intersections/`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!res.ok()) return false;
@@ -168,11 +168,11 @@ test.describe('Signal Timing', () => {
     if (!ok) { test.skip(); return; }
     // Trigger generate so timing table has data
     const token = await page.evaluate(() => localStorage.getItem('eyegila_token'));
-    const res = await page.request.get('http://localhost:8000/intersections/', {
+    const res = await page.request.get(`${API_URL}/intersections/`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     const [first] = await res.json();
-    await page.request.post(`http://localhost:8000/recommendations/generate/${first.id}`, {
+    await page.request.post(`${API_URL}/recommendations/generate/${first.id}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     await page.reload();

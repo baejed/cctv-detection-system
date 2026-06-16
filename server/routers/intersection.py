@@ -74,10 +74,10 @@ def update_intersection(
         db_intersection.name = intersection.name
         message = f"User {user.username} updated intersection {old_name} to {db_intersection.name}"
     
-    if intersection.latitude:
+    if intersection.latitude is not None:
         db_intersection.latitude = intersection.latitude
 
-    if intersection.longitude:
+    if intersection.longitude is not None:
         db_intersection.longitude = intersection.longitude
 
     if intersection.crossing_width_m is not None:
@@ -136,6 +136,8 @@ async def import_csv(
     errors: list[str] = []
 
     rows = list(reader)
+    if len(rows) > 500:
+        raise HTTPException(status_code=400, detail=f"CSV exceeds 500-row limit ({len(rows)} rows). Split into smaller files.")
     for i, row in enumerate(rows, start=2):  # row 1 is header
         row = {k.strip(): v.strip() for k, v in row.items()}
         name = row.get("intersection_name", "")

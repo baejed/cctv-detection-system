@@ -3,7 +3,7 @@ from server.utils import log_and_commit, get_current_user
 from fastapi import APIRouter, Depends, HTTPException, Query
 from common.models import User, Intersection, CCTV, Detection, DetectionInRegion, Region
 from common.database import get_db
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import Annotated, Optional
 from datetime import datetime
 
@@ -52,7 +52,11 @@ def get_region_detections(
     if not db_region:
         raise HTTPException(status_code=404, detail="Region not found")
 
-    q = db.query(DetectionInRegion).filter(DetectionInRegion.region_id == region_id)
+    q = (
+        db.query(DetectionInRegion)
+        .options(joinedload(DetectionInRegion.detection))
+        .filter(DetectionInRegion.region_id == region_id)
+    )
 
     if start_time:
         q = q.filter(DetectionInRegion.time >= start_time)

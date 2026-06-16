@@ -84,15 +84,19 @@ function WarrantChart({ buckets, threshold, dataKey, thresholdLabel, qualifyingT
             />
             <Tooltip
               contentStyle={{ fontSize: 11, padding: '4px 8px' }}
-              formatter={(v: number) => [v, dataKey === 'peds' ? 'peds/hr' : 'veh/hr']}
-              labelFormatter={(_: unknown, payload: {payload?: HourlyBucket}[]) => {
+              formatter={(v) => [Number(v ?? 0), dataKey === 'peds' ? 'peds/hr' : 'veh/hr']}
+              labelFormatter={(_: unknown, payload: readonly {payload?: HourlyBucket}[]) => {
                 const b = payload?.[0]?.payload;
                 return b ? `Hour ${b.hour}:00` : '';
               }}
             />
-            <ReferenceLine y={threshold} stroke="#10b981" strokeDasharray="3 3" strokeWidth={1.5}>
-              <label style={{ fontSize: 8, fill: '#10b981' }} position="right" value={thresholdLabel} />
-            </ReferenceLine>
+            <ReferenceLine
+              y={threshold}
+              stroke="#10b981"
+              strokeDasharray="3 3"
+              strokeWidth={1.5}
+              label={{ value: thresholdLabel, position: 'right', style: { fontSize: 8, fill: '#10b981' } }}
+            />
             <Bar dataKey={dataKey} radius={[2, 2, 0, 0]}>
               {buckets.map((b, i) => (
                 <Cell

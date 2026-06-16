@@ -1,8 +1,11 @@
+import logging
 import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
@@ -121,7 +124,7 @@ async def upload_video(
         job_timeout=3600,
     )
 
-    print(f"[upload] video_id={video_id} job_id={job.id} user={user.username}")
+    logger.info("upload video_id=%s job_id=%s user=%s", video_id, job.id, user.username)
 
     return JSONResponse({
         "video_id": video_id,
@@ -148,8 +151,8 @@ def get_video_status(
         "total_frames":     video.total_frames,
         "processed_frames": video.processed_frames,
         "percent": (
-            round(video.processed_frames / video.total_frames * 100, 1) # type: ignore
-            if video.total_frames else 0 # type: ignore
+            round(video.processed_frames / video.total_frames * 100, 1)
+            if video.total_frames and video.processed_frames is not None else 0
         ),
         "processed_at": video.processed_at,
     }

@@ -229,6 +229,7 @@ def create_cctv(
 @router.get("/", response_model=list[CCTVResponse])
 def get_cctvs(
     db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
 ) -> list[CCTVResponse]:
     cctvs = db.query(CCTV).all()
     statuses = _camera_statuses(db)
@@ -256,6 +257,7 @@ def discover_cameras(
 def get_cctv(
     cctv_id: int,
     db: Annotated[Session, Depends(get_db)],
+    user: Annotated[User, Depends(get_current_user)],
 ) -> CCTVResponse:
     from sqlalchemy import text as _text
     cctv = db.get(CCTV, cctv_id)

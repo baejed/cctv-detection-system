@@ -235,6 +235,7 @@ export function DashboardPage() {
   const [intersections, setIntersections] = useState<Intersection[]>([]);
   const [historyData, setHistoryData]     = useState<AggregationRow[]>([]);
   const [loading, setLoading]             = useState(true);
+  const [error, setError]                 = useState<string | null>(null);
   const [viewMode, setViewMode]           = useState<'grid' | 'map'>('grid');
   const [recsById, setRecsById]           = useState<Map<number, RecommendationResponse>>(new Map());
 
@@ -256,10 +257,10 @@ export function DashboardPage() {
       aggregationApi.history({ start: oneHourAgo.toISOString(), end: now.toISOString(), bucket: 'hour' }),
     ])
       .then(([c, s, i, h]) => { setCctvs(c); setStreets(s); setIntersections(i); setHistoryData(h); })
-      .catch(console.error)
+      .catch((err) => { setError(err instanceof Error ? err.message : 'Failed to load dashboard data'); })
       .finally(() => setLoading(false));
 
-    const t = setInterval(() => cctvsApi.list().then(setCctvs).catch(console.error), 30_000);
+    const t = setInterval(() => cctvsApi.list().then(setCctvs).catch(() => {}), 30_000);
     return () => clearInterval(t);
   }, []);
 
@@ -523,6 +524,18 @@ export function DashboardPage() {
             </div>
           </div>
         </div>
+
+        {error && (
+          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive flex items-center gap-2">
+            <span className="font-medium">Failed to load:</span> {error}
+            <button
+              className="ml-auto underline underline-offset-2"
+              onClick={() => window.location.reload()}
+            >
+              Retry
+            </button>
+          </div>
+        )}
 
         {viewMode === 'map' ? (
           loading ? (
