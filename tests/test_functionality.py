@@ -1,5 +1,5 @@
 """
-Functionality tests — end-to-end user-facing flows.
+Functionality tests - end-to-end user-facing flows.
 
 Each test simulates one coherent user journey rather than a single endpoint.
 All tests are self-contained (create + clean up their own data) and require
@@ -326,7 +326,7 @@ def test_ft06_csv_bulk_import(auth):
       1. Upload a CSV with 1 intersection and 2 cameras (unique name per run)
       2. Verify the intersection was created
       3. Verify both cameras were created and attached
-      4. Upload the same CSV again — verify no duplicate intersection
+      4. Upload the same CSV again - verify no duplicate intersection
 
     Covers the onboarding path where an operator imports an existing CCTV
     inventory from a spreadsheet.
@@ -369,7 +369,7 @@ def test_ft06_csv_bulk_import(auth):
             break
 
 
-# ── FT-07: Auth flow — login, use, logout, revoke ────────────────────────────
+# ── FT-07: Auth flow - login, use, logout, revoke ────────────────────────────
 
 def test_ft07_auth_login_logout(auth):
     """
@@ -379,7 +379,7 @@ def test_ft07_auth_login_logout(auth):
       1. Login with valid credentials to get a fresh token
       2. Use that token to hit a protected endpoint (success)
       3. Logout (DELETE /login)
-      4. Use the same token again — must be rejected 401/403
+      4. Use the same token again - must be rejected 401/403
 
     Verifies session management works correctly so stale sessions
     cannot be replayed after an operator logs out.
@@ -407,7 +407,7 @@ def test_ft07_auth_login_logout(auth):
         f"Revoked token was still accepted (status={r.status_code})"
 
 
-# ── FT-08: Simulation quality — before/after delay ordering ──────────────────
+# ── FT-08: Simulation quality - before/after delay ordering ──────────────────
 
 def test_ft08_simulation_delay_ordering(auth):
     """
@@ -439,7 +439,7 @@ def test_ft08_simulation_delay_ordering(auth):
         assert ds["los_before"] in valid_los
         assert ds["los_after"]  in valid_los
 
-        # vehicle_hours_saved is a real number (can be negative — that's valid)
+        # vehicle_hours_saved is a real number (can be negative - that's valid)
         import math
         assert math.isfinite(ds["total_vehicle_hours_saved"])
 

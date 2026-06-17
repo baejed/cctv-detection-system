@@ -1,0 +1,77 @@
+# Mac/CI variant of k3s/worker.yaml - strips NVIDIA GPU requirements so the
+# worker Deployment can schedule on any node. Use this when smoke-testing the
+# manifests on a local k3d / kind cluster that has no GPU. The HPA in
+# worker-hpa.yaml targets `name: worker`, so this Deployment slots in as a
+# drop-in replacement for the GPU variant during testing.
+#
+# DO NOT ship this to prod. It runs YOLO inference on CPU (~0.27 cycles/sec
+# for batch=4 on a Mac), which is fine for "does the manifest apply and
+# does the HPA scale up" testing, but completely insufficient for live
+# camera processing.
+#
+# Apply with:
+#   kubectl apply -f k3s/worker-cpu.yaml
+#
+# Prereqs: image `eyegila/worker-cpu:latest` must exist in the cluster's
+# local registry. Build + import for k3d with:
+#   docker build -t eyegila/worker-cpu:latest -f worker/Dockerfile.mac .
+#   k3d image import eyegila/worker-cpu:latest -c eyegila
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: eyegila
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      containers:
+        - name: worker
+          image: eyegila/worker-cpu:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "worker.main"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: eyegila-secret
+                  key: DATABASE_URL
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: eyegila-secret
+                  key: REDIS_URL
+            - name: FERNET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: eyegila-secret
+                  key: FERNET_KEY
+            - name: CAMERAS_PER_WORKER
+              value: "4"
+            - name: INFERENCE_EVERY_N
+              value: "3"
+            # TRT cache is unused on CPU but the env path keeps the worker
+            # init path identical to the GPU variant, easier to diff.
+            - name: TRT_CACHE_DIR
+              value: /app/trt_cache
+            - name: WORKER_PUBLISHES_FRAMES
+              value: "1"
+          livenessProbe:
+            exec:
+              command: ["test", "-f", "/tmp/worker-alive"]
+            initialDelaySeconds: 90
+            periodSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests:
+              memory: 1Gi
+              cpu: "1"
+            limits:
+              memory: 3Gi
+              cpu: "2"

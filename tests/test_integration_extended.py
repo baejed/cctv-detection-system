@@ -1,5 +1,5 @@
 """
-Extended integration tests — require a live stack (docker compose up + seed data).
+Extended integration tests - require a live stack (docker compose up + seed data).
 
 Covers edge cases not tested in the existing suites:
   - Auth: unauthenticated / wrong token rejection

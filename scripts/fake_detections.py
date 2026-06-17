@@ -27,6 +27,7 @@ python scripts/fake_detections.py --list
 """
 
 import argparse
+import os
 import random
 import sys
 from datetime import datetime, timedelta, timezone
@@ -113,7 +114,32 @@ PEAK_DETECTIONS_PER_CAMERA_PER_HOUR = 90
 # Intersections to seed -real Tagum City locations
 # ---------------------------------------------------------------------------
 
-MEDIAMTX_HOST = "192.168.254.104"
+# Detect the LAN IP of the host running the seeder so the cameras it creates
+# point at the MediaMTX instance on this machine by default. Override either
+# with the MEDIAMTX_HOST env var (preferred for prod) or hard-coded fallback.
+def _detect_host_ip() -> str:
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            # No packet is actually sent - we just ask the kernel which local
+            # address it would use to reach a public IP. That picks the
+            # primary LAN interface even with VPN / multiple NICs present.
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+        finally:
+            s.close()
+    except Exception:
+        return "127.0.0.1"
+
+
+MEDIAMTX_HOST   = os.environ.get("MEDIAMTX_HOST") or _detect_host_ip()
+# Default to MediaMTX RTMP port - that's what this stack actually runs the
+# physical cameras on (rtmp://<host>:1935/cam1…cam5). Override to 8554 if
+# you point at the default RTSP port instead.
+MEDIAMTX_PORT   = int(os.environ.get("MEDIAMTX_PORT", "1935"))
+MEDIAMTX_SCHEME = os.environ.get("MEDIAMTX_SCHEME", "rtmp")
+_STREAM_PREFIX  = f"{MEDIAMTX_SCHEME}://{MEDIAMTX_HOST}:{MEDIAMTX_PORT}"
 
 SEED_INTERSECTIONS = [
     {
@@ -124,25 +150,25 @@ SEED_INTERSECTIONS = [
             {
                 "name": "Northbound -Apokon Road",
                 "cam_name": "Cam A1 -Apokon Northbound",
-                "stream": f"rtsp://{MEDIAMTX_HOST}:8554/cam1",
+                "stream": f"{_STREAM_PREFIX}/cam1",
                 "direction": "northbound",
             },
             {
                 "name": "Southbound -Apokon Road",
                 "cam_name": "Cam A2 -Apokon Southbound",
-                "stream": f"rtsp://{MEDIAMTX_HOST}:8554/cam2",
+                "stream": f"{_STREAM_PREFIX}/cam2",
                 "direction": "southbound",
             },
             {
                 "name": "Eastbound -Lapu-Lapu Street",
                 "cam_name": "Cam A3 -Lapu-Lapu Eastbound",
-                "stream": f"rtsp://{MEDIAMTX_HOST}:8554/cam3",
+                "stream": f"{_STREAM_PREFIX}/cam3",
                 "direction": "eastbound",
             },
             {
                 "name": "Westbound -Lapu-Lapu Street",
                 "cam_name": "Cam A4 -Lapu-Lapu Westbound",
-                "stream": f"rtsp://{MEDIAMTX_HOST}:8554/cam4",
+                "stream": f"{_STREAM_PREFIX}/cam4",
                 "direction": "westbound",
             },
         ],
@@ -155,25 +181,25 @@ SEED_INTERSECTIONS = [
             {
                 "name": "Northbound -Rizal Street",
                 "cam_name": "Cam B1 -Rizal Northbound",
-                "stream": f"rtsp://{MEDIAMTX_HOST}:8554/cam1",
+                "stream": f"{_STREAM_PREFIX}/cam1",
                 "direction": "northbound",
             },
             {
                 "name": "Southbound -Rizal Street",
                 "cam_name": "Cam B2 -Rizal Southbound",
-                "stream": f"rtsp://{MEDIAMTX_HOST}:8554/cam2",
+                "stream": f"{_STREAM_PREFIX}/cam2",
                 "direction": "southbound",
             },
             {
                 "name": "Eastbound -Coryville Road",
                 "cam_name": "Cam B3 -Coryville Eastbound",
-                "stream": f"rtsp://{MEDIAMTX_HOST}:8554/cam3",
+                "stream": f"{_STREAM_PREFIX}/cam3",
                 "direction": "eastbound",
             },
             {
                 "name": "Westbound -Coryville Road",
                 "cam_name": "Cam B4 -Coryville Westbound",
-                "stream": f"rtsp://{MEDIAMTX_HOST}:8554/cam4",
+                "stream": f"{_STREAM_PREFIX}/cam4",
                 "direction": "westbound",
             },
         ],
@@ -186,25 +212,25 @@ SEED_INTERSECTIONS = [
             {
                 "name": "Northbound -National Highway",
                 "cam_name": "Cam C1 -Highway Northbound",
-                "stream": f"rtsp://{MEDIAMTX_HOST}:8554/cam1",
+                "stream": f"{_STREAM_PREFIX}/cam1",
                 "direction": "northbound",
             },
             {
                 "name": "Southbound -National Highway",
                 "cam_name": "Cam C2 -Highway Southbound",
-                "stream": f"rtsp://{MEDIAMTX_HOST}:8554/cam2",
+                "stream": f"{_STREAM_PREFIX}/cam2",
                 "direction": "southbound",
             },
             {
                 "name": "Eastbound -Dahlia Street",
                 "cam_name": "Cam C3 -Dahlia Eastbound",
-                "stream": f"rtsp://{MEDIAMTX_HOST}:8554/cam3",
+                "stream": f"{_STREAM_PREFIX}/cam3",
                 "direction": "eastbound",
             },
             {
                 "name": "Westbound -Dahlia Street",
                 "cam_name": "Cam C4 -Dahlia Westbound",
-                "stream": f"rtsp://{MEDIAMTX_HOST}:8554/cam4",
+                "stream": f"{_STREAM_PREFIX}/cam4",
                 "direction": "westbound",
             },
         ],
@@ -474,25 +500,25 @@ SCENARIO_INTERSECTIONS = [
         "longitude": 125.8133,
         "expected": "warranted",
         "streets": [
-            {"name": "Northbound — Visayan Ave",  "cam": "Cam V1 — Visayan NB", "peak": 320, "direction": "northbound"},
-            {"name": "Southbound — Visayan Ave",  "cam": "Cam V2 — Visayan SB", "peak": 270, "direction": "southbound"},
-            {"name": "Eastbound — Digos Road",    "cam": "Cam V3 — Digos EB",   "peak": 100, "direction": "eastbound"},
-            {"name": "Westbound — Digos Road",    "cam": "Cam V4 — Digos WB",   "peak":  85, "direction": "westbound"},
+            {"name": "Northbound - Visayan Ave",  "cam": "Cam V1 - Visayan NB", "peak": 320, "direction": "northbound"},
+            {"name": "Southbound - Visayan Ave",  "cam": "Cam V2 - Visayan SB", "peak": 270, "direction": "southbound"},
+            {"name": "Eastbound - Digos Road",    "cam": "Cam V3 - Digos EB",   "peak": 100, "direction": "eastbound"},
+            {"name": "Westbound - Digos Road",    "cam": "Cam V4 - Digos WB",   "peak":  85, "direction": "westbound"},
         ],
     },
     {
         # Moderate 4-way collector: NS still dominant but EW carries meaningful load.
-        # Warrant is borderline — Webster still improves flow but the gain is smaller.
+        # Warrant is borderline - Webster still improves flow but the gain is smaller.
         # Peaks calibrated so 4-phase Y ≈ 0.49, producing a ~100s Webster cycle.
         "name": "Caryving Road Junction",
         "latitude":  7.4498,
         "longitude": 125.8071,
         "expected": "borderline",
         "streets": [
-            {"name": "Northbound — Caryving Rd",  "cam": "Cam C1 — Caryving NB", "peak": 250, "direction": "northbound"},
-            {"name": "Southbound — Caryving Rd",  "cam": "Cam C2 — Caryving SB", "peak": 210, "direction": "southbound"},
-            {"name": "Eastbound — Buhangin St",   "cam": "Cam C3 — Buhangin EB", "peak":  90, "direction": "eastbound"},
-            {"name": "Westbound — Buhangin St",   "cam": "Cam C4 — Buhangin WB", "peak":  75, "direction": "westbound"},
+            {"name": "Northbound - Caryving Rd",  "cam": "Cam C1 - Caryving NB", "peak": 250, "direction": "northbound"},
+            {"name": "Southbound - Caryving Rd",  "cam": "Cam C2 - Caryving SB", "peak": 210, "direction": "southbound"},
+            {"name": "Eastbound - Buhangin St",   "cam": "Cam C3 - Buhangin EB", "peak":  90, "direction": "eastbound"},
+            {"name": "Westbound - Buhangin St",   "cam": "Cam C4 - Buhangin WB", "peak":  75, "direction": "westbound"},
         ],
     },
 ]
@@ -530,7 +556,7 @@ def _insert_exact_hour(db, cctv_id: int, region_id: int, hour_start: "datetime",
 def seed_scenarios(db, weights: dict):
     """
     Create (or reuse) two demo intersections and fill a full 7-day detection
-    history using time-of-day patterns — so every TOD chunk (AM Peak, Midday,
+    history using time-of-day patterns - so every TOD chunk (AM Peak, Midday,
     PM Peak, etc.) has enough data for the 7-day rolling average used by
     generate_simulation().
 
@@ -595,7 +621,7 @@ def seed_scenarios(db, weights: dict):
                 cctv = CCTV(
                     intersection_id=intersection.id,
                     name=s["cam"],
-                    rtsp_url=f"rtsp://{MEDIAMTX_HOST}:8554/scenario",
+                    rtsp_url=f"{_STREAM_PREFIX}/scenario",
                     status="offline",
                 )
                 db.add(cctv)
@@ -631,7 +657,7 @@ def seed_scenarios(db, weights: dict):
 
         # Set existing (pre-optimisation) signal timing.
         # 4-phase equal-split: each direction gets the same green time so the
-        # dominant NS approach is under-served — Webster then redistributes
+        # dominant NS approach is under-served - Webster then redistributes
         # green time proportionally to produce a clear before/after difference.
         #
         # 4 phases × (lost_time + all_red) = 4 × 7 = 28 s overhead
@@ -679,6 +705,318 @@ def seed_scenarios(db, weights: dict):
     print("Done. Wait ~60 s for the TimescaleDB continuous aggregate to refresh,")
     print("then run 'Generate all' on the Recommendations page to see results.")
     print()
+
+
+# ---------------------------------------------------------------------------
+# Demo data - two intersections that exercise the warranted + not-warranted
+# paths end-to-end, with all six detection classes present.
+# ---------------------------------------------------------------------------
+
+# Per-approach peak volume profiles. Tuned so:
+#   warranted   → total intersection volume ≫ MUTCD W1 threshold (300/hr × 8h)
+#   not_warranted → well under threshold at every hour
+DEMO_INTERSECTIONS = [
+    {
+        "name": "Demo - Warranted Arterial",
+        "latitude": 7.4502,
+        "longitude": 125.8120,
+        "signal_status": "fixed_time",
+        # All-class weights - every box the model emits has a realistic share,
+        # so dashboard breakdowns aren't dominated by one type.
+        "class_weights": {
+            "car":        0.30,
+            "motorcycle": 0.28,
+            "tricycle":   0.22,
+            "truck":      0.08,
+            "pedicab":    0.08,
+            "pedestrian": 0.04,
+        },
+        # NS dominant (peak 380/hr/approach), EW secondary (130/hr/approach).
+        # Equal-split existing timing wastes green on EW → Webster reallocates
+        # to NS → ~15–25 s/veh delay reduction at peak.
+        "streets": [
+            {"name": "Northbound - Demo Ave", "cam": "Cam DW-N", "peak": 380, "direction": "northbound"},
+            {"name": "Southbound - Demo Ave", "cam": "Cam DW-S", "peak": 360, "direction": "southbound"},
+            {"name": "Eastbound - Demo Rd",   "cam": "Cam DW-E", "peak": 140, "direction": "eastbound"},
+            {"name": "Westbound - Demo Rd",   "cam": "Cam DW-W", "peak": 120, "direction": "westbound"},
+        ],
+    },
+    {
+        "name": "Demo - Quiet Residential Junction",
+        "latitude": 7.4530,
+        "longitude": 125.8150,
+        "signal_status": "unsignalized",
+        "class_weights": {
+            "car":        0.20,
+            "motorcycle": 0.30,
+            "tricycle":   0.20,
+            "truck":      0.02,
+            "pedicab":    0.13,
+            "pedestrian": 0.15,
+        },
+        # Low volume on every approach - comfortably under every MUTCD warrant
+        # threshold so the recommendation cleanly returns "not warranted" and
+        # the gating logic in recommendations.py kicks in.
+        "streets": [
+            {"name": "Northbound - Quiet St", "cam": "Cam DQ-N", "peak": 35, "direction": "northbound"},
+            {"name": "Southbound - Quiet St", "cam": "Cam DQ-S", "peak": 30, "direction": "southbound"},
+            {"name": "Eastbound - Side Lane", "cam": "Cam DQ-E", "peak": 18, "direction": "eastbound"},
+            {"name": "Westbound - Side Lane", "cam": "Cam DQ-W", "peak": 15, "direction": "westbound"},
+        ],
+    },
+]
+
+
+def seed_demo(db, days: int = 7):
+    """Seed two demo intersections covering the warranted and not-warranted paths.
+
+    Re-runnable: existing detections for the demo intersection names are wiped
+    first so each run produces a clean before/after for screenshots.
+    """
+    from sqlalchemy import text
+
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    fill_start = now - timedelta(days=days)
+
+    print("Seeding demo intersections …")
+    print(f"  Range: {fill_start.strftime('%Y-%m-%d %H:%M')} → {now.strftime('%Y-%m-%d %H:%M')} UTC")
+    print()
+
+    for spec in DEMO_INTERSECTIONS:
+        print(f"─ {spec['name']} ({spec['signal_status']})")
+
+        intersection = db.query(Intersection).filter_by(name=spec["name"]).first()
+        if intersection is None:
+            intersection = Intersection(
+                name=spec["name"],
+                latitude=spec["latitude"],
+                longitude=spec["longitude"],
+            )
+            db.add(intersection)
+            db.flush()
+            seed_tod_chunks(db, intersection.id)
+            print(f"    [new] id={intersection.id}")
+        else:
+            print(f"    [reuse] id={intersection.id}")
+
+        # Drop stale detections + timing rows so re-runs are deterministic.
+        cctv_ids = [c.id for c in intersection.cctvs]
+        if cctv_ids:
+            db.execute(text("DELETE FROM detections WHERE cctv_id = ANY(:ids)"), {"ids": cctv_ids})
+        db.execute(text(
+            "DELETE FROM timing_recommendations WHERE intersection_id = :iid"
+        ), {"iid": intersection.id})
+        db.flush()
+
+        # Normalize weights so they sum to 1 for random.choices.
+        weights = spec["class_weights"]
+        weights_total = sum(weights.values())
+        weights = {k: v / weights_total for k, v in weights.items()}
+
+        for s in spec["streets"]:
+            street = db.query(Street).filter_by(
+                intersection_id=intersection.id, name=s["name"]
+            ).first()
+            if not street:
+                street = Street(
+                    intersection_id=intersection.id,
+                    name=s["name"],
+                    arm_direction=s.get("direction", "unknown"),
+                )
+                db.add(street)
+                db.flush()
+            elif street.arm_direction != s.get("direction"):
+                street.arm_direction = s["direction"]
+
+            cctv = db.query(CCTV).filter_by(
+                intersection_id=intersection.id, name=s["cam"]
+            ).first()
+            if not cctv:
+                cctv = CCTV(
+                    intersection_id=intersection.id,
+                    name=s["cam"],
+                    rtsp_url=f"{_STREAM_PREFIX}/cam1",  # demo data - share the local feed
+                    status="offline",
+                )
+                db.add(cctv)
+                db.flush()
+
+            region = db.query(Region).filter_by(cctv_id=cctv.id, street_id=street.id).first()
+            if not region:
+                region = Region(cctv_id=cctv.id, street_id=street.id, direction="inbound")
+                db.add(region)
+                db.flush()
+                for x, y in [(0.1, 0.1), (0.9, 0.1), (0.9, 0.9), (0.1, 0.9)]:
+                    db.add(RegionPoint(region_id=region.id, x=x, y=y))
+                db.flush()
+            elif region.direction != "inbound":
+                region.direction = "inbound"
+
+            total = 0
+            cursor = fill_start
+            while cursor < now:
+                hour_factor = HOUR_MULTIPLIERS[cursor.hour]
+                dow_factor  = WEEKEND_MULTIPLIER if cursor.weekday() >= 5 else WEEKDAY_MULTIPLIER
+                jitter      = random.uniform(0.92, 1.08)
+                count       = max(0, round(s["peak"] * hour_factor * dow_factor * jitter))
+                if count > 0:
+                    _insert_exact_hour(db, cctv.id, region.id, cursor, count, weights)
+                    total += count
+                cursor += timedelta(hours=1)
+            print(f"    {s['name']:<40} peak={s['peak']:>4}/hr  total={total:>7,}d")
+
+        # Set the right signal_status for the recommendation gating logic.
+        if spec["signal_status"] == "fixed_time":
+            # Deliberately equal-split existing timing - gives Webster something
+            # clear to beat. 4 phases × 7 s overhead = 28 s; remaining 72 s / 4
+            # phases = 18 s green per approach.
+            streets = list(db.query(Street).filter_by(intersection_id=intersection.id).all())
+            existing_cycle = 100
+            n_phases = max(len(streets), 1)
+            g_phase = max(
+                round((existing_cycle - n_phases * (4 + 3)) / n_phases, 1),
+                17.0,
+            )
+            intersection.signal_status         = "fixed_time"
+            intersection.existing_cycle_length = existing_cycle
+            intersection.existing_green_splits = {str(st.id): g_phase for st in streets}
+            print(f"    → fixed_time C=100s, equal {g_phase}s × {n_phases} (Webster will reallocate)")
+        else:
+            intersection.signal_status         = "unsignalized"
+            intersection.existing_cycle_length = None
+            intersection.existing_green_splits = None
+            print(f"    → unsignalized (recommendation will gate as 'not warranted')")
+        db.commit()
+        print()
+
+    # Force-refresh the continuous aggregate so the new detections become
+    # visible to webster.pcu_flow_per_street immediately, not after the next
+    # policy tick.
+    print("Refreshing continuous aggregate …")
+    try:
+        raw = db.connection().engine.raw_connection()
+        try:
+            raw.autocommit = True
+            cur = raw.cursor()
+            cur.execute("CALL refresh_continuous_aggregate('aggregation_summaries', NULL, NULL);")
+            cur.close()
+        finally:
+            raw.close()
+    except Exception as e:
+        print(f"  (skipped: {e}; policy will catch up within ~1 min)")
+    print()
+    print("Done. Click 'Run all analyses' on the Intersections page. Expect:")
+    print(f"  • '{DEMO_INTERSECTIONS[0]['name']}' → warranted, before/after delay reduction visible in /timing/")
+    print(f"  • '{DEMO_INTERSECTIONS[1]['name']}' → not warranted, gating note shown instead of timing")
+
+
+# ---------------------------------------------------------------------------
+# Signalize one existing intersection (apply scenario treatment in-place)
+# ---------------------------------------------------------------------------
+
+def signalize_intersection(db, intersection_id: int, peak: int, weights: dict, days: int = 7):
+    """Make an existing intersection a `fixed_time` signalized scenario.
+
+    Wipes its detection history, fills `days` days of TOD-patterned traffic
+    against its existing cameras/regions, and sets a deliberately suboptimal
+    equal-split existing timing so Webster's proposal has something to beat.
+
+    Use this when you want to demo the retune flow on an intersection that
+    already exists (with its real-world name / streets), instead of adding
+    yet another demo intersection like seed_scenarios() does.
+    """
+    from sqlalchemy import text
+
+    intersection = db.get(Intersection, intersection_id)
+    if intersection is None:
+        print(f"Error: intersection id={intersection_id} not found")
+        return
+
+    print(f"Signalizing '{intersection.name}' (id={intersection.id}) …")
+    print(f"  Peak: {peak} det/hr/camera at busiest hour")
+
+    cctv_ids = [c.id for c in intersection.cctvs]
+    if not cctv_ids:
+        print("  No cameras under this intersection - run --seed first or add cameras.")
+        return
+
+    # Wipe old detection rows so the new TOD pattern isn't muddied by stale data.
+    db.execute(text(
+        "DELETE FROM detections WHERE cctv_id = ANY(:ids)"
+    ), {"ids": cctv_ids})
+    # Also drop stale timing recommendations so the page shows the fresh plan.
+    db.execute(text(
+        "DELETE FROM timing_recommendations WHERE intersection_id = :iid"
+    ), {"iid": intersection.id})
+    db.flush()
+
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    fill_start = now - timedelta(days=days)
+    print(f"  Range: {fill_start.strftime('%Y-%m-%d %H:%M')} → {now.strftime('%Y-%m-%d %H:%M')} UTC")
+    print()
+
+    # Fill every (cctv, region) pair under this intersection with TOD pattern.
+    pairs: list[tuple[int, int]] = []
+    for cctv in intersection.cctvs:
+        for region in cctv.regions:
+            pairs.append((cctv.id, region.id))
+
+    for cctv_id, region_id in pairs:
+        total = 0
+        cursor = fill_start
+        while cursor < now:
+            hour_factor = HOUR_MULTIPLIERS[cursor.hour]
+            dow_factor  = WEEKEND_MULTIPLIER if cursor.weekday() >= 5 else WEEKDAY_MULTIPLIER
+            jitter      = random.uniform(0.90, 1.10)
+            count       = max(0, round(peak * hour_factor * dow_factor * jitter))
+            if count > 0:
+                _insert_exact_hour(db, cctv_id, region_id, cursor, count, weights)
+                total += count
+            cursor += timedelta(hours=1)
+        print(f"    CCTV {cctv_id} / Region {region_id} → {total:>7,} detections")
+
+    # Existing timing: 4-phase equal-split at C=100s. Deliberately suboptimal
+    # so Webster's per-approach reallocation produces a visible improvement.
+    existing_cycle = 100
+    lost_per_phase = 4 + 3  # lost_time_per_phase + all_red_clearance
+    streets = list(db.query(Street).filter_by(intersection_id=intersection.id).all())
+    n_phases = max(len(streets), 1)
+    g_phase = max(
+        round((existing_cycle - n_phases * lost_per_phase) / n_phases, 1),
+        17.0,  # DPWH pedestrian minimum
+    )
+    splits = {str(st.id): g_phase for st in streets}
+
+    intersection.signal_status         = "fixed_time"
+    intersection.existing_cycle_length = existing_cycle
+    intersection.existing_green_splits = splits
+    db.commit()
+
+    # Force-refresh the continuous aggregate. Webster's pcu_flow_per_street
+    # queries `aggregation_summaries` exclusively, so without this the freshly
+    # inserted detections look invisible until the policy refresh runs (~1 min).
+    print()
+    print("  Refreshing continuous aggregate so Webster sees the new data …")
+    try:
+        # CALL must run outside the SQLAlchemy transaction TimescaleDB rejects
+        # nested ones. AUTOCOMMIT isolation level handles this cleanly.
+        raw = db.connection().engine.raw_connection()
+        try:
+            raw.autocommit = True
+            cur = raw.cursor()
+            cur.execute("CALL refresh_continuous_aggregate('aggregation_summaries', NULL, NULL);")
+            cur.close()
+        finally:
+            raw.close()
+    except Exception as e:
+        print(f"  (refresh skipped: {e}; the policy refresh will pick it up within ~1 min)")
+
+    print()
+    print(f"  → signal_status = fixed_time")
+    print(f"  → existing_cycle_length = {existing_cycle}s")
+    print(f"  → existing_green_splits = {g_phase}s/phase × {n_phases} streets (equal split)")
+    print()
+    print("Done. Run 'Generate' on the recommendations page now to see Webster vs existing.")
 
 
 # ---------------------------------------------------------------------------
@@ -733,6 +1071,18 @@ def main():
                         help="--seed then --fill (recommended for a clean DB)")
     parser.add_argument("--scenarios", "--scenario", action="store_true",
                         help="Seed 'Visayan Ave' (warranted) + 'Caryving Rd' (borderline) demo intersections")
+    parser.add_argument("--signalize", type=int, default=None, metavar="INT_ID",
+                        help="Convert an existing intersection (by id) into a fixed-time "
+                             "signalized scenario: wipes its detections, fills 7 days of "
+                             "TOD-patterned traffic, sets suboptimal equal-split timing so "
+                             "Webster's proposal has something to beat")
+    parser.add_argument("--demo", action="store_true",
+                        help="Seed two clean demo intersections - one warranted+signalized "
+                             "with clear Webster improvement, one not-warranted+unsignalized "
+                             "that exercises the gating logic. All six detection classes "
+                             "present, 7 days of TOD-patterned traffic. Re-runnable.")
+    parser.add_argument("--peak", type=int, default=280,
+                        help="Peak detections/hour at busiest hour for --signalize (default: 280)")
     parser.add_argument("--list",      action="store_true",
                         help="List existing data and counts")
 
@@ -766,6 +1116,14 @@ def main():
 
         if args.scenarios:
             seed_scenarios(db, weights)
+            return
+
+        if args.signalize is not None:
+            signalize_intersection(db, args.signalize, args.peak, weights)
+            return
+
+        if args.demo:
+            seed_demo(db)
             return
 
         if args.fill:

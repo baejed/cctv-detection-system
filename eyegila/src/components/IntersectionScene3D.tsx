@@ -877,6 +877,12 @@ export function IntersectionScene3D({
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
       renderer.shadowMap.enabled = true;
       renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      // ACES gives a proper LDR curve so the bright daytime ambient + sun
+      // don't crush to black on the screen, and exposure > 1 lifts the scene
+      // out of the "everything is a dark blue silhouette" look.
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.8;
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
       renderer.setClearColor(0x0a0f1a);
       container.appendChild(renderer.domElement);
 
@@ -956,31 +962,56 @@ export function IntersectionScene3D({
       const isNightChunk = /night|midnight|pre.?dawn/i.test(chunkN);
       const isDuskDawn   = /dusk|dawn|evening|early.?morning/i.test(chunkN);
 
-      const fogColor    = isNightChunk ? 0x03060f : isDuskDawn ? 0x1a0a18 : 0x0a0f1a;
-      const ambColor    = isNightChunk ? 0x0a0e1a : isDuskDawn ? 0x2a1a2e : 0x1e2d45;
-      const ambInt      = isNightChunk ? 0.6      : isDuskDawn ? 1.4      : 2.2;
-      const sunColor    = isNightChunk ? 0x0d1b2a : isDuskDawn ? 0xff6030 : 0xfdf4dc;
-      const sunInt      = isNightChunk ? 0.2      : isDuskDawn ? 1.2      : 2.5;
+      const fogColor    = isNightChunk ? 0x2a3550 : isDuskDawn ? 0x6e4858 : 0xb8d2ee;
+      const ambColor    = isNightChunk ? 0x4a5a78 : isDuskDawn ? 0xb88090 : 0xe0e8f4;
+      const ambInt      = isNightChunk ? 2.8      : isDuskDawn ? 3.6      : 4.8;
+      const skyColor    = isNightChunk ? 0x4a5a78 : isDuskDawn ? 0xffb0a0 : 0xd0e4ff;
+      const groundColor = isNightChunk ? 0x1a2030 : isDuskDawn ? 0x5a3040 : 0x6a7280;
+      const hemiInt     = isNightChunk ? 2.0      : isDuskDawn ? 2.8      : 3.8;
+      const sunColor    = isNightChunk ? 0x80a0d0 : isDuskDawn ? 0xffa060 : 0xfff8e0;
+      const sunInt      = isNightChunk ? 1.6      : isDuskDawn ? 3.2      : 5.5;
+      const fillInt     = isNightChunk ? 1.2      : isDuskDawn ? 1.8      : 2.4;
+      // Bounce / rim light from the opposite side, color-shifted to contrast.
+      const rimColor    = isNightChunk ? 0x6090c0 : isDuskDawn ? 0xa090ff : 0xfff0c8;
+      const rimInt      = isNightChunk ? 0.9      : isDuskDawn ? 1.4      : 2.0;
       const sunPos: [number, number, number] = isNightChunk
-        ? [-20, 5, 10]   // moon-like low backlight
+        ? [-20, 40, 10]   // moon-like back-overhead
         : isDuskDawn
           ? [80, 15, -20] // low angle sun at horizon
           : [40, 80, 30]; // midday high sun
 
       const scene = new THREE.Scene();
-      scene.fog = new THREE.FogExp2(fogColor, 0.006);
+      // Very thin fog - just enough to soften the far horizon without crushing
+      // distant geometry into the clear color.
+      scene.fog = new THREE.FogExp2(fogColor, 0.0015);
       scene.add(new THREE.AmbientLight(ambColor, ambInt));
+      // Hemisphere light gives a natural sky-down / ground-up gradient - keeps
+      // rooftops bright and undersides softly lit at the same time.
+      scene.add(new THREE.HemisphereLight(skyColor, groundColor, hemiInt));
       const sun = new THREE.DirectionalLight(sunColor, sunInt);
       sun.position.set(...sunPos);
       sun.castShadow = true;
       sun.shadow.mapSize.setScalar(2048);
       sun.shadow.camera.near = 1; sun.shadow.camera.far = 300;
+      // Soften shadows so they don't read as black holes against the brighter scene.
+      sun.shadow.radius = 4;
+      sun.shadow.bias = -0.0003;
       const sc = 90; Object.assign(sun.shadow.camera, { left: -sc, right: sc, top: sc, bottom: -sc });
       scene.add(sun);
-      // Fill light - blue-tinted sky bounce
-      const fillLight = new THREE.DirectionalLight(0x3b6ca8, isNightChunk ? 0.1 : 0.6);
-      fillLight.position.set(-30, 20, -40);
+      // Cool fill from the opposite quadrant - kills the pure-black shadow side.
+      const fillLight = new THREE.DirectionalLight(0xa8c4f0, fillInt);
+      fillLight.position.set(-30, 40, -40);
       scene.add(fillLight);
+      // Warm rim from above-behind - silhouettes the geometry against the sky.
+      const rimLight = new THREE.DirectionalLight(rimColor, rimInt);
+      rimLight.position.set(-40, 60, 30);
+      scene.add(rimLight);
+      // Underside bounce - fakes ground-bounced light hitting truck/car undercarriages.
+      const bounceLight = new THREE.DirectionalLight(0xfff0d8, isNightChunk ? 0.3 : 0.8);
+      bounceLight.position.set(0, -20, 0);
+      scene.add(bounceLight);
+      // Match the sky to the fog so the horizon doesn't show a hard seam.
+      renderer.setClearColor(fogColor);
 
       buildRoadScene(scene);
 

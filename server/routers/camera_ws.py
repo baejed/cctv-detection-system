@@ -12,17 +12,24 @@ os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS",
 import cv2
 import numpy as np
 import redis as redis_lib
-from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response, StreamingResponse
 
 from common.database import SessionLocal
 from common import models
 from common.crypto import decrypt_rtsp_url
-from server.utils import get_user_from_token
+from server.utils import get_current_user, get_user_from_token
 
 router = APIRouter(prefix="/cctvs", tags=["Camera WebSocket"])
 
-_TARGET_FPS = 15
+# Live-preview frame rate the server pushes over the WS, per camera. Each
+# additional FPS costs RTSP decode + JPEG encode CPU on the server, and with
+# multiple cameras on a CPU-only Mac stack it's the main bottleneck. 10 FPS
+# is smooth enough for traffic monitoring; bump via LIVE_PREVIEW_FPS in .env
+# if your host has the cycles for it.
+_TARGET_FPS = int(os.getenv("LIVE_PREVIEW_FPS", "10"))
 _FRAME_INTERVAL = 1.0 / _TARGET_FPS
 _REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 _redis = redis_lib.from_url(_REDIS_URL)
@@ -38,10 +45,22 @@ _TYPE_COLORS: dict[str, tuple[int, int, int]] = {
 }
 _DEFAULT_COLOR = (100, 100, 100)
 
-_DELAY_SEC = 0.05       # seconds to hold frames before displaying (worker sync)
+# Hold each frame this long before sending it, so the worker's detection for
+# that same frame has time to land in Redis. Higher = better box-frame sync
+# but more live-view latency. Lower = snappier video but boxes will trail.
+# Tune via OVERLAY_DELAY_SEC in .env; the right value depends on your worker's
+# inference batch time, which scales with CAMERAS_PER_WORKER on CPU stacks.
+_DELAY_SEC = float(os.getenv("OVERLAY_DELAY_SEC", "0.2"))
 _MAX_DET_HISTORY = 120  # detection snapshots to keep (~2 min at 1/s inference)
 _OUTPUT_WIDTH = 854     # resize before buffering to reduce memory usage
 _LINGER_SEC = 5.0       # keep capture alive after last subscriber leaves
+
+# When enabled, the worker is publishing annotated JPEG frames to Redis. The
+# WS handler then bypasses _SharedCapture entirely and just relays bytes from
+# Redis pubsub. Eliminates a duplicate RTSP decode per camera and ensures
+# boxes always land on the frame they belong to. Must match the worker's
+# WORKER_PUBLISHES_FRAMES env or the server will sit on an empty channel.
+_RELAY_WORKER_FRAMES = os.getenv("WORKER_PUBLISHES_FRAMES", "0") == "1"
 
 
 def _draw_boxes(frame: np.ndarray, detections: list[dict]) -> None:
@@ -181,9 +200,9 @@ class _SharedCapture:
                     pass
 
     def _run(self) -> None:
-        # (wall_time, frame) — raw frames waiting in the delay buffer
+        # (wall_time, frame) - raw frames waiting in the delay buffer
         frame_buf: deque[tuple[float, np.ndarray]] = deque()
-        # (det_ts, boxes) — rolling detection snapshot history
+        # (det_ts, boxes) - rolling detection snapshot history
         det_history: deque[tuple[float, list]] = deque(maxlen=_MAX_DET_HISTORY)
         last_det_ts = 0.0
         last_read = 0.0
@@ -281,7 +300,7 @@ def _release_subscription(cctv_id: int, q: "stdlib_queue.Queue") -> None:
         if cap is None:
             return
         cap.unsubscribe(q)
-        # The linger timeout in _run handles teardown — no immediate stop needed.
+        # The linger timeout in _run handles teardown - no immediate stop needed.
 
 
 # ── Snapshot endpoint helpers ────────────────────────────────────────────────
@@ -339,10 +358,11 @@ def _set_viewed(cctv_id: int, value: bool):
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 @router.get("/{cctv_id}/worker-status")
-async def worker_status(cctv_id: int, token: str = Query(default="")):
+async def worker_status(
+    cctv_id: int,
+    user: Annotated[models.User, Depends(get_current_user)],
+):
     """Return whether the worker is actively publishing detections for this camera."""
-    if not get_user_from_token(token):
-        raise HTTPException(status_code=401, detail="Not authenticated")
     raw = _redis.get(f"cam:{cctv_id}:detections")
     if raw:
         try:
@@ -359,6 +379,21 @@ async def camera_snapshot(cctv_id: int, token: str = Query(default="")):
     """Return a single JPEG frame from the camera's RTSP stream."""
     if not get_user_from_token(token):
         raise HTTPException(status_code=401, detail="Not authenticated")
+
+    # When the worker is publishing annotated JPEGs, just return the most
+    # recent one - no need to open a second RTSP connection for a snapshot.
+    if _RELAY_WORKER_FRAMES:
+        cached = _redis.get(f"cam:{cctv_id}:frame")
+        if cached:
+            return Response(
+                content=cached,
+                media_type="image/jpeg",
+                headers={"Cache-Control": "max-age=5, stale-while-revalidate=10"},
+            )
+        # Fall through to a live RTSP grab if Redis is empty (e.g. worker
+        # hasn't claimed this camera yet) so the dashboard tile still gets
+        # *something*.
+
     db = SessionLocal()
     try:
         cctv = db.get(models.CCTV, cctv_id)
@@ -421,6 +456,56 @@ async def boxes_stream(cctv_id: int, request: Request, token: str = Query(...)):
     )
 
 
+async def _relay_worker_frames(websocket: WebSocket, cctv_id: int, token: str) -> None:
+    """Forward worker-published JPEG frames from Redis pubsub to the WS client.
+
+    Used when WORKER_PUBLISHES_FRAMES=1. Replaces the entire _SharedCapture
+    pipeline - no RTSP decode happens on the server, no overlay drawing, no
+    JPEG re-encoding. The boxes are already burned into the JPEG by the
+    worker, so they're guaranteed to be on the right frame.
+    """
+    # Seed the canvas with the most recent frame (if any) so the client
+    # doesn't stare at a black tile while waiting for the next pubsub message.
+    seed = _redis.get(f"cam:{cctv_id}:frame")
+    if seed:
+        try:
+            await websocket.send_bytes(seed)
+        except (WebSocketDisconnect, RuntimeError):
+            return
+
+    pubsub = _redis.pubsub()
+    pubsub.subscribe(f"cam:{cctv_id}:frame:ch")
+    frame_count = 0
+    try:
+        while True:
+            msg = await asyncio.to_thread(pubsub.get_message, True, 5.0)
+            if msg is None:
+                # No frame for 5 s - either the worker dropped this camera or
+                # the slot is reconnecting. Send a status sentinel so the UI
+                # can show "reconnecting" instead of a frozen tile.
+                try:
+                    await websocket.send_text(json.dumps({"status": "reconnecting"}))
+                except (WebSocketDisconnect, RuntimeError):
+                    break
+                continue
+            if msg.get("type") != "message":
+                continue
+            frame_count += 1
+            if frame_count % 150 == 0 and not get_user_from_token(token):
+                await websocket.close(code=4001)
+                break
+            try:
+                await websocket.send_bytes(msg["data"])
+            except (WebSocketDisconnect, RuntimeError):
+                break
+    finally:
+        try:
+            pubsub.unsubscribe(f"cam:{cctv_id}:frame:ch")
+            pubsub.close()
+        except Exception:
+            pass
+
+
 @router.websocket("/{cctv_id}/ws")
 async def camera_ws(websocket: WebSocket, cctv_id: int, token: str = "", overlay: bool = True):
     await websocket.accept()
@@ -439,6 +524,13 @@ async def camera_ws(websocket: WebSocket, cctv_id: int, token: str = "", overlay
     finally:
         db.close()
 
+    if _RELAY_WORKER_FRAMES:
+        try:
+            await _relay_worker_frames(websocket, cctv_id, token)
+        finally:
+            _set_viewed(cctv_id, False)
+        return
+
     cap = _get_or_create_capture(rtsp_url, cctv_id)
     frame_q = cap.subscribe()
 
@@ -448,7 +540,7 @@ async def camera_ws(websocket: WebSocket, cctv_id: int, token: str = "", overlay
             try:
                 item = await asyncio.to_thread(frame_q.get, True, 5.0)
             except stdlib_queue.Empty:
-                # No frame for 5 s — shared capture is reconnecting or died.
+                # No frame for 5 s - shared capture is reconnecting or died.
                 if not cap.thread.is_alive():
                     cap.unsubscribe(frame_q)
                     cap = _get_or_create_capture(rtsp_url, cctv_id)
@@ -459,7 +551,7 @@ async def camera_ws(websocket: WebSocket, cctv_id: int, token: str = "", overlay
 
             frame, boxes = item
 
-            # Status sentinel from _broadcast_status — relay as JSON text
+            # Status sentinel from _broadcast_status - relay as JSON text
             if frame is None:
                 try:
                     await websocket.send_text(json.dumps({"status": boxes}))

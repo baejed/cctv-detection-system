@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
@@ -9,6 +9,7 @@ import { timingApi, type TimingChunk } from '@/services/timing';
 import { aggregationApi } from '@/services/aggregation';
 import { streetsApi } from '@/services/streets';
 import { intersectionsApi } from '@/services/intersections';
+import { recommendationsApi } from '@/services/recommendations';
 import type { SignalTimingPayload } from '@/services/intersections';
 import { DualIntersectionCanvas, type VehicleType, type TypeFractions } from '@/components/IntersectionCanvas';
 import { IntersectionScene3D } from '@/components/IntersectionScene3D';
@@ -23,7 +24,7 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { ArrowLeft, TrendingDown, Printer, Play, Pause, Columns2, MonitorPlay, TrendingUp, X, Pencil, History, Loader2, FlaskConical } from 'lucide-react';
+import { ArrowLeft, TrendingDown, Printer, Play, Pause, Columns2, MonitorPlay, TrendingUp, X, Pencil, History, Loader2, FlaskConical, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 
@@ -509,7 +510,7 @@ export function SignalTimingPage() {
     return () => document.removeEventListener('keydown', onKey);
   }, []);
 
-  useEffect(() => {
+  const loadAll = useCallback(async () => {
     if (!intersectionId) return;
     setLoading(true);
 
@@ -519,28 +520,47 @@ export function SignalTimingPage() {
     end.setMinutes(0, 0, 0);
     const start = new Date(end.getTime() - 3600 * 1000);
 
-    Promise.all([
-      simulationApi.get(intersectionId),
-      timingApi.list(intersectionId).catch(() => [] as TimingChunk[]),
-      aggregationApi.history({
-        start: start.toISOString(),
-        end: end.toISOString(),
-        intersection_id: intersectionId,
-        bucket: 'hour',
-      }).catch(() => []),
-      streetsApi.list().catch(() => [] as Street[]),
-      intersectionsApi.get(intersectionId).catch(() => null),
-    ])
-      .then(([sim, tim, agg, allStreets, inter]) => {
-        setData(sim);
-        setTimingData(tim);
-        setStreets(allStreets.filter(s => s.intersection_id === intersectionId));
-        setIntersection(inter);
-        setTypeMix(buildTypeMix(agg));
-      })
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false));
+    try {
+      const [sim, tim, agg, allStreets, inter] = await Promise.all([
+        simulationApi.get(intersectionId),
+        timingApi.list(intersectionId).catch(() => [] as TimingChunk[]),
+        aggregationApi.history({
+          start: start.toISOString(),
+          end: end.toISOString(),
+          intersection_id: intersectionId,
+          bucket: 'hour',
+        }).catch(() => []),
+        streetsApi.list().catch(() => [] as Street[]),
+        intersectionsApi.get(intersectionId).catch(() => null),
+      ]);
+      setData(sim);
+      setTimingData(tim);
+      setStreets(allStreets.filter(s => s.intersection_id === intersectionId));
+      setIntersection(inter);
+      setTypeMix(buildTypeMix(agg));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
   }, [intersectionId]);
+
+  useEffect(() => { loadAll(); }, [loadAll]);
+
+  const [generating, setGenerating] = useState(false);
+  async function runAnalyse() {
+    if (!intersectionId) return;
+    setGenerating(true);
+    try {
+      await recommendationsApi.generate(intersectionId);
+      toast.success('Analysis complete');
+      await loadAll();
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : 'Analysis failed');
+    } finally {
+      setGenerating(false);
+    }
+  }
 
   // When in historical mode, drive all visuals from histData; fall back to saved simulation
   const displayData = histMode && histData ? histData : data;
@@ -625,7 +645,7 @@ export function SignalTimingPage() {
     // histStart / histEnd are naive local-time strings from the bar-chart selector
     // (e.g. '2026-06-16T06:00'). Convert through new Date().toISOString() would
     // shift them by the browser's UTC offset, sending the wrong window to the server.
-    // The backend (Asia/Manila) treats naive datetimes as server-local time — the
+    // The backend (Asia/Manila) treats naive datetimes as server-local time - the
     // same convention the traffic bar chart already uses for its own history queries.
     const start = histStart + ':00';
     const end   = histEnd   + ':00';
@@ -673,6 +693,20 @@ export function SignalTimingPage() {
             </p>
           )}
         </div>
+        {intersection && !histMode && (
+          <Button
+            data-testid="btn-analyse-timing"
+            variant="ghost"
+            size="sm"
+            className="h-8 text-xs gap-1.5"
+            onClick={runAnalyse}
+            disabled={generating}
+            title="Run warrant analysis"
+          >
+            {generating ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" />}
+            {generating ? 'Analysing…' : 'Analyse'}
+          </Button>
+        )}
         {intersection && !histMode && (
           <Button data-testid="btn-edit-timing" variant="outline" size="sm" onClick={openEdit}>
             <Pencil className="size-3.5 mr-1.5" />

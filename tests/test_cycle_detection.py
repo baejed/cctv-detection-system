@@ -89,7 +89,7 @@ def test_120s_cycle_detected_at_lag_2():
     """A 120 s signal (60 s green + 60 s red, minute-aligned) produces an [H, L, H, L]
     series with autocorrelation period 2 minutes.  Lag 1 is negative; lag 2 is the
     first positive peak."""
-    # [H, L, H, L, ...] — each minute is cleanly one phase (120 s cycle, equal split)
+    # [H, L, H, L, ...] - each minute is cleanly one phase (120 s cycle, equal split)
     counts = [50 if i % 2 == 0 else 5 for i in range(120)]
     rows = [_Row(1, i, counts[i]) for i in range(120)]
     db = _make_mock_db(rows)
@@ -101,7 +101,7 @@ def test_120s_cycle_detected_at_lag_2():
 
 def test_4min_period_detected_at_lag_4():
     """A 4-minute repeating pattern (e.g. 80 s cycle) is detected at lag 4."""
-    # [H, H, L, L, H, H, L, L, ...] — period = 4 min
+    # [H, H, L, L, H, H, L, L, ...] - period = 4 min
     counts = [50 if (i // 2) % 2 == 0 else 5 for i in range(120)]
     rows = [_Row(1, i, counts[i]) for i in range(120)]
     db = _make_mock_db(rows)
@@ -111,7 +111,7 @@ def test_4min_period_detected_at_lag_4():
 
 def test_90s_cycle_detected_at_lag_3():
     """A 3-minute repeating pattern (= 2×90s) should show highest autocorr at lag 3."""
-    # 90s cycle: high for 1.5 min, low for 1.5 min — represented as
+    # 90s cycle: high for 1.5 min, low for 1.5 min - represented as
     # 3-minute block: [high, mixed, low] repeating
     # Approximation with 1-minute resolution: repeat [50, 25, 5] every 3 minutes
     counts = ([50, 25, 5] * 40)[:120]

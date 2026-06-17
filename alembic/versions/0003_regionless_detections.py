@@ -1,4 +1,4 @@
-"""make regions optional — LEFT JOIN aggregation
+"""make regions optional - LEFT JOIN aggregation
 
 Revision ID: 0003
 Revises: 0002
@@ -70,5 +70,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Restore INNER JOIN versions — see migration 0002 for the SQL
+    # Restore INNER JOIN versions - see migration 0002 for the SQL
     pass

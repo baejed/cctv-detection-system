@@ -74,7 +74,7 @@ def test_predict_warrants_output_shape(artifacts):
         assert 0.0 <= p <= 1.0, f"{name} probability out of [0,1]: {p}"
 
 
-# Simple row objects (mimics SQLAlchemy Row) — name, value pairs the function reads.
+# Simple row objects (mimics SQLAlchemy Row) - name, value pairs the function reads.
 class _Row:
     def __init__(self, street_id, object_type, window_start, count):
         self.street_id = street_id
@@ -179,7 +179,7 @@ def test_feature_extraction_phf_single_minute_spike():
     assert feats["phf"] == pytest.approx(0.25)
 
 
-# NOTE: Integration tests below mutate shared state on the live stack —
+# NOTE: Integration tests below mutate shared state on the live stack -
 # `_first_intersection_id` returns whichever intersection the seed script
 # happened to insert first, and several tests POST to it. They run reliably
 # in the default pytest order because each adds rows without removing any.
@@ -188,11 +188,11 @@ def test_feature_extraction_phf_single_minute_spike():
 
 
 def _first_intersection_id(auth) -> int:
-    """Helper — fetch the first intersection from the live API."""
+    """Helper - fetch the first intersection from the live API."""
     r = auth.get(f"{API_URL}/intersections/")
     assert r.status_code == 200, r.text
     items = r.json()
-    assert items, "No intersections seeded — run scripts/fake_detections.py --seed first"
+    assert items, "No intersections seeded - run scripts/fake_detections.py --seed first"
     return items[0]["id"]
 
 
@@ -203,7 +203,7 @@ def test_generate_recommendation_endpoint(auth):
     assert r.status_code == 200, r.text
     body = r.json()
 
-    # Schema check — use subset so new fields don't break this test
+    # Schema check - use subset so new fields don't break this test
     expected_keys = {
         "id", "intersection_id", "intersection_name",
         "warrant_1_met", "warrant_1_confidence",
@@ -220,7 +220,7 @@ def test_generate_recommendation_endpoint(auth):
         assert isinstance(body[k], (int, float))
         assert 0.0 <= body[k] <= 1.0
 
-    # notes field is present (no longer auto-populated — may be null on a fresh row)
+    # notes field is present (no longer auto-populated - may be null on a fresh row)
     assert "notes" in body
 
 
@@ -254,7 +254,7 @@ def test_generate_returns_structured_fields(auth):
         datetime.fromisoformat(body["hour_start"].replace("Z", "+00:00"))
 
     # notes is no longer auto-populated by the analysis itself
-    # (engineer-only after this change — may be null on a fresh row)
+    # (engineer-only after this change - may be null on a fresh row)
     assert "notes" in body
 
 

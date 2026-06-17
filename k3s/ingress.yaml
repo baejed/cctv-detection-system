@@ -1,4 +1,4 @@
-# Ingress — routes all traffic through a single IP.
+# Ingress - routes all traffic through a single IP.
 # Assumes k3s default Traefik ingress controller.
 # Replace eyegila.local with your actual domain or IP.
 #

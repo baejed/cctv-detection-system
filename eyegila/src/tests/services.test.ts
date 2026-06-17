@@ -10,7 +10,7 @@
  *   - 204 No Content returns null without crashing
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { setToken, setUnauthorizedHandler, request } from '../services/api';
+import { setToken, setUnauthorizedHandler, triggerUnauthorized, request } from '../services/api';
 
 // ─── Helper: mock fetch ───────────────────────────────────────────────────────
 
@@ -127,6 +127,59 @@ describe('request()', () => {
     await request('/videos/upload', { method: 'POST', body: fd });
     const opts = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0][1];
     expect((opts.headers as Record<string, string>)['Content-Type']).toBeUndefined();
+  });
+});
+
+// ─── Unauthorized handler idempotency ─────────────────────────────────────────
+//
+// Regression: clicking a camera right after login produced a stack of
+// "Session expired" toasts and repeated navigate('/login') calls. Cause -
+// every in-flight request that returned 401 (HTTP), the SSE stream, and the
+// camera WS all fired _onUnauthorized?.() independently. The runtime guard
+// makes triggerUnauthorized() a no-op until the next successful setToken(t)
+// with a truthy token.
+
+describe('triggerUnauthorized idempotency', () => {
+  it('fires the handler exactly once across many 401s', async () => {
+    const handler = vi.fn();
+    setUnauthorizedHandler(handler);
+    setToken('jwt-after-login');  // resets the latch
+
+    mockFetch(401, { detail: 'Not authenticated' });
+    await expect(request('/a')).rejects.toThrow();
+    await expect(request('/b')).rejects.toThrow();
+    await expect(request('/c')).rejects.toThrow();
+    triggerUnauthorized();
+    triggerUnauthorized();
+
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-arms after a fresh login (setToken with truthy value)', async () => {
+    const handler = vi.fn();
+    setUnauthorizedHandler(handler);
+
+    setToken('first-session');
+    triggerUnauthorized();
+    triggerUnauthorized();
+    expect(handler).toHaveBeenCalledTimes(1);
+
+    setToken('second-session-after-relogin');
+    triggerUnauthorized();
+    expect(handler).toHaveBeenCalledTimes(2);
+  });
+
+  it('setToken(null) does NOT re-arm - a stale background 401 must stay quiet', async () => {
+    const handler = vi.fn();
+    setUnauthorizedHandler(handler);
+    setToken('jwt');
+
+    triggerUnauthorized();
+    expect(handler).toHaveBeenCalledTimes(1);
+
+    setToken(null);
+    triggerUnauthorized();
+    expect(handler).toHaveBeenCalledTimes(1);
   });
 });
 

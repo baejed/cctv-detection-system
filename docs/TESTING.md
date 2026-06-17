@@ -9,7 +9,7 @@
 cp .env.example .env
 # Open .env and set SUPER_KEY to any string (e.g. "devkey123")
 
-# 2. Start the full stack — CPU only, no GPU required
+# 2. Start the full stack - CPU only, no GPU required
 make dev-mac
 
 # 3. Wait ~30s for the DB to initialise, then seed test data
@@ -21,7 +21,7 @@ open http://localhost:5173
 ```
 
 The model file (`eyegila_v4.pt`) sits in the project root and is volume-mounted
-into the worker at `/app/model.pt` automatically — no image rebuild needed when
+into the worker at `/app/model.pt` automatically - no image rebuild needed when
 you swap model versions.
 
 To stop the stack:
@@ -72,7 +72,7 @@ python3 -m pytest tests/test_stress.py tests/test_pedestrian_timing.py \
 
 ## Functionality Tests
 
-End-to-end user flows — each test simulates a complete operator journey
+End-to-end user flows - each test simulates a complete operator journey
 from start to finish. Requires `make dev-mac` to be running.
 
 ```bash
@@ -127,7 +127,7 @@ npx playwright install chromium
 # Full stack first:
 make dev-mac
 
-# Then in a second terminal — start the Vite dev server:
+# Then in a second terminal - start the Vite dev server:
 cd eyegila && npm run dev
 
 # Then run Playwright:
@@ -156,7 +156,7 @@ cd eyegila && npx playwright test --ui
 
 ### Tips
 
-- Use `--ui` mode when writing new tests — it shows a live browser + step tree
+- Use `--ui` mode when writing new tests - it shows a live browser + step tree
 - Use `page.on('pageerror', ...)` to catch JS crashes without waiting for assertions
 - Screenshots on failure are saved to `eyegila/test-results/`
 - Set `PLAYWRIGHT_OUTPUT_DIR` env var to redirect output
@@ -192,7 +192,7 @@ Run before any release. These cover cases automated tests can't fully verify.
 
 ### Auth edge cases
 
-- Log in on two browser tabs, log out in one, refresh the other —
+- Log in on two browser tabs, log out in one, refresh the other -
   it must redirect to login within one page refresh
 - Hit `/intersections/` with a fake token and confirm 401 response
 - Leave a session idle for longer than `SESSION_TTL_HOURS` (default 24 h)
@@ -211,40 +211,40 @@ Run before any release. These cover cases automated tests can't fully verify.
 Sessions run with a real Tagum City traffic operator. The tester uses the
 system without guidance while you observe and take notes.
 
-**Setup:** `make dev-mac` + seeded data. Do not help — observe where they pause.
+**Setup:** `make dev-mac` + seeded data. Do not help - observe where they pause.
 
 ### Tasks
 
 Give each task verbally. Say nothing else.
 
-**Task 1 — Register a new intersection and camera**
+**Task 1 - Register a new intersection and camera**
 > "You've been given access to the system. Add a new intersection at Tagum
 > City Hall and assign a camera to it."
 
 - Pass: Created intersection + camera in under 3 minutes without help
 - Fail: Could not find the Add button, confused by the RTSP URL field
 
-**Task 2 — Confirm a camera is receiving a signal**
+**Task 2 - Confirm a camera is receiving a signal**
 > "A new camera was installed at the intersection. Register it and confirm
 > it is receiving a signal."
 
 - Pass: Adds camera, waits, sees status become online
 - Fail: Doesn't know what "offline" means, doesn't know to wait
 
-**Task 3 — Enter the existing fixed-time plan**
+**Task 3 - Enter the existing fixed-time plan**
 > "The traffic engineer says the current cycle is 90 seconds. Enter that
 > into the system."
 
 - Pass: Finds Signal Timing page, enters fixed-time plan
 - Fail: Enters data in the wrong field, or cannot find the page
 
-**Task 4 — Check whether this intersection needs a signal**
+**Task 4 - Check whether this intersection needs a signal**
 > "Ask the system whether this intersection needs a traffic signal."
 
 - Pass: Finds Recommendations page, reads the warrant result
 - Fail: Doesn't understand W1/W2/W4 labels, no explanation visible
 
-**Task 5 — Share the timing plan with the council**
+**Task 5 - Share the timing plan with the council**
 > "Print or export the timing recommendation for the council meeting."
 
 - Pass: Uses Present mode or the export button successfully
@@ -268,9 +268,9 @@ Goal: find integration bugs and data issues in a production-like environment.
 
 ### Checklist
 
-- [ ] Cold start from empty DB: run migrations, seed, open UI — no 500 errors
+- [ ] Cold start from empty DB: run migrations, seed, open UI - no 500 errors
 - [ ] `make test` passes 100% (unit + integration + functionality)
-- [ ] Generate recommendations for all seeded intersections — no null `timing_cycle`
+- [ ] Generate recommendations for all seeded intersections - no null `timing_cycle`
 - [ ] Signal Timing page: bar chart loads for all 5 TOD chunks, no blank panels
 - [ ] 3D intersection view renders without WebGL error in Chrome and Safari
 - [ ] Camera with active RTSP stream: live feed appears within 60 s of adding
@@ -291,7 +291,7 @@ Goal: find integration bugs and data issues in a production-like environment.
 Run by a small group of real operators (Tagum City traffic staff) for 1–2 weeks
 in a staging environment with real cameras.
 
-**Scope:** Core flows only — camera enrollment, daily recommendation generation,
+**Scope:** Core flows only - camera enrollment, daily recommendation generation,
 signal timing review. No destructive operations (no DELETE for real intersections).
 
 ### What to give beta testers

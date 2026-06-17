@@ -20,17 +20,21 @@ os.environ.setdefault(
     "rtsp_transport;tcp|stimeout;10000000",
 )
 
+_PASSTHROUGH_SCHEMES = ("rtsp://", "rtsps://", "rtmp://", "rtmps://", "http://", "https://")
+
+
 def resolve_rtsp_url(cctv: models.CCTV, args: argparse.Namespace) -> str | None:
     """
-    If cctv.rtsp_url is a full RTSP URL (MediaMTX, etc.), use it as-is.
-    Otherwise treat it as a Dahua-style host/IP and build the default path.
-    Returns None when --debug (webcam instead of RTSP).
+    If cctv.rtsp_url is already a full stream URL (RTSP, RTMP, HLS over HTTP,
+    etc.), use it as-is - FFmpeg opens any of these. Otherwise treat the
+    value as a bare Dahua-style host/IP and build the default RTSP path.
+    Returns None when --debug (webcam instead of a network stream).
     """
     if args.debug:
         return None
     raw = decrypt_rtsp_url((cctv.rtsp_url or "").strip())
     lower = raw.lower()
-    if lower.startswith("rtsp://") or lower.startswith("rtsps://"):
+    if any(lower.startswith(scheme) for scheme in _PASSTHROUGH_SCHEMES):
         return raw
     return (
         f"rtsp://{args.username}:{args.password}@{raw}:{args.port}"
@@ -48,7 +52,7 @@ def open_stream(rtsp_url: str | None, debug: bool) -> cv2.VideoCapture:
 
 
 def _stream_is_live(cap: cv2.VideoCapture) -> bool:
-    """Validate the stream by reading a frame — isOpened() alone lies on MediaMTX."""
+    """Validate the stream by reading a frame - isOpened() alone lies on MediaMTX."""
     if not cap.isOpened():
         return False
     ret, _ = cap.read()

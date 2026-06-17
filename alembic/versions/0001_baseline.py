@@ -1,4 +1,4 @@
-"""baseline — schema already established via init.sql
+"""baseline - schema already established via init.sql
 
 Revision ID: 0001
 Revises:

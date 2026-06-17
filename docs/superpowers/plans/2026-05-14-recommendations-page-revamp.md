@@ -1,8 +1,8 @@
-# Recommendations Page Revamp — Implementation Plan
+# Recommendations Page Revamp - Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Retrofit the React `/recommendations` page around the warrant model — a sortable, filterable table of every intersection plus a click-to-open side drawer with the model's feature inputs, probability bars, and run history — and extend the backend to expose structured metric fields and per-intersection history.
+**Goal:** Retrofit the React `/recommendations` page around the warrant model - a sortable, filterable table of every intersection plus a click-to-open side drawer with the model's feature inputs, probability bars, and run history - and extend the backend to expose structured metric fields and per-intersection history.
 
 **Architecture:**
 - Backend: alembic migration adds seven nullable columns to `recommendations`, drops the delete-on-regen behavior, returns structured fields, exposes a new `GET /recommendations/history/{intersection_id}` endpoint, and switches list to `DISTINCT ON (intersection_id)`.
@@ -32,7 +32,7 @@ Before starting tasks:
 
 ---
 
-## Task 1: Alembic migration — extend `recommendations` table
+## Task 1: Alembic migration - extend `recommendations` table
 
 **Files:**
 - Create: `alembic/versions/0004_recommendations_metrics_and_history.py`
@@ -100,7 +100,7 @@ Expected: columns `major_volume, minor_volume, peds, vpm, phf, recommended_confi
 
 ```bash
 git add alembic/versions/0004_recommendations_metrics_and_history.py
-git commit -m "feat: alembic 0004 — recommendations metrics + history index"
+git commit -m "feat: alembic 0004 - recommendations metrics + history index"
 ```
 
 ---
@@ -186,14 +186,14 @@ def test_generate_returns_structured_fields(auth):
         datetime.fromisoformat(body["hour_start"].replace("Z", "+00:00"))
 
     # notes is no longer auto-populated by the analysis itself
-    # (engineer-only after this change — may be null on a fresh row)
+    # (engineer-only after this change - may be null on a fresh row)
     assert "notes" in body
 ```
 
 - [ ] **Step 2: Run and verify it fails**
 
 Run: `pytest tests/test_recommendations.py::test_generate_returns_structured_fields -v`
-Expected: FAIL — assertion on `new_keys.issubset(body.keys())` (KeyError or AssertionError).
+Expected: FAIL - assertion on `new_keys.issubset(body.keys())` (KeyError or AssertionError).
 
 - [ ] **Step 3: Update `RecommendationResponse` pydantic schema**
 
@@ -363,7 +363,7 @@ def test_generate_inserts_does_not_replace(auth, db):
 - [ ] **Step 2: Run and verify it fails**
 
 Run: `pytest tests/test_recommendations.py::test_generate_inserts_does_not_replace -v`
-Expected: FAIL — `after == before + 1`, since the old code deletes-then-inserts.
+Expected: FAIL - `after == before + 1`, since the old code deletes-then-inserts.
 
 - [ ] **Step 3: Drop the delete-then-insert in `generate_recommendation`**
 
@@ -403,7 +403,7 @@ def generate_all_recommendations(
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[models.User, Depends(get_current_user)],
 ):
-    """Run warrant analysis for every intersection — inserts a new row per intersection."""
+    """Run warrant analysis for every intersection - inserts a new row per intersection."""
     intersections = db.query(models.Intersection).all()
     results = []
 
@@ -465,7 +465,7 @@ def test_list_returns_one_row_per_intersection(auth):
 - [ ] **Step 2: Run and verify it fails**
 
 Run: `pytest tests/test_recommendations.py::test_list_returns_one_row_per_intersection -v`
-Expected: FAIL — `len(rows_for_iid) > 1` after Task 4 dropped the delete behavior.
+Expected: FAIL - `len(rows_for_iid) > 1` after Task 4 dropped the delete behavior.
 
 - [ ] **Step 3: Rewrite the list endpoint to use `DISTINCT ON`**
 
@@ -625,7 +625,7 @@ git commit -m "feat: add GET /recommendations/history/{intersection_id} endpoint
 
 ---
 
-## Task 7: Frontend foundations — types, service, status bucket helper
+## Task 7: Frontend foundations - types, service, status bucket helper
 
 **Files:**
 - Modify: `eyegila/src/types/index.ts`
@@ -1075,7 +1075,7 @@ function ProbCell({ met, value }: { met: boolean; value: number }) {
 function NumCell({ value }: { value: number | null }) {
   return (
     <TableCell className="text-right tabular-nums text-muted-foreground">
-      {value ?? '—'}
+      {value ?? '-'}
     </TableCell>
   );
 }
@@ -1153,9 +1153,9 @@ interface Props {
 }
 
 const BARS: { key: 'warrant_1' | 'warrant_2' | 'warrant_4' | 'recommended'; label: string }[] = [
-  { key: 'warrant_1',  label: 'W1 — Eight-Hour Vehicular Volume' },
-  { key: 'warrant_2',  label: 'W2 — Four-Hour Vehicular Volume' },
-  { key: 'warrant_4',  label: 'W4 — Pedestrian Volume' },
+  { key: 'warrant_1',  label: 'W1 - Eight-Hour Vehicular Volume' },
+  { key: 'warrant_2',  label: 'W2 - Four-Hour Vehicular Volume' },
+  { key: 'warrant_4',  label: 'W4 - Pedestrian Volume' },
   { key: 'recommended',label: 'Overall recommended' },
 ];
 
@@ -1274,7 +1274,7 @@ function Stat({ label, value, suffix, digits = 0 }: { label: string; value: numb
     <div className="rounded-md border border-border bg-card px-2 py-2">
       <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
       <div className="text-sm font-semibold tabular-nums mt-0.5">
-        {value === null ? '—' : digits ? value.toFixed(digits) : value}
+        {value === null ? '-' : digits ? value.toFixed(digits) : value}
       </div>
       {suffix && <div className="text-[9px] text-muted-foreground">{suffix}</div>}
     </div>
@@ -1422,7 +1422,7 @@ function Cell({ label, v }: { label: string; v: number | string | null }) {
   return (
     <div>
       <div className="text-[9px] uppercase text-muted-foreground">{label}</div>
-      <div className="tabular-nums">{v ?? '—'}</div>
+      <div className="tabular-nums">{v ?? '-'}</div>
     </div>
   );
 }
@@ -1619,7 +1619,7 @@ export function RecommendationsPage() {
       const results = await recommendationsApi.generateAll();
       setRecs(results);
       const warranted = results.filter(r => r.recommended).length;
-      toast.success(`Analysis complete — ${warranted} warranted`);
+      toast.success(`Analysis complete - ${warranted} warranted`);
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Analysis failed');
     } finally {
@@ -1667,7 +1667,7 @@ export function RecommendationsPage() {
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Recommendations</h1>
           <p className="text-xs text-muted-foreground mt-0.5">
-            MUTCD signal warrant analysis — last full hour of detections
+            MUTCD signal warrant analysis - last full hour of detections
           </p>
         </div>
         <Button onClick={regenerateAll} disabled={generatingAll || loading || intersections.length === 0} size="sm">
@@ -1737,7 +1737,7 @@ git commit -m "feat(fe): rewrite Recommendations page around table + detail draw
 
 ## Task 15: Manual verification
 
-**Files:** none modified — verifies behavior end-to-end.
+**Files:** none modified - verifies behavior end-to-end.
 
 - [ ] **Step 1: Start the stack**
 
@@ -1761,21 +1761,21 @@ Expected: all tests PASS.
 Walk through each item. Note any deviation; fix and re-test before checking off.
 
 - [ ] Page loads. Summary strip shows four counts (Warranted/Borderline/Not warranted/No data).
-- [ ] Click "Run all" — toast appears, table populates, intersections lacking data are bucketed as "No data".
+- [ ] Click "Run all" - toast appears, table populates, intersections lacking data are bucketed as "No data".
 - [ ] Each table column toggles between asc/desc on click. Sort icon shows on the active column.
 - [ ] Status chips toggle inclusion (clicking "Warranted" filters out warranted rows when off).
 - [ ] Name search filters in real time.
 - [ ] Enabling a warrant chip enables the min-prob slider. Moving the slider correctly hides rows whose chosen warrant probability is below the threshold.
-- [ ] Click a "No data" intersection's regenerate icon — the row updates after the toast. (Repeated regenerates add to the row's history list in the drawer.)
+- [ ] Click a "No data" intersection's regenerate icon - the row updates after the toast. (Repeated regenerates add to the row's history list in the drawer.)
 - [ ] Row click opens the drawer (right side). Default tab is Latest. Probability bars, feature stats, and notes editor render.
-- [ ] Edit notes, save — value persists after closing/reopening the drawer.
-- [ ] Switch to History tab — chart renders for intersections with multiple runs; collapsible rows show per-run features.
-- [ ] Regenerate from inside the drawer — Latest tab refreshes, History tab includes the new run at the top of the chart and list.
-- [ ] Close drawer, open a different intersection — its own data renders (no leak from the prior intersection's state).
-- [ ] Close drawer, open the same intersection — history fetches again (cache is per-open-drawer).
-- [ ] Reload the page — sort/filter state resets to defaults; data re-fetches cleanly.
+- [ ] Edit notes, save - value persists after closing/reopening the drawer.
+- [ ] Switch to History tab - chart renders for intersections with multiple runs; collapsible rows show per-run features.
+- [ ] Regenerate from inside the drawer - Latest tab refreshes, History tab includes the new run at the top of the chart and list.
+- [ ] Close drawer, open a different intersection - its own data renders (no leak from the prior intersection's state).
+- [ ] Close drawer, open the same intersection - history fetches again (cache is per-open-drawer).
+- [ ] Reload the page - sort/filter state resets to defaults; data re-fetches cleanly.
 
-- [ ] **Step 4: Commit nothing — just confirm in the conversation**
+- [ ] **Step 4: Commit nothing - just confirm in the conversation**
 
 Manual verification produces no artifacts. Report back with the result.
 
@@ -1785,20 +1785,20 @@ Manual verification produces no artifacts. Report back with the result.
 
 After completing all tasks above, look back at the spec and confirm:
 
-- **Migration `0004`** present — Task 1.
-- **`Recommendation` model extended** — Task 2.
-- **`_analyze` returns structured fields, no auto-notes** — Task 3.
-- **Generate endpoints insert (don't replace)** — Task 4.
-- **List endpoint returns latest per intersection** — Task 5.
-- **`GET /history/{id}?limit=` endpoint with clamp** — Task 6.
-- **`RecommendationResponse` includes seven new fields** — Task 3.
-- **Empty-data short-circuit still writes a row with zeros and `hour_start` set** — Task 3.
-- **Frontend `Recommendation` type extended** — Task 7.
-- **`recommendationsApi.history()`** — Task 7.
-- **`statusBucket` helper with the spec's rules** — Task 7.
-- **`SummaryStrip` / `FilterBar` / `RecommendationsTable` / `LatestTab` / `HistoryTab` / `DetailSheet`** — Tasks 8–13.
-- **`RecommendationsPage` wired** — Task 14.
-- **Backend tests covering the new behavior** — Tasks 3–6 (TDD pairs).
-- **Manual frontend test plan** — Task 15.
+- **Migration `0004`** present - Task 1.
+- **`Recommendation` model extended** - Task 2.
+- **`_analyze` returns structured fields, no auto-notes** - Task 3.
+- **Generate endpoints insert (don't replace)** - Task 4.
+- **List endpoint returns latest per intersection** - Task 5.
+- **`GET /history/{id}?limit=` endpoint with clamp** - Task 6.
+- **`RecommendationResponse` includes seven new fields** - Task 3.
+- **Empty-data short-circuit still writes a row with zeros and `hour_start` set** - Task 3.
+- **Frontend `Recommendation` type extended** - Task 7.
+- **`recommendationsApi.history()`** - Task 7.
+- **`statusBucket` helper with the spec's rules** - Task 7.
+- **`SummaryStrip` / `FilterBar` / `RecommendationsTable` / `LatestTab` / `HistoryTab` / `DetailSheet`** - Tasks 8–13.
+- **`RecommendationsPage` wired** - Task 14.
+- **Backend tests covering the new behavior** - Tasks 3–6 (TDD pairs).
+- **Manual frontend test plan** - Task 15.
 
 If any of the above is missing after implementation, file a follow-up task before marking the plan complete.

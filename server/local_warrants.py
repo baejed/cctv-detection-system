@@ -1,13 +1,13 @@
 """Local warrant evaluation for Tagum City conditions (W-Local 1, 2, 3).
 
-W-Local 1 — High motorcycle/pedicab ratio:
+W-Local 1 - High motorcycle/pedicab ratio:
     Fired when motorcycles + pedicabs exceed a threshold (default 60%) of total
     vehicle volume in any time chunk.
 
-W-Local 2 — Peak concentration:
+W-Local 2 - Peak concentration:
     Fired when ≥70% of daily volume is concentrated in the top 1–2 time chunks.
 
-W-Local 3 — Lights off:
+W-Local 3 - Lights off:
     Fired when avg PCU/hr per approach falls below a minimum (default 30 PCU/hr)
     in any chunk. Those chunks are marked signal_off.
 """

@@ -849,19 +849,22 @@ export function IntersectionCanvas({
 
   const ids = useMemo(() => {
     const s = chunk.queue_series_after ?? chunk.queue_series_before;
-    if (!s) return [];
+    const hasSeries = s && Object.keys(s).length > 0;
     // Order by physical arm position (N=0, E=1, S=2, W=3) using street directions.
+    // When series data is missing fall back to arm directions alone so the
+    // static intersection still renders instead of a blank canvas.
     const ordered = Array<string | null>(4).fill(null);
     let placed = 0;
     for (const st of streets) {
       const ap = ARM_DIR_TO_APPROACH[st.arm_direction];
-      if (ap !== undefined && s[String(st.id)] !== undefined) {
+      if (ap === undefined) continue;
+      if (!hasSeries || s![String(st.id)] !== undefined) {
         ordered[ap] = String(st.id);
         placed++;
       }
     }
     if (placed > 0) return ordered.filter((id): id is string => id !== null);
-    return Object.keys(s).sort();
+    return hasSeries ? Object.keys(s!).sort() : [];
   }, [chunk, streets]);
 
   idsRef.current = ids;
@@ -1217,18 +1220,24 @@ export function DualIntersectionCanvas({
 
   const ids = useMemo(() => {
     const s = chunk.queue_series_after ?? chunk.queue_series_before;
-    if (!s) return [];
+    const hasSeries = s && Object.keys(s).length > 0;
     const ordered = Array<string | null>(4).fill(null);
     let placed = 0;
+    // Place each known street into its arm slot. When series data exists we
+    // require it to mention the street (so we don't draw approaches the
+    // simulator hasn't modelled); when there's no series data we fall back to
+    // arm directions alone so the static intersection still renders instead of
+    // an empty canvas.
     for (const st of streets) {
       const ap = ARM_DIR_TO_APPROACH[st.arm_direction];
-      if (ap !== undefined && s[String(st.id)] !== undefined) {
+      if (ap === undefined) continue;
+      if (!hasSeries || s![String(st.id)] !== undefined) {
         ordered[ap] = String(st.id);
         placed++;
       }
     }
     if (placed > 0) return ordered.filter((id): id is string => id !== null);
-    return Object.keys(s).sort();
+    return hasSeries ? Object.keys(s!).sort() : [];
   }, [chunk, streets]);
   idsRef.current = ids;
 

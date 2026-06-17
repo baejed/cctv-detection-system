@@ -102,7 +102,7 @@ def estimate_signal_timing(db: Session, intersection_id: int) -> dict:
 
     if n < 30:
         return _no_data(
-            f"Only {n} minute-windows available — need at least 30 for cycle detection."
+            f"Only {n} minute-windows available - need at least 30 for cycle detection."
         )
 
     mean = sum(series_raw) / n
@@ -158,7 +158,7 @@ def estimate_signal_timing(db: Session, intersection_id: int) -> dict:
         note = (
             f"Moderate periodicity at ~{estimated_cycle_s} s "
             f"(r={best_r:.2f}, dispersion={dispersion:.1f}). "
-            "Treat as a rough starting estimate — verify against the "
+            "Treat as a rough starting estimate - verify against the "
             "controller box before saving."
         )
     else:

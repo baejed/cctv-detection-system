@@ -18,7 +18,7 @@ Arrival model justification (Tagum City context):
   Webster's formula assumes Poisson (random) vehicle arrivals, which holds
   when vehicles arrive independently of each other. This assumption is valid
   here because Tagum City jeepneys operate without fixed routes or scheduled
-  headways — they circulate freely, making their arrivals statistically
+  headways - they circulate freely, making their arrivals statistically
   independent. This differs from fixed-route bus corridors (e.g. EDSA BBSS)
   where scheduled headways produce platoon arrivals that violate the Poisson
   assumption and require a platoon correction factor (HCM Chapter 19, Eq.
@@ -302,6 +302,17 @@ def generate_timing_for_recommendation(
 
     for chunk in chunks:
         flows = pcu_flow_per_street(db, intersection.id, chunk, pce_map)
+
+        # Fill 0-flow for any known approach we have no detections for, so
+        # partial-coverage intersections (e.g. 2 of 4 cameras offline) still
+        # emit a complete N-phase plan. Without this, missing approaches drop
+        # out of `flows`, get no phase, and the UI renders them as 0g/3y/(C-3)r
+        # - a signal that is never green for that lane. The pedestrian-min-green
+        # floor in compute_timing then gives each uncovered phase real green
+        # time (~17 s) instead of zero.
+        if directions:
+            for sid in directions:
+                flows.setdefault(sid, 0.0)
 
         if flows:
             phases = group_phases(flows, directions)

@@ -1,0 +1,93 @@
+# Worker autoscaling - scales the `worker` Deployment based on the total
+# number of cameras divided by the desired capacity per worker pod.
+#
+# Stack:
+#   1. server emits `eyegila_cameras_total` at /metrics/workers
+#   2. Prometheus scrapes it (see monitoring/prometheus.yml)
+#   3. prometheus-adapter (below) exposes it to the K8s External Metrics API
+#   4. HPA queries that metric, scales worker replicas so the *average* per
+#      pod equals targetAverageValue (= CAMERAS_PER_WORKER).
+#
+# So if you bump CAMERAS_PER_WORKER from 16 → 24, raise targetAverageValue
+# here too, otherwise the HPA will over- or under-scale.
+#
+# Prereqs in the cluster:
+#   - kube-prometheus-stack (or just prometheus + prometheus-adapter)
+#   - GPU nodes labelled nvidia.com/gpu.present=true (matches worker.yaml)
+#   - Enough GPU nodes that maxReplicas can actually be scheduled - the HPA
+#     happily creates Pending pods if not, which then sit unscheduled.
+#
+# Apply with:
+#   kubectl apply -f k3s/worker-hpa.yaml
+#
+# Inspect with:
+#   kubectl get hpa -n eyegila worker
+#   kubectl describe hpa -n eyegila worker
+#   kubectl get --raw "/apis/external.metrics.k8s.io/v1beta1/namespaces/eyegila/eyegila_cameras_total"
+
+# ── prometheus-adapter rule: makes eyegila_cameras_total queryable via
+#    the External Metrics API. Merge this into your existing
+#    prometheus-adapter ConfigMap; don't create a second one.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-adapter-eyegila-rules
+  namespace: monitoring
+data:
+  # The prometheus-adapter Helm chart consumes this via
+  # `externalRules.rulesValues` or by mounting it into /etc/adapter/config.yaml.
+  # If you're using the chart, set values.yaml `external:` to this content
+  # instead of a separate ConfigMap.
+  rules.yaml: |
+    external:
+      - seriesQuery: 'eyegila_cameras_total{namespace!="",service!=""}'
+        resources:
+          overrides:
+            namespace: { resource: "namespace" }
+        name:
+          matches: "eyegila_cameras_total"
+          as:      "eyegila_cameras_total"
+        metricsQuery: 'eyegila_cameras_total{<<.LabelMatchers>>}'
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: worker
+  namespace: eyegila
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: worker
+  minReplicas: 1
+  # Cap at the number of GPU nodes you actually have. HPA won't refuse to
+  # exceed this; it'll just leave new pods Pending. Set it to the real ceiling.
+  maxReplicas: 8
+  metrics:
+    - type: External
+      external:
+        metric:
+          name: eyegila_cameras_total
+        target:
+          type: AverageValue
+          # Cameras per worker pod. Must match worker.yaml's CAMERAS_PER_WORKER.
+          # HPA computes: desiredReplicas = ceil(eyegila_cameras_total / 16)
+          averageValue: "16"
+  behavior:
+    # Scale up fast (camera added → worker should appear in ~1 min).
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+    # Scale down slow - RTSP-related state lives on a single worker pod, so
+    # premature eviction means re-claim churn for the surviving pods. 5 min
+    # idle window with a max of 1 pod removed at a time keeps churn quiet.
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120

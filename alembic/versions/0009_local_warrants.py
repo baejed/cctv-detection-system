@@ -21,7 +21,7 @@ def upgrade() -> None:
     op.add_column("intersections", sa.Column("w_local_2_threshold", sa.Float(), nullable=False, server_default="0.7"))
     op.add_column("intersections", sa.Column("w_local_3_min_pcu",   sa.Float(), nullable=False, server_default="30.0"))
 
-    # Local warrant results on recommendations (nullable — old rows have no values)
+    # Local warrant results on recommendations (nullable - old rows have no values)
     op.add_column("recommendations", sa.Column("w_local_1_met",          sa.Boolean(), nullable=True))
     op.add_column("recommendations", sa.Column("w_local_1_confidence",   sa.Float(),   nullable=True))
     op.add_column("recommendations", sa.Column("w_local_2_met",          sa.Boolean(), nullable=True))

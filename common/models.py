@@ -60,15 +60,15 @@ class Intersection(Base):
     crossing_width_m       = Column(Float, nullable=False, server_default="12.0")
     time                   = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
-    streets                = relationship("Street",              back_populates="intersection", cascade="all, delete")
-    cctvs                  = relationship("CCTV",               back_populates="intersection", cascade="all, delete")
-    recommendations        = relationship("Recommendation",     back_populates="intersection", cascade="all, delete")
+    streets                = relationship("Street",              back_populates="intersection", cascade="all, delete", passive_deletes=True)
+    cctvs                  = relationship("CCTV",               back_populates="intersection", cascade="all, delete", passive_deletes=True)
+    recommendations        = relationship("Recommendation",     back_populates="intersection", cascade="all, delete", passive_deletes=True)
     videos                 = relationship("Video",              back_populates="intersection")
-    pce_overrides          = relationship("PceOverride",        back_populates="intersection", cascade="all, delete")
-    pce_calibrated_values  = relationship("PceCalibratedValue", back_populates="intersection", cascade="all, delete")
-    tod_chunks             = relationship("TodChunk",           back_populates="intersection", cascade="all, delete")
-    timing_recommendations = relationship("TimingRecommendation", back_populates="intersection", cascade="all, delete")
-    simulation_results     = relationship("SimulationResult",     back_populates="intersection", cascade="all, delete")
+    pce_overrides          = relationship("PceOverride",        back_populates="intersection", cascade="all, delete", passive_deletes=True)
+    pce_calibrated_values  = relationship("PceCalibratedValue", back_populates="intersection", cascade="all, delete", passive_deletes=True)
+    tod_chunks             = relationship("TodChunk",           back_populates="intersection", cascade="all, delete", passive_deletes=True)
+    timing_recommendations = relationship("TimingRecommendation", back_populates="intersection", cascade="all, delete", passive_deletes=True)
+    simulation_results     = relationship("SimulationResult",     back_populates="intersection", cascade="all, delete", passive_deletes=True)
 
 
 class Street(Base):
@@ -81,7 +81,7 @@ class Street(Base):
     time            = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     intersection = relationship("Intersection", back_populates="streets")
-    regions      = relationship("Region", back_populates="street", cascade="all, delete")
+    regions      = relationship("Region", back_populates="street", cascade="all, delete", passive_deletes=True)
 
 
 class CCTV(Base):
@@ -93,11 +93,12 @@ class CCTV(Base):
     rtsp_url        = Column(String(255), nullable=False)
     status          = Column(String(50),  nullable=False, default="offline")
     is_being_viewed = Column(Boolean,     nullable=False, default=False)
+    enabled         = Column(Boolean,     nullable=False, server_default="true")
     time            = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     intersection = relationship("Intersection", back_populates="cctvs")
-    detections   = relationship("Detection",       back_populates="cctv",  cascade="all, delete")
-    regions      = relationship("Region",          back_populates="cctv",  cascade="all, delete")
-    heartbeat    = relationship("WorkerHeartbeat", back_populates="cctv",  uselist=False, cascade="all, delete")
+    detections   = relationship("Detection",       back_populates="cctv",  cascade="all, delete", passive_deletes=True)
+    regions      = relationship("Region",          back_populates="cctv",  cascade="all, delete", passive_deletes=True)
+    heartbeat    = relationship("WorkerHeartbeat", back_populates="cctv",  uselist=False, cascade="all, delete", passive_deletes=True)
 
 
 class WorkerHeartbeat(Base):
@@ -125,8 +126,8 @@ class Region(Base):
     time      = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     cctv                  = relationship("CCTV",   back_populates="regions")
     street                = relationship("Street", back_populates="regions")
-    region_points         = relationship("RegionPoint",       back_populates="region", cascade="all, delete")
-    detections_in_regions = relationship("DetectionInRegion", back_populates="region", cascade="all, delete")
+    region_points         = relationship("RegionPoint",       back_populates="region", cascade="all, delete", passive_deletes=True)
+    detections_in_regions = relationship("DetectionInRegion", back_populates="region", cascade="all, delete", passive_deletes=True)
 
 
 class RegionPoint(Base):
@@ -160,6 +161,7 @@ class Detection(Base):
         "DetectionInRegion",
         back_populates="detection",
         cascade="all, delete",
+        passive_deletes=True,
         primaryjoin="Detection.id == DetectionInRegion.detection_id",
         foreign_keys="[DetectionInRegion.detection_id]",
     )
@@ -231,8 +233,8 @@ class Recommendation(Base):
     w_local_3_confidence   = Column(Float,   nullable=True)
 
     intersection           = relationship("Intersection",         back_populates="recommendations")
-    timing_recommendations = relationship("TimingRecommendation", back_populates="recommendation", cascade="all, delete")
-    simulation_results     = relationship("SimulationResult",     back_populates="recommendation", cascade="all, delete")
+    timing_recommendations = relationship("TimingRecommendation", back_populates="recommendation", cascade="all, delete", passive_deletes=True)
+    simulation_results     = relationship("SimulationResult",     back_populates="recommendation", cascade="all, delete", passive_deletes=True)
 
 
 class PushSubscription(Base):

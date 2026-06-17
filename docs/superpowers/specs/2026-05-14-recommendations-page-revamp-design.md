@@ -1,4 +1,4 @@
-# Recommendations Page Revamp — Design
+# Recommendations Page Revamp - Design
 
 **Date:** 2026-05-14
 **Branch:** `jed/warrant-model`
@@ -8,12 +8,12 @@
 
 Redesign the `/recommendations` page in the React frontend so engineers can triage all intersections at a glance and drill into any one to see the warrant-model's inputs, outputs, and run history. Extend the backend to expose the model's feature inputs (Major/Minor/Peds/VPM/PHF), the `recommended_confidence` probability, and the hour the analysis covered, and to retain every run rather than overwriting on regeneration.
 
-This builds on the warrant-MLP integration shipped in `2026-05-13-warrant-model-integration-design.md` — the model and inference pipeline stay the same; this change is about exposing the model's reasoning and run history through better data shape and UI.
+This builds on the warrant-MLP integration shipped in `2026-05-13-warrant-model-integration-design.md` - the model and inference pipeline stay the same; this change is about exposing the model's reasoning and run history through better data shape and UI.
 
 ## Non-goals
 
 - No retraining or changes to the warrant model itself.
-- No auto-refresh / polling — manual regenerate only.
+- No auto-refresh / polling - manual regenerate only.
 - No bulk per-warrant regenerate, CSV export, or per-user note threads.
 - No permission gating beyond the existing `get_current_user` dependency.
 - No frontend test framework introduction; verification is manual + dev-server exercise.
@@ -44,7 +44,7 @@ Add the same seven columns to the SQLAlchemy model with matching nullable types.
 
 ### `server/routers/recommendations.py`
 
-- `_analyze(intersection_id, artifacts, db) -> dict` now returns a flat dict including the seven new fields (`major_volume`, `minor_volume`, `peds`, `vpm`, `phf`, `recommended_confidence`, `hour_start`) **and** `notes=None`. The auto-text formerly written into `notes` is dropped — its contents are now structured fields.
+- `_analyze(intersection_id, artifacts, db) -> dict` now returns a flat dict including the seven new fields (`major_volume`, `minor_volume`, `peds`, `vpm`, `phf`, `recommended_confidence`, `hour_start`) **and** `notes=None`. The auto-text formerly written into `notes` is dropped - its contents are now structured fields.
 - `generate_recommendation` and `generate_all_recommendations` **stop deleting** the prior row. Every call inserts a new `Recommendation`.
 - `GET /recommendations/` returns the latest row per intersection using `DISTINCT ON`:
   ```sql
@@ -55,7 +55,7 @@ Add the same seven columns to the SQLAlchemy model with matching nullable types.
   ORDER BY r.intersection_id, r.generated_at DESC
   ```
 - New endpoint `GET /recommendations/history/{intersection_id}?limit=50` returns past runs in `generated_at DESC` order, capped at `limit` (default 50, max 200).
-- `PATCH /{rec_id}/notes` is unchanged — it edits the row's `notes` field, which is now purely engineer text.
+- `PATCH /{rec_id}/notes` is unchanged - it edits the row's `notes` field, which is now purely engineer text.
 
 ### `RecommendationResponse` (pydantic)
 
@@ -67,7 +67,7 @@ When the most-recent-complete-hour has zero rows in `aggregation_summaries`, the
 
 ## Frontend changes
 
-### Types — `eyegila/src/types/index.ts`
+### Types - `eyegila/src/types/index.ts`
 
 Extend `Recommendation`:
 
@@ -84,9 +84,9 @@ export interface Recommendation {
 }
 ```
 
-Old rows can have nulls for these — UI treats nulls as "No data".
+Old rows can have nulls for these - UI treats nulls as "No data".
 
-### Service — `eyegila/src/services/recommendations.ts`
+### Service - `eyegila/src/services/recommendations.ts`
 
 Add `history(intersectionId, limit=50)`:
 
@@ -98,7 +98,7 @@ history(intersectionId: number, limit = 50): Promise<RecommendationResponse[]> {
 
 Other methods unchanged.
 
-### Page architecture — `eyegila/src/pages/Recommendations.tsx`
+### Page architecture - `eyegila/src/pages/Recommendations.tsx`
 
 The current card-grid layout is replaced. New component tree:
 
@@ -164,7 +164,7 @@ The `hour_start is null` check covers rows written before the migration. The all
 - `Latest` tab uses the row data already in state (no extra fetch).
 - `History` tab triggers `recommendationsApi.history(intersectionId)` on first open per drawer-session; result cached in component state.
 - Trend chart plots `warrant_1_confidence`, `warrant_2_confidence`, `warrant_4_confidence` across runs (x-axis = `generated_at`, y-axis = 0–1).
-- History list rows expand to show that run's Major/Minor/Peds/VPM/PHF and its notes (read-only — only the latest run's notes are editable).
+- History list rows expand to show that run's Major/Minor/Peds/VPM/PHF and its notes (read-only - only the latest run's notes are editable).
 - Regenerate inside drawer → `generate(id)` → response replaces the table's row and prepends to the history list.
 
 ### Component reuse
@@ -197,7 +197,7 @@ No new dependencies.
 
 ## Testing
 
-### Backend — extend `tests/test_recommendations.py`
+### Backend - extend `tests/test_recommendations.py`
 
 - Migration applied: `major_volume, minor_volume, peds, vpm, phf, recommended_confidence, hour_start` exist on `recommendations`; index `ix_recommendations_intersection_generated` exists.
 - `generate_recommendation` inserts a new row; prior row for the same intersection still present.
@@ -208,7 +208,7 @@ No new dependencies.
 - Empty-hour case: features all zero, `hour_start` set to the analyzed hour, `notes` is null.
 - Existing tests for `PATCH /{rec_id}/notes` still pass.
 
-### Frontend — manual test plan (no test framework in `eyegila/`)
+### Frontend - manual test plan (no test framework in `eyegila/`)
 
 Run `npm run dev` against a backend with several intersections (some with data, some without) and exercise:
 
@@ -244,8 +244,8 @@ eyegila/src/components/recommendations/                         # new dir
   └── statusBucket.ts                                           # bucketing helper, shared
 ```
 
-`RecommendationsPage` itself stays slim — it owns fetched state and renders children.
+`RecommendationsPage` itself stays slim - it owns fetched state and renders children.
 
 ## Open questions
 
-None — all decisions captured above.
+None - all decisions captured above.

@@ -57,7 +57,7 @@ _INTEGRATION_ONLY_FILES = {
 def pytest_collection_modifyitems(items: list) -> None:
     if _server_reachable():
         return
-    skip = pytest.mark.skip(reason="API server not reachable — run: docker compose up -d")
+    skip = pytest.mark.skip(reason="API server not reachable - run: docker compose up -d")
     for item in items:
         filename = item.fspath.basename
         if filename in _INTEGRATION_ONLY_FILES:
@@ -83,7 +83,7 @@ def token(api):
     Skips all dependent tests when the server is not running.
     """
     if not _server_reachable():
-        pytest.skip("API server not reachable — run: docker compose up -d")
+        pytest.skip("API server not reachable - run: docker compose up -d")
     r = api.post(f"{API_URL}/login",
                  json={"username": ADMIN_USER, "password": ADMIN_PASS})
     assert r.status_code == 200, f"Login failed: {r.text}"
@@ -102,7 +102,7 @@ def auth(token):
 def db():
     """SQLAlchemy session connected directly to the test DB (port 5433)."""
     if not _server_reachable():
-        pytest.skip("API server not reachable — run: docker compose up -d")
+        pytest.skip("API server not reachable - run: docker compose up -d")
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
     engine = create_engine(DB_URL)

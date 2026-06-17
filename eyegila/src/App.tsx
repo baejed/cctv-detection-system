@@ -6,7 +6,6 @@ import { LoginPage } from './pages/Login';
 import { IntersectionsPage } from './pages/Intersections';
 import { ReportsPage } from './pages/Reports';
 import { UsersPage } from './pages/Users';
-import { ManualPage } from './pages/Manual';
 import { SignalTimingPage } from './pages/SignalTiming';
 import { CameraDetailPage } from './pages/CameraDetail';
 import { VideosPage } from './pages/Videos';
@@ -29,7 +28,6 @@ export default function App() {
             <Route index element={<IntersectionsPage />} />
             <Route path="reports" element={<ReportsPage />} />
             <Route path="users" element={<UsersPage />} />
-            <Route path="manual" element={<ManualPage />} />
             <Route path="intersections/:id" element={<IntersectionDetailPage />} />
             <Route path="timing/:id" element={<SignalTimingPage />} />
             <Route path="cameras/:id" element={<CameraDetailPage />} />

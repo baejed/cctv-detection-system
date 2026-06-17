@@ -1,5 +1,5 @@
 /**
- * k6 load test for EyeGila — simulates 100 concurrent traffic engineers.
+ * k6 load test for EyeGila - simulates 100 concurrent traffic engineers.
  *
  * Usage:
  *   k6 run k6/stress.js
@@ -111,7 +111,7 @@ export default function () {
 
   const intersections = listIntersections(token);
   if (!intersections.length) {
-    console.warn('No intersections found — seed data required');
+    console.warn('No intersections found - seed data required');
     return;
   }
 

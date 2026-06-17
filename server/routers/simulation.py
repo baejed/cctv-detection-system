@@ -186,7 +186,18 @@ def get_simulation(
     )
 
     if not rows:
-        raise HTTPException(status_code=404, detail="No simulation results found — run generate first")
+        # The recommendation may have intentionally skipped simulation
+        # (not-warranted unsignalized intersection, or signalized with no
+        # Webster improvement). In that case the notes field carries the
+        # real reason - surface it instead of telling the user to "run
+        # generate first" when they just did.
+        rec_note = db.execute(
+            text("SELECT notes FROM recommendations WHERE id = :id"),
+            {"id": latest_rec.id},
+        ).scalar()
+        if rec_note:
+            raise HTTPException(status_code=404, detail=rec_note)
+        raise HTTPException(status_code=404, detail="No simulation results found - run generate first")
 
     status = intersection.signal_status or "unsignalized"
     before_signalized = status in ("fixed_time", "actuated")
@@ -219,7 +230,7 @@ def get_simulation(
 
     if status == "unsignalized":
         baseline_note = (
-            "Before-state: HCM gap-acceptance (TWSC) — "
+            "Before-state: HCM gap-acceptance (TWSC) - "
             "no signal present; minor approaches yield to major-street gaps"
         )
     elif status == "fixed_time":

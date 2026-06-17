@@ -23,7 +23,7 @@ _TZ = os.getenv("TZ", "Asia/Manila")
 connected_clients: list[asyncio.Queue] = []
 
 async def aggregation_pusher():
-    """Background task — queries live detection_street_view every 5s and fans out to all clients."""
+    """Background task - queries live detection_street_view every 5s and fans out to all clients."""
     while True:
         await asyncio.sleep(5)
         db = SessionLocal()
@@ -122,6 +122,7 @@ def get_history(
     end: datetime,
     intersection_id: Optional[int] = None,
     street_id: Optional[int] = None,
+    direction: Optional[Literal["inbound", "outbound", "unknown"]] = None,
     bucket: Literal["hour", "day", "week"] = "day",
     user: models.User = Depends(get_current_user),
 ):
@@ -138,6 +139,9 @@ def get_history(
     if street_id is not None:
         conditions.append("a.street_id = :street_id")
         params["street_id"] = street_id
+    if direction is not None:
+        conditions.append("a.direction = :direction")
+        params["direction"] = direction
 
     where = " AND ".join(conditions)
 

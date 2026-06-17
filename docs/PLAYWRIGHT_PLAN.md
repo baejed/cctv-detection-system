@@ -8,7 +8,7 @@ multiple pages, JS errors at runtime, and regressions introduced by UI
 changes. It is the closest thing to a real user sitting at the screen.
 
 The existing unit and integration tests verify the backend math and API
-contracts. Playwright verifies the frontend — does the page load, can the
+contracts. Playwright verifies the frontend - does the page load, can the
 user actually do the thing, does anything crash?
 
 ---
@@ -35,14 +35,14 @@ Current spec:   `eyegila/e2e/app.spec.ts`
 
 ---
 
-## Step 1 — Add data-testid Attributes
+## Step 1 - Add data-testid Attributes
 
 None of the pages have `data-testid` attributes yet. Without them, selectors
 rely on text content and ARIA roles, which break whenever copy changes. Before
 writing tests, add a `data-testid` to every interactive element that a test
 will touch.
 
-### Priority list — what to add first
+### Priority list - what to add first
 
 | Page / Component | Element | Suggested `data-testid` |
 |-----------------|---------|------------------------|
@@ -75,7 +75,7 @@ will touch.
 
 ---
 
-## Step 2 — Test File Organisation
+## Step 2 - Test File Organisation
 
 Split the single `app.spec.ts` into separate files, one per domain. Each
 file is self-contained with its own auth helper and cleanup.
@@ -98,7 +98,7 @@ eyegila/e2e/
 
 ---
 
-## Step 3 — Test Scenarios by Page
+## Step 3 - Test Scenarios by Page
 
 ### auth.spec.ts
 
@@ -122,9 +122,9 @@ eyegila/e2e/
 | I-02 | Grid view shows intersection names | Assert intersection name text visible in grid |
 | I-03 | Map view renders a Leaflet map | Toggle to map view, assert `canvas` or `.leaflet-container` visible |
 | I-04 | Add intersection button opens wizard | Click `btn-add-intersection`, assert wizard dialog opens (step label visible) |
-| I-05 | Wizard step 1 — welcome/preview visible | Wizard open, assert step indicator shows step 1 |
-| I-06 | Wizard step 2 — camera discovery fields visible | Advance to discover step, assert RTSP input visible |
-| I-07 | Wizard step 3 — name and pin fields visible | Advance to name step, assert intersection name input + map present |
+| I-05 | Wizard step 1 - welcome/preview visible | Wizard open, assert step indicator shows step 1 |
+| I-06 | Wizard step 2 - camera discovery fields visible | Advance to discover step, assert RTSP input visible |
+| I-07 | Wizard step 3 - name and pin fields visible | Advance to name step, assert intersection name input + map present |
 | I-08 | Wizard can be cancelled without creating anything | Open wizard, click X/cancel, assert no new intersection card appeared |
 | I-09 | Clicking an intersection card navigates to detail | Click a card, assert URL matches `/intersections/{id}` |
 | I-10 | Intersection detail page renders without JS errors | Navigate to detail, wait 2s, assert no page errors |
@@ -206,14 +206,14 @@ eyegila/e2e/
 
 ---
 
-## Step 4 — Shared Helpers to Write
+## Step 4 - Shared Helpers to Write
 
 ### `helpers/auth.ts`
 
 ```
-login(page)             — fills credentials, clicks Sign in, waits for redirect
-getToken(page)          — reads eyegila_token from localStorage after login
-authHeader(page)        — returns { Authorization: "Bearer <token>" }
+login(page)             - fills credentials, clicks Sign in, waits for redirect
+getToken(page)          - reads eyegila_token from localStorage after login
+authHeader(page)        - returns { Authorization: "Bearer <token>" }
 ```
 
 ### `helpers/api.ts`
@@ -233,7 +233,7 @@ Using API helpers in `beforeEach`/`afterEach` keeps each spec independent.
 
 ---
 
-## Step 5 — What to Test vs What to Skip
+## Step 5 - What to Test vs What to Skip
 
 ### Test with Playwright
 
@@ -247,15 +247,15 @@ Using API helpers in `beforeEach`/`afterEach` keeps each spec independent.
 
 ### Skip / defer
 
-- Live video feed (RTSP stream not available in test env — assert container exists, not the stream itself)
+- Live video feed (RTSP stream not available in test env - assert container exists, not the stream itself)
 - WebGL 3D scene visual correctness (assert canvas is mounted, not pixel accuracy)
-- Real-time SSE updates (flaky by nature — mock with API seed data instead)
+- Real-time SSE updates (flaky by nature - mock with API seed data instead)
 - PDF / print output (assert button exists; visual output requires snapshot testing)
-- ONVIF camera discovery (requires hardware — skip in automated tests)
+- ONVIF camera discovery (requires hardware - skip in automated tests)
 
 ---
 
-## Step 6 — Running in CI
+## Step 6 - Running in CI
 
 When running in CI (GitHub Actions, etc.), set these env vars:
 
@@ -275,7 +275,7 @@ and the seed script.
 
 ---
 
-## Summary — What Exists vs What Is Planned
+## Summary - What Exists vs What Is Planned
 
 | Item | Status |
 |------|--------|
@@ -283,11 +283,11 @@ and the seed script.
 | `eyegila/e2e/app.spec.ts` (basic smoke tests) | Exists |
 | `data-testid` attributes on components | Not yet added |
 | `helpers/auth.ts` + `helpers/api.ts` | Planned |
-| `specs/auth.spec.ts` | Planned — 7 scenarios |
-| `specs/intersections.spec.ts` | Planned — 10 scenarios |
-| `specs/cameras.spec.ts` | Planned — 7 scenarios |
-| `specs/recommendations.spec.ts` | Planned — 11 scenarios |
-| `specs/signal-timing.spec.ts` | Planned — 12 scenarios |
-| `specs/navigation.spec.ts` | Planned — 5 scenarios |
-| `specs/responsive.spec.ts` | Planned — 5 scenarios |
+| `specs/auth.spec.ts` | Planned - 7 scenarios |
+| `specs/intersections.spec.ts` | Planned - 10 scenarios |
+| `specs/cameras.spec.ts` | Planned - 7 scenarios |
+| `specs/recommendations.spec.ts` | Planned - 11 scenarios |
+| `specs/signal-timing.spec.ts` | Planned - 12 scenarios |
+| `specs/navigation.spec.ts` | Planned - 5 scenarios |
+| `specs/responsive.spec.ts` | Planned - 5 scenarios |
 | **Total planned scenarios** | **57** |

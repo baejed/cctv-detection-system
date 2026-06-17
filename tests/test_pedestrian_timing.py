@@ -1,6 +1,6 @@
 """Tests for pedestrian minimum green time constraint in Webster's formula.
 
-All tests are pure unit tests — no live stack required.
+All tests are pure unit tests - no live stack required.
 
 DPWH pedestrian minimum green:
     G_ped = crossing_width_m / 1.2 + 7.0
@@ -21,7 +21,7 @@ def ped_min(width_m: float) -> float:
 # ── Pedestrian minimum enforced ───────────────────────────────────────────────
 
 def test_ped_min_enforced_low_flow():
-    """Very low vehicle flow produces short Webster green — ped min must override it."""
+    """Very low vehicle flow produces short Webster green - ped min must override it."""
     from server.webster import compute_timing
 
     flows  = {1: 30.0, 2: 30.0}
@@ -35,7 +35,7 @@ def test_ped_min_enforced_low_flow():
 
 
 def test_ped_min_not_binding_at_high_flow():
-    """High vehicle flow already exceeds ped min — timing driven by traffic, not peds."""
+    """High vehicle flow already exceeds ped min - timing driven by traffic, not peds."""
     from server.webster import compute_timing
 
     flows  = {1: 900.0, 2: 900.0}
@@ -69,7 +69,7 @@ def test_narrow_road_shorter_ped_min():
 
 
 def test_ped_min_applied_per_phase_independently():
-    """Each phase independently satisfies ped min — imbalanced flows still enforce both."""
+    """Each phase independently satisfies ped min - imbalanced flows still enforce both."""
     from server.webster import compute_timing
 
     # Phase 1 has dominant flow (would normally get most of the green),
@@ -136,7 +136,7 @@ def test_ped_min_clamped_to_max_cycle():
     cycle, splits = compute_timing(flows, phases, crossing_width_m=100.0, max_cycle=120)
 
     assert cycle <= 120, "Cycle must not exceed max_cycle even for very wide crossings"
-    # Ped min = 100/1.2 + 7 ≈ 90 s per phase — unachievable in a 120 s cycle with 2
+    # Ped min = 100/1.2 + 7 ≈ 90 s per phase - unachievable in a 120 s cycle with 2
     # phases plus lost time, so we accept the max_cycle cap
     assert cycle == 120
 

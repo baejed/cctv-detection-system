@@ -1,4 +1,4 @@
-"""Analytical delay simulation tests — unit (delay formulas) + integration."""
+"""Analytical delay simulation tests - unit (delay formulas) + integration."""
 import math
 import pytest
 

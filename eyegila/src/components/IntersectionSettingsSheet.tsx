@@ -210,6 +210,19 @@ export function SettingsSheet({ inter, streets, cameras, rec, open, onClose, onR
     catch { toast.error('Delete failed'); }
   }
 
+  async function toggleCameraEnabled(cam: CCTV) {
+    try {
+      if (cam.enabled) {
+        await cctvsApi.disable(cam.id);
+        toast.success(`${cam.name} disabled - worker will leave it alone`);
+      } else {
+        await cctvsApi.enable(cam.id);
+        toast.success(`${cam.name} enabled - worker will reclaim shortly`);
+      }
+      onRefresh();
+    } catch { toast.error('Failed to update camera state'); }
+  }
+
   async function deleteIntersection() {
     if (!inter) return;
     try { await intersectionsApi.delete(inter.id); onRefresh(); onClose(); }
@@ -356,6 +369,21 @@ export function SettingsSheet({ inter, streets, cameras, rec, open, onClose, onR
                           Regions
                         </Button>
                       </Link>
+                      <button
+                        onClick={() => toggleCameraEnabled(cam)}
+                        className={cn(
+                          'shrink-0 p-1 transition-colors',
+                          cam.enabled
+                            ? 'text-muted-foreground hover:text-foreground'
+                            : 'text-amber-600 hover:text-amber-700',
+                        )}
+                        title={cam.enabled
+                          ? 'Disable - stop worker from reconnecting'
+                          : 'Enable - let the worker claim it again'}
+                        aria-label={cam.enabled ? `Disable ${cam.name}` : `Enable ${cam.name}`}
+                      >
+                        {cam.enabled ? <WifiOff className="size-3.5" /> : <RefreshCw className="size-3.5" />}
+                      </button>
                       <AlertDialog>
                         <AlertDialogTrigger asChild>
                           <button className="shrink-0 p-1 text-muted-foreground hover:text-destructive transition-colors" aria-label={`Delete ${cam.name}`}>

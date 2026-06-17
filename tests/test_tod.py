@@ -1,4 +1,4 @@
-"""Time-of-day chunk tests — unit (validation + active-chunk lookup) + integration."""
+"""Time-of-day chunk tests - unit (validation + active-chunk lookup) + integration."""
 import pytest
 from datetime import datetime
 from unittest.mock import MagicMock
@@ -160,7 +160,7 @@ def test_tod_chunk_update_validation_rejects_gap(auth, intersection):
     chunks = auth.get(f"{API_URL}/intersections/{iid}/tod-chunks").json()
     am = next(c for c in chunks if c["name"] == "AM Peak")
 
-    # Shift AM Peak start forward without adjusting Early Morning — creates a gap
+    # Shift AM Peak start forward without adjusting Early Morning - creates a gap
     r = auth.put(f"{API_URL}/intersections/{iid}/tod-chunks/{am['id']}",
                  json={"name": "AM Peak", "start_time": "07:00", "end_time": "09:00"})
     assert r.status_code == 422

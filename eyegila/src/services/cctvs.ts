@@ -24,9 +24,18 @@ export const cctvsApi = {
   retry: (id: number) =>
     request<void>(`/cctvs/${id}/retry`, { method: 'POST' }),
 
+  disable: (id: number) =>
+    request<void>(`/cctvs/${id}/disable`, { method: 'POST' }),
+
+  enable: (id: number) =>
+    request<void>(`/cctvs/${id}/enable`, { method: 'POST' }),
+
   snapshotUrl: (id: number) => {
     const token = getToken();
-    const q = token ? `?token=${encodeURIComponent(token)}` : '';
+    // Without a token the server returns 401 - let the <img onError> show
+    // the placeholder instead of issuing a doomed request.
+    if (!token) return '';
+    const q = `?token=${encodeURIComponent(token)}`;
     return import.meta.env.DEV
       ? `http://${window.location.hostname}:8000/cctvs/${id}/snapshot${q}`
       : `/api/cctvs/${id}/snapshot${q}`;

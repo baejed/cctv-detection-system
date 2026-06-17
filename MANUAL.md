@@ -1,4 +1,4 @@
-# EyeGila — System Manual
+# EyeGila - System Manual
 
 > Traffic detection and signal warrant analysis platform for Tagum City.  
 > Last updated: 2026-06-16
@@ -52,10 +52,10 @@ RTSP Cameras
 
 | Service | Role |
 |---|---|
-| `timescaledb` | TimescaleDB on PostgreSQL 16 — time-series detections and continuous aggregates |
-| `pgbouncer` | Connection pooler in transaction mode — all services connect through it |
+| `timescaledb` | TimescaleDB on PostgreSQL 16 - time-series detections and continuous aggregates |
+| `pgbouncer` | Connection pooler in transaction mode - all services connect through it |
 | `redis` | RQ job queue for video processing + SlowAPI rate-limit store |
-| `server` | FastAPI REST API — CRUD, SSE live aggregation, MJPEG/WebSocket camera views, warrant analysis, signal timing |
+| `server` | FastAPI REST API - CRUD, SSE live aggregation, MJPEG/WebSocket camera views, warrant analysis, signal timing |
 | `rq-worker` | Processes uploaded video files (YOLO inference) asynchronously via RQ |
 | `worker` | Live RTSP stream inference (CPU/Mac Dockerfile.mac or GPU Dockerfile) |
 | `worker-gpu` | Same as `worker`, built for NVIDIA GPU with TensorRT cache |
@@ -92,7 +92,7 @@ cd cctv-detection-system
 cp .env.example .env
 ```
 
-Edit `.env` — the defaults work for local dev except for optional keys (VAPID, FERNET). The stack will start without them.
+Edit `.env` - the defaults work for local dev except for optional keys (VAPID, FERNET). The stack will start without them.
 
 ### 3.2 Start core services
 
@@ -226,7 +226,7 @@ docker compose -f docker-compose.prod.yml up -d
 | Port | Service |
 |---|---|
 | `80` | Nginx → React frontend (also reverse-proxies `/api/*` → server) |
-| `8000` | FastAPI server (internal only — not exposed to public in prod) |
+| `8000` | FastAPI server (internal only - not exposed to public in prod) |
 
 In production the frontend Nginx container is the only public entry point. The server is accessed only through Docker's internal network.
 
@@ -239,7 +239,7 @@ In production the frontend Nginx container is the only public entry point. The s
 - Image: `timescale/timescaledb:latest-pg16`
 - Database: `traffic` (dev) / `traffic` (prod)
 - Port: `5433:5432` (dev), internal only (prod)
-- Init script: `init.sql` — creates continuous aggregates (`detection_street_view`, `detection_by_region_view`) and TimescaleDB hypertables
+- Init script: `init.sql` - creates continuous aggregates (`detection_street_view`, `detection_by_region_view`) and TimescaleDB hypertables
 
 ### `pgbouncer`
 
@@ -304,8 +304,8 @@ In production the frontend Nginx container is the only public entry point. The s
 docker compose --profile monitoring up -d
 ```
 
-- Prometheus at `http://localhost:9090` — scrapes `/metrics` (FastAPI) and `/metrics/workers` (heartbeat data)
-- Grafana at `http://localhost:3000` — default dashboard: `monitoring/grafana/dashboards/worker-health.json`
+- Prometheus at `http://localhost:9090` - scrapes `/metrics` (FastAPI) and `/metrics/workers` (heartbeat data)
+- Grafana at `http://localhost:3000` - default dashboard: `monitoring/grafana/dashboards/worker-health.json`
 
 ---
 
@@ -318,8 +318,8 @@ All variables have defaults that work for local development. Production requires
 | `DATABASE_URL` | `postgresql://postgres:postgres@pgbouncer:5432/traffic` | yes | SQLAlchemy connection string |
 | `REDIS_URL` | `redis://redis:6379` | yes | RQ + rate-limit |
 | `POSTGRES_PASSWORD` | `postgres` | yes | TimescaleDB password (prod only) |
-| `SUPER_KEY` | — | yes | Protects `POST/PUT/DELETE /users/*`; sent as `X-Super-Key` header |
-| `FERNET_KEY` | — | recommended | Encrypts RTSP URLs at rest. Leave blank to skip encryption. Generate: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
+| `SUPER_KEY` | - | yes | Protects `POST/PUT/DELETE /users/*`; sent as `X-Super-Key` header |
+| `FERNET_KEY` | - | recommended | Encrypts RTSP URLs at rest. Leave blank to skip encryption. Generate: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | yes | Comma-separated allowed origins |
 | `TZ` | `Asia/Manila` | | Server and worker timezone |
 | `TRUST_PROXY_HEADERS` | `false` | yes (behind proxy) | Set `true` when behind Nginx/load balancer |
@@ -329,8 +329,8 @@ All variables have defaults that work for local development. Production requires
 | `INFERENCE_EVERY_N` | `1` | | Run YOLO on every Nth frame |
 | `READER_MAX_FPS` | `0` | | Cap incoming frame rate (0 = unlimited) |
 | `ANALYSIS_INTERVAL_MINUTES` | `0` (dev) / `60` (prod) | | Auto-regenerate recommendations interval; 0 = disabled |
-| `VAPID_PUBLIC_KEY` | — | optional | Web push notification public key |
-| `VAPID_PRIVATE_KEY` | — | optional | Web push notification private key |
+| `VAPID_PUBLIC_KEY` | - | optional | Web push notification public key |
+| `VAPID_PRIVATE_KEY` | - | optional | Web push notification private key |
 | `PGBOUNCER_MAX_CLIENT_CONN` | `100` (dev) / `200` (prod) | | PgBouncer max connections |
 | `PGBOUNCER_DEFAULT_POOL_SIZE` | `10` (dev) / `20` (prod) | | PgBouncer pool size |
 | `GRAFANA_PASSWORD` | `admin` | | Grafana admin password |
@@ -346,8 +346,8 @@ Interactive docs: `http://localhost:8000/docs`
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/login/` | Login — returns `{ token }`. Rate-limited: 10/minute. |
-| `DELETE` | `/login/` | Logout — invalidates the current token. |
+| `POST` | `/login/` | Login - returns `{ token }`. Rate-limited: 10/minute. |
+| `DELETE` | `/login/` | Logout - invalidates the current token. |
 
 ### Users (requires `X-Super-Key` header)
 
@@ -393,7 +393,7 @@ Interactive docs: `http://localhost:8000/docs`
 | `GET` | `/cctvs/{id}` | Get camera with live status |
 | `PUT` | `/cctvs/{id}` | Update camera name, RTSP URL, or intersection |
 | `DELETE` | `/cctvs/{id}` | Delete camera |
-| `GET` | `/cctvs/discover` | WS-Discovery scan — finds ONVIF cameras on the local network (3 s UDP multicast). Rate-limited: 6/minute. |
+| `GET` | `/cctvs/discover` | WS-Discovery scan - finds ONVIF cameras on the local network (3 s UDP multicast). Rate-limited: 6/minute. |
 | `POST` | `/cctvs/scan-nvr` | Probe an NVR's RTSP port and return channel URLs. Rate-limited: 10/minute. |
 
 **Camera status values:** `online`, `reconnecting`, `offline`  
@@ -431,7 +431,7 @@ All stream endpoints accept `?token=<jwt>` as an alternative to the `Authorizati
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/aggregation/stream` | SSE stream — pushes JSON every 5 s with today's vehicle counts per intersection/street/direction/type |
+| `GET` | `/aggregation/stream` | SSE stream - pushes JSON every 5 s with today's vehicle counts per intersection/street/direction/type |
 | `GET` | `/aggregation/history` | Historical aggregation query (date range, intersection filter) |
 
 SSE payload shape (one array of objects per push):
@@ -523,7 +523,7 @@ DPWH default PCE values: motorcycle 0.33, pedicab 0.50, tricycle 0.75, car 1.0, 
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/health` | Liveness/readiness probe — `200 ok` or `503` if DB is unreachable |
+| `GET` | `/health` | Liveness/readiness probe - `200 ok` or `503` if DB is unreachable |
 | `GET` | `/metrics` | Prometheus metrics (FastAPI instrumentation) |
 | `GET` | `/metrics/workers` | Worker heartbeat data as Prometheus gauge lines |
 
@@ -606,7 +606,7 @@ Webster-formula timing for the selected intersection. Features:
 - Side-by-side Gantt phase comparison: **Current** (entered by engineer) vs **Recommended**
 - Each Gantt shows green/amber/red bands per approach proportional to cycle length
 - 2D animated intersection canvas and 3D Three.js scene (before/after queue simulation)
-- **Present mode** — full-screen, hides all nav chrome for council screenshots
+- **Present mode** - full-screen, hides all nav chrome for council screenshots
 - Play/pause/scrub animation controls
 - Vehicle-hours-saved summary
 
@@ -668,8 +668,8 @@ All models live in `common/models.py`.
 
 ### Views (TimescaleDB continuous aggregates)
 
-- `detection_street_view` — joins detections → regions → streets, bucketed by minute. Used by SSE aggregation.
-- `detection_by_region_view` — similar aggregate keyed by region.
+- `detection_street_view` - joins detections → regions → streets, bucketed by minute. Used by SSE aggregation.
+- `detection_by_region_view` - similar aggregate keyed by region.
 
 ---
 
@@ -678,7 +678,7 @@ All models live in `common/models.py`.
 ### Backend (pytest)
 
 ```bash
-# Unit tests — no server needed, ~5 s
+# Unit tests - no server needed, ~5 s
 make test-unit
 # or:
 python3 -m pytest tests/test_stress.py tests/test_pedestrian_timing.py tests/test_cycle_detection.py -q
@@ -799,14 +799,14 @@ docker compose --profile monitoring up -d
   - `/metrics` (FastAPI auto-instrumentation) every 15 s
   - `/metrics/workers` (worker heartbeat gauges) every 10 s
 - Custom metrics:
-  - `worker_camera_fps{cctv_id, cctv_name}` — frames per second reported by the worker
-  - `worker_camera_claimed{cctv_id, cctv_name}` — 1 if a worker currently owns the camera
+  - `worker_camera_fps{cctv_id, cctv_name}` - frames per second reported by the worker
+  - `worker_camera_claimed{cctv_id, cctv_name}` - 1 if a worker currently owns the camera
 
 ### Grafana
 
 - URL: `http://localhost:3000`
 - Default login: `admin` / `admin` (change via `GRAFANA_PASSWORD` env var)
-- Pre-provisioned dashboard: **Worker Health** — shows per-camera FPS and claim status
+- Pre-provisioned dashboard: **Worker Health** - shows per-camera FPS and claim status
 
 ---
 
@@ -833,7 +833,7 @@ python scripts/fake_detections.py --cctv-id 1 --region-id 1 --count 500 --hours 
 python scripts/fake_detections.py --list
 ```
 
-The seeder creates: City Hall Intersection, Osmena Park, Rotunda — each with 4 streets (N/S/E/W) and 4 cameras. Traffic patterns follow realistic time-of-day curves with AM/PM peaks. Vehicle mix for Tagum City context: motorcycles 50%, tricycles/pedicabs heavy, cars, trucks.
+The seeder creates: City Hall Intersection, Osmena Park, Rotunda - each with 4 streets (N/S/E/W) and 4 cameras. Traffic patterns follow realistic time-of-day curves with AM/PM peaks. Vehicle mix for Tagum City context: motorcycles 50%, tricycles/pedicabs heavy, cars, trucks.
 
 ### `scripts/setup_admin.py`
 
@@ -859,7 +859,7 @@ Full-stack E2E test runner. See [§10 Running Tests](#10-running-tests).
 
 ### `afk-ralph.sh`
 
-AFK batch runner — runs Claude Code in a loop N times, implementing one PRD task per iteration. Used for autonomous development sessions.
+AFK batch runner - runs Claude Code in a loop N times, implementing one PRD task per iteration. Used for autonomous development sessions.
 
 ```bash
 ./afk-ralph.sh 10

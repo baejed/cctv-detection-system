@@ -21,7 +21,7 @@ _INTERVAL_MINUTES = int(os.getenv("ANALYSIS_INTERVAL_MINUTES", "60"))
 async def analysis_loop(app) -> None:
     """Async loop: sleep, then run generate-all, repeat."""
     if _INTERVAL_MINUTES <= 0:
-        log.info("scheduler: ANALYSIS_INTERVAL_MINUTES=0 — automatic analysis disabled")
+        log.info("scheduler: ANALYSIS_INTERVAL_MINUTES=0 - automatic analysis disabled")
         return
 
     log.info("scheduler: will run analysis every %d minutes", _INTERVAL_MINUTES)
@@ -38,10 +38,10 @@ async def analysis_loop(app) -> None:
 
             with SessionLocal() as db:
                 results = run_generate_all(db, app.state.warrant_artifacts)
-            log.info("scheduler: generate-all complete — %d intersections updated", len(results))
+            log.info("scheduler: generate-all complete - %d intersections updated", len(results))
         except asyncio.CancelledError:
             raise
         except Exception:
-            log.exception("scheduler: generate-all failed — will retry next interval")
+            log.exception("scheduler: generate-all failed - will retry next interval")
 
         await asyncio.sleep(_INTERVAL_MINUTES * 60)

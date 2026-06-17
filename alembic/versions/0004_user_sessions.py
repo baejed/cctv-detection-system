@@ -27,7 +27,7 @@ def upgrade() -> None:
     op.create_index("idx_user_sessions_user_id",    "user_sessions", ["user_id"])
     op.create_index("idx_user_sessions_expires_at", "user_sessions", ["expires_at"])
 
-    # Drop legacy single-session columns — IF EXISTS so this is safe on fresh DBs
+    # Drop legacy single-session columns - IF EXISTS so this is safe on fresh DBs
     op.execute("ALTER TABLE users DROP COLUMN IF EXISTS session")
     op.execute("ALTER TABLE users DROP COLUMN IF EXISTS session_expires_at")
 

@@ -442,9 +442,9 @@ def run_pgbouncer(args):
     print_percentiles("Query round-trip", lats)
     print(f"\n  Wall time  : {elapsed:.1f}s")
     if len(ok) == args.connections:
-        print(f"  {color('green', '✓')} All connections succeeded — pool handled the load.")
+        print(f"  {color('green', '✓')} All connections succeeded - pool handled the load.")
     else:
-        print(f"  {color('yellow', '⚠')} Some connections failed — pool may be exhausted or server overloaded.")
+        print(f"  {color('yellow', '⚠')} Some connections failed - pool may be exhausted or server overloaded.")
 
 
 # ---------------------------------------------------------------------------

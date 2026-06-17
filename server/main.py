@@ -18,7 +18,7 @@ from prometheus_client import (
 from prometheus_fastapi_instrumentator import Instrumentator
 import prometheus_fastapi_instrumentator.routing as _pfi_routing
 
-# Patch: _IncludedRouter has no `path` attr — guard against it
+# Patch: _IncludedRouter has no `path` attr - guard against it
 _orig_get_route_name = _pfi_routing._get_route_name
 def _safe_get_route_name(scope, routes):
     safe = [r for r in routes if hasattr(r, "path")]
@@ -138,7 +138,7 @@ app.add_middleware(
 
 @app.get("/health", include_in_schema=False)
 def health():
-    """Liveness/readiness probe — returns 503 if DB is unreachable."""
+    """Liveness/readiness probe - returns 503 if DB is unreachable."""
     try:
         db = SessionLocal()
         db.execute(text("SELECT 1"))
@@ -154,7 +154,18 @@ def health():
 
 @app.get("/metrics/workers", include_in_schema=False)
 def worker_metrics():
-    """Expose worker heartbeat data as Prometheus gauge lines."""
+    """Expose worker heartbeat data as Prometheus gauge lines.
+
+    Also emits three fleet-level scalar gauges the worker HPA scales on:
+      eyegila_cameras_total      - every camera row in the DB
+      eyegila_cameras_claimed    - cameras with a worker heartbeat ≤15 s old
+      eyegila_cameras_unclaimed  - the gap (total − claimed); scale-up signal
+
+    The 15 s window matches worker/claim.py:CLAIM_EXPIRY_SEC, so a camera
+    only counts as "claimed" if its assigned worker is actually still
+    publishing heartbeats. A dead-but-not-yet-evicted worker stops protecting
+    its claim within 15 s, which becomes unclaimed load that HPA reacts to.
+    """
     db = SessionLocal()
     lines: list[str] = []
     try:
@@ -172,6 +183,25 @@ def worker_metrics():
             claimed = 1 if r.status is not None else 0
             lines.append(f"worker_camera_fps{{{lbl}}} {fps}")
             lines.append(f"worker_camera_claimed{{{lbl}}} {claimed}")
+
+        fleet = db.execute(text("""
+            SELECT
+                (SELECT COUNT(*)::int FROM cctvs) AS total,
+                (SELECT COUNT(*)::int FROM worker_heartbeats
+                  WHERE last_seen > NOW() - INTERVAL '15 seconds') AS claimed
+        """)).fetchone()
+        total = int(fleet.total)
+        claimed = int(fleet.claimed)
+        unclaimed = max(0, total - claimed)
+        lines.append("# HELP eyegila_cameras_total Total cameras configured in the system")
+        lines.append("# TYPE eyegila_cameras_total gauge")
+        lines.append(f"eyegila_cameras_total {total}")
+        lines.append("# HELP eyegila_cameras_claimed Cameras with a live worker heartbeat (≤15s)")
+        lines.append("# TYPE eyegila_cameras_claimed gauge")
+        lines.append(f"eyegila_cameras_claimed {claimed}")
+        lines.append("# HELP eyegila_cameras_unclaimed Cameras without a live worker - HPA scales on this")
+        lines.append("# TYPE eyegila_cameras_unclaimed gauge")
+        lines.append(f"eyegila_cameras_unclaimed {unclaimed}")
     finally:
         db.close()
     return PlainTextResponse("\n".join(lines) + "\n", media_type=CONTENT_TYPE_LATEST)

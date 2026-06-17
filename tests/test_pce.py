@@ -1,4 +1,4 @@
-"""PCE configuration layer tests — unit (resolution priority) + integration."""
+"""PCE configuration layer tests - unit (resolution priority) + integration."""
 import pytest
 import requests
 from unittest.mock import MagicMock, patch

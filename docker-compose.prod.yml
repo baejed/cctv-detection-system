@@ -1,4 +1,4 @@
-# EyeGila — Production deployment
+# EyeGila - Production deployment
 #
 # First-time setup:
 #   1. cp .env.prod.example .env.prod

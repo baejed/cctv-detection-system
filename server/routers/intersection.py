@@ -116,7 +116,7 @@ async def import_csv(
     Bulk-import intersections and cameras from a CSV file.
 
     Required columns: intersection_name, latitude, longitude, camera_name, rtsp_url
-    Intersections are matched by name — existing ones are reused, not duplicated.
+    Intersections are matched by name - existing ones are reused, not duplicated.
     """
     content = await file.read()
     try:

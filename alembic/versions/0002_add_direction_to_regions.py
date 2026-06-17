@@ -83,4 +83,4 @@ def downgrade() -> None:
     op.execute("DROP MATERIALIZED VIEW IF EXISTS aggregation_summaries")
     op.execute("DROP VIEW IF EXISTS detection_street_view CASCADE")
     op.drop_column("regions", "direction")
-    # Restore views without direction — recreate from init.sql manually if needed
+    # Restore views without direction - recreate from init.sql manually if needed

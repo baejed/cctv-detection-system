@@ -76,6 +76,18 @@ services:
       SUPER_KEY: ${SUPER_KEY:-}
       FERNET_KEY: ${FERNET_KEY:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      # Seconds to buffer each live-view frame before sending it over the WS,
+      # so the worker's detection for that frame has time to land in Redis.
+      # Higher = better box-frame sync, more video latency. Lower = snappier
+      # video, boxes will trail. Tune for your worker batch latency.
+      OVERLAY_DELAY_SEC: ${OVERLAY_DELAY_SEC:-0.2}
+      # Live-preview frame rate per camera over the WS. Lower = less server
+      # CPU spent on RTSP decode + JPEG encode, at the cost of choppier video.
+      # 10 FPS is the sweet spot for a Mac/CPU dev stack with 4 cameras.
+      LIVE_PREVIEW_FPS: ${LIVE_PREVIEW_FPS:-10}
+      # When 1, server skips its own RTSP capture and relays the worker's
+      # annotated JPEG frames from Redis. Must match the worker's flag.
+      WORKER_PUBLISHES_FRAMES: ${WORKER_PUBLISHES_FRAMES:-0}
       # 0 = disabled (default). Set to e.g. 60 in production to run warrant
       # analysis automatically every hour. Dev stacks should leave this at 0
       # to avoid background writes clobbering manually-set test data.
@@ -135,6 +147,10 @@ services:
       CAMERAS_PER_WORKER: ${CAMERAS_PER_WORKER:-1}
       INFERENCE_EVERY_N: ${INFERENCE_EVERY_N:-1}
       READER_MAX_FPS: ${READER_MAX_FPS:-0}
+      # When 1, worker publishes annotated JPEG frames to Redis so the server
+      # WS can skip its own RTSP decode. Must match the server's flag.
+      WORKER_PUBLISHES_FRAMES: ${WORKER_PUBLISHES_FRAMES:-0}
+      WORKER_FRAME_JPEG_QUALITY: ${WORKER_FRAME_JPEG_QUALITY:-75}
       FERNET_KEY: ${FERNET_KEY:-}
       MODEL_VERSION: ${MODEL_VERSION:-eyegila_v4}
       # Canonical in-container path for the mounted model weights.

@@ -11,7 +11,7 @@ import type { SSEStatus } from '@/hooks/useSSE';
 import { SettingsSheet } from '@/components/IntersectionSettingsSheet';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { ArrowLeft, MonitorPlay, TrendingUp, Settings2, RefreshCw, Loader2 } from 'lucide-react';
+import { ArrowLeft, MonitorPlay, TrendingUp, Settings2, RefreshCw, Loader2, RotateCcw } from 'lucide-react';
 import { statusBucket, BUCKET_LABEL, BUCKET_BADGE_CLASS } from '@/components/recommendations/statusBucket';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
@@ -31,6 +31,25 @@ function LiveCameraFeed({ cam, count, onCameraClick }: FeedProps) {
   const canvasRef    = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<'connecting' | 'live' | 'error'>('connecting');
+  // Bump to force the WS effect below to tear down + reopen on demand.
+  // Used by the reload button when boxes have stopped appearing - kicks the
+  // worker's retry signal AND throws away any stale server-side capture
+  // subscription this socket might be stuck on.
+  const [reconnectKey, setReconnectKey] = useState(0);
+  const [reloading, setReloading] = useState(false);
+
+  async function handleReload(e: React.MouseEvent) {
+    e.stopPropagation();  // don't trigger the tile's onCameraClick
+    if (!cam || reloading) return;
+    setReloading(true);
+    try {
+      await cctvsApi.retry(cam.id);
+    } catch {
+      // worker nudge is best-effort; reconnect still proceeds
+    }
+    setReconnectKey(k => k + 1);
+    setReloading(false);
+  }
 
   // Keep canvas pixel buffer in sync with container size
   useEffect(() => {
@@ -55,6 +74,10 @@ function LiveCameraFeed({ cam, count, onCameraClick }: FeedProps) {
   // WebSocket → canvas
   useEffect(() => {
     if (!cam) return;
+    // Don't open the socket without a token - the server would close it with
+    // 4001 and the unauth handler would fire a "Session expired" toast. Wait
+    // for the token to arrive (effect re-runs on token change) instead.
+    if (!token) return;
     let stopped = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     // Track the most-recently created socket so that reconnected sockets (created
@@ -66,7 +89,7 @@ function LiveCameraFeed({ cam, count, onCameraClick }: FeedProps) {
     function connect() {
       if (stopped) return;
       setStatus('connecting');
-      const ws = new WebSocket(`${WS_BASE}/cctvs/${cam!.id}/ws?token=${token ?? ''}&overlay=true`);
+      const ws = new WebSocket(`${WS_BASE}/cctvs/${cam!.id}/ws?token=${token}&overlay=true`);
       activeWs = ws;
       ws.binaryType = 'arraybuffer';
       ws.onopen  = () => setStatus('live');
@@ -103,7 +126,7 @@ function LiveCameraFeed({ cam, count, onCameraClick }: FeedProps) {
       if (retryTimer) clearTimeout(retryTimer);
       activeWs?.close();
     };
-  }, [cam?.id, token]);
+  }, [cam?.id, token, reconnectKey]);
 
   return (
     <div
@@ -121,6 +144,18 @@ function LiveCameraFeed({ cam, count, onCameraClick }: FeedProps) {
             status === 'connecting' ? 'bg-amber-400 animate-pulse' :
                                       'bg-red-400',
           )} />
+          <button
+            type="button"
+            onClick={handleReload}
+            disabled={reloading}
+            title="Reload stream - nudges the worker to reconnect and reopens the live socket"
+            aria-label="Reload camera stream"
+            className="absolute top-1.5 right-1.5 z-30 flex items-center justify-center size-6 rounded-md bg-black/50 hover:bg-black/70 text-white/80 hover:text-white opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-100 disabled:cursor-wait"
+          >
+            {reloading
+              ? <Loader2 className="size-3 animate-spin" aria-hidden="true" />
+              : <RotateCcw className="size-3" aria-hidden="true" />}
+          </button>
           <span className="absolute bottom-2 left-2 text-[9px] text-white/60 leading-none z-20 drop-shadow">
             {cam.name}
           </span>

@@ -2,9 +2,17 @@
 // between the module reset and AuthContext re-mounting.
 let _token: string | null = localStorage.getItem('eyegila_token');
 let _onUnauthorized: (() => void) | null = null;
+// Once a 401 has fired the unauth handler, swallow further 401s until the
+// next successful login. Without this, every in-flight request that returns
+// 401 (HTTP), the SSE stream, and every camera WS fire the handler in
+// parallel - producing a stack of "Session expired" toasts and repeated
+// navigate('/login') calls that look like an infinite loop on the camera /
+// intersections pages.
+let _unauthorizedFired = false;
 
 export function setToken(t: string | null) {
   _token = t;
+  if (t) _unauthorizedFired = false;
 }
 
 export function getToken(): string | null {
@@ -16,8 +24,10 @@ export function setUnauthorizedHandler(fn: () => void) {
   _onUnauthorized = fn;
 }
 
-/** Called by non-fetch connections (e.g. SSE) that detect a 401 out-of-band. */
+/** Called by non-fetch connections (e.g. SSE, WS) that detect a 401 out-of-band. */
 export function triggerUnauthorized() {
+  if (_unauthorizedFired) return;
+  _unauthorizedFired = true;
   _onUnauthorized?.();
 }
 
@@ -51,7 +61,7 @@ export async function request<T>(
 
   if (!res.ok) {
     if (res.status === 401 && !skipAuth) {
-      _onUnauthorized?.();
+      triggerUnauthorized();
     }
     let detail = res.statusText;
     try {

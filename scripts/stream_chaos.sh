@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# stream_chaos.sh — simulate CCTV stream failures against mediamtx
+# stream_chaos.sh - simulate CCTV stream failures against mediamtx
 #
 # Usage:
 #   ./scripts/stream_chaos.sh                    # default: cam1, 1 cycle
@@ -74,11 +74,11 @@ for i in $(seq 1 "$CYCLES"); do
   echo "[chaos] ── cycle ${i}/${CYCLES} ───────────────────────────────"
 
   start_stream
-  echo "[chaos] waiting ${UP_SEC}s — browser should show '● live'"
+  echo "[chaos] waiting ${UP_SEC}s - browser should show '● live'"
   sleep "$UP_SEC"
 
   stop_stream
-  echo "[chaos] waiting ${DOWN_SEC}s — browser should show '✕ no stream'"
+  echo "[chaos] waiting ${DOWN_SEC}s - browser should show '✕ no stream'"
   echo "[chaos] click Reconnect or wait for the 3 s auto-retry"
   sleep "$DOWN_SEC"
 done

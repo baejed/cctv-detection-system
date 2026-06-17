@@ -1,4 +1,4 @@
-# Warrant MLP Integration — Design
+# Warrant MLP Integration - Design
 
 **Date:** 2026-05-13
 **Branch:** `jed/warrant-model`
@@ -6,7 +6,7 @@
 
 ## Goal
 
-Replace the rule-based MUTCD warrant analysis in `server/routers/recommendations.py` with the trained PyTorch MLP (`warrant_model.pt` + `warrant_scaler.pkl`). The model predicts per-warrant probabilities (W1, W2, W4, recommended) from 5 hourly traffic features. The existing `recommendations` DB schema and frontend page already match the model's output shape — no DB or UI changes are required.
+Replace the rule-based MUTCD warrant analysis in `server/routers/recommendations.py` with the trained PyTorch MLP (`warrant_model.pt` + `warrant_scaler.pkl`). The model predicts per-warrant probabilities (W1, W2, W4, recommended) from 5 hourly traffic features. The existing `recommendations` DB schema and frontend page already match the model's output shape - no DB or UI changes are required.
 
 ## Non-goals
 
@@ -26,7 +26,7 @@ server/
 │   ├── warrant_model.pt    # trained weights + arch metadata
 │   └── warrant_scaler.pkl  # StandardScaler fit on training data
 ├── routers/
-│   └── recommendations.py  # rewritten — model-driven analysis
+│   └── recommendations.py  # rewritten - model-driven analysis
 ├── main.py                 # lifespan loads model into app.state
 └── requirements.txt        # adds torch (CPU), scikit-learn, numpy
 ```
@@ -105,7 +105,7 @@ Query `aggregation_summaries` for that intersection over `[hour_start, hour_end)
 | `vpm` | Peak vehicles per minute on the major street: `max(per-minute vehicle count)` across the 60 one-minute buckets. |
 | `phf` | Peak Hour Factor on the major street: `major_volume / (4 × peak_15min_volume)`. Re-bucket the 60 minutes into four 15-min sums; take the max. Clamp result to `[0.25, 1.0]`. Default `1.0` if `major_volume == 0`. |
 
-`PEDESTRIAN_TYPES = {"pedestrian", "person"}` — same set the existing router already uses.
+`PEDESTRIAN_TYPES = {"pedestrian", "person"}` - same set the existing router already uses.
 
 ### Edge cases
 
@@ -122,12 +122,12 @@ The previous rule-based code used a 7-day lookback to count "qualifying hours". 
 `server/routers/recommendations.py`:
 
 - **Delete** the constants `WARRANT_1_VEHICLE_THRESHOLD`, `WARRANT_1_HOURS_NEEDED`, `WARRANT_2_*`, `WARRANT_4_*`, `LOOKBACK_DAYS`, and the `_run_warrant_analysis` function.
-- **Add** `_compute_features(intersection_id: int, db: Session) -> tuple[dict[str, float], datetime]` — runs the SQL in the section above and returns the features dict plus the `hour_start` timestamp for the notes string.
-- **Add** `_analyze(intersection_id, artifacts, db) -> dict` — calls `_compute_features`, calls `predict_warrants`, formats the notes string, returns the dict matching the existing `Recommendation` model fields (`warrant_1_met`, `warrant_1_confidence`, ..., `recommended`, `notes`).
+- **Add** `_compute_features(intersection_id: int, db: Session) -> tuple[dict[str, float], datetime]` - runs the SQL in the section above and returns the features dict plus the `hour_start` timestamp for the notes string.
+- **Add** `_analyze(intersection_id, artifacts, db) -> dict` - calls `_compute_features`, calls `predict_warrants`, formats the notes string, returns the dict matching the existing `Recommendation` model fields (`warrant_1_met`, `warrant_1_confidence`, ..., `recommended`, `notes`).
 - The 4 endpoints (`GET /`, `POST /generate/{id}`, `POST /generate-all`, `PATCH /{id}/notes`) keep their existing signatures, except `POST /generate/{id}` and `POST /generate-all` now also take `request: Request` so they can pull `request.app.state.warrant_artifacts`. The `PATCH /{id}/notes` endpoint is unchanged.
 
 Notes string format:
-> Hour starting 2026-05-13 14:00 UTC. Major: 620 veh/hr, Minor: 180 veh/hr, Peds: 45/hr, VPM: 12, PHF: 0.85. Probabilities — W1: 0.99, W2: 0.01, W4: 0.03.
+> Hour starting 2026-05-13 14:00 UTC. Major: 620 veh/hr, Minor: 180 veh/hr, Peds: 45/hr, VPM: 12, PHF: 0.85. Probabilities - W1: 0.99, W2: 0.01, W4: 0.03.
 
 ## Requirements
 
@@ -142,24 +142,24 @@ numpy
 
 ## Testing
 
-### Unit tests — `tests/test_recommendations.py` (new file)
+### Unit tests - `tests/test_recommendations.py` (new file)
 
 Predict-side (no DB):
-- `test_predict_warrants_high_volume` — features `[1200, 200, 10, 25, 0.9]` → assert `recommended` and `w1` both ≥ 0.5.
-- `test_predict_warrants_quiet` — features `[100, 20, 5, 2, 0.7]` → assert `recommended` < 0.5.
-- `test_predict_warrants_pedestrian` — features `[700, 50, 150, 12, 0.85]` → assert `w4` ≥ 0.5.
+- `test_predict_warrants_high_volume` - features `[1200, 200, 10, 25, 0.9]` → assert `recommended` and `w1` both ≥ 0.5.
+- `test_predict_warrants_quiet` - features `[100, 20, 5, 2, 0.7]` → assert `recommended` < 0.5.
+- `test_predict_warrants_pedestrian` - features `[700, 50, 150, 12, 0.85]` → assert `w4` ≥ 0.5.
 
 Feature-extraction-side (real DB, following existing `conftest.py` pattern):
-- `test_feature_extraction_major_minor` — seed three streets with volumes 800, 200, 100. Assert the 800-street is picked as major and `minor_volume == 300`.
-- `test_feature_extraction_phf` — uniform 1-minute distribution → PHF near 1.0. Single-minute spike → PHF lower.
-- `test_feature_extraction_no_data` — empty window returns all zeros and the "no data" note.
+- `test_feature_extraction_major_minor` - seed three streets with volumes 800, 200, 100. Assert the 800-street is picked as major and `minor_volume == 300`.
+- `test_feature_extraction_phf` - uniform 1-minute distribution → PHF near 1.0. Single-minute spike → PHF lower.
+- `test_feature_extraction_no_data` - empty window returns all zeros and the "no data" note.
 
 Model-load test:
-- `test_load_warrant_model_smoke` — load the real `.pt` + `.pkl`, run one prediction, assert output shape `(4,)` and all values in `[0, 1]`.
+- `test_load_warrant_model_smoke` - load the real `.pt` + `.pkl`, run one prediction, assert output shape `(4,)` and all values in `[0, 1]`.
 
 ### Integration test
 
-In existing `tests/` style — `POST /recommendations/generate/{id}` against the seeded intersection, assert 200 + the response matches `RecommendationResponse`.
+In existing `tests/` style - `POST /recommendations/generate/{id}` against the seeded intersection, assert 200 + the response matches `RecommendationResponse`.
 
 ### Manual smoke test
 
@@ -179,9 +179,9 @@ In existing `tests/` style — `POST /recommendations/generate/{id}` against the
 
 - Webster's-formula green-phase timing (model README mentions this as a future step).
 - Calibration of probabilities (Platt scaling / isotonic regression).
-- Additional warrants (W3, W5-W9) — model is parametric and supports them, but adding requires retraining.
+- Additional warrants (W3, W5-W9) - model is parametric and supports them, but adding requires retraining.
 - Adding `road_class` to the `streets` table. We use the volume-based major-pick instead.
 
 ## Open questions
 
-None — all design decisions resolved during brainstorming.
+None - all design decisions resolved during brainstorming.

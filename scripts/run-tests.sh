@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Production-level E2E test runner — spins up the full stack in Docker,
+# Production-level E2E test runner - spins up the full stack in Docker,
 # seeds test data, runs pytest (backend) + Playwright (frontend), then tears down.
 #
 # Usage:
@@ -38,7 +38,7 @@ trap cleanup EXIT
 mkdir -p "$RESULTS_DIR/playwright"
 
 echo "============================================================"
-echo "  EyeGila — Production E2E Test Suite"
+echo "  EyeGila - Production E2E Test Suite"
 echo "============================================================"
 
 # ── Build images ──────────────────────────────────────────────────────────────
@@ -48,7 +48,7 @@ if [ -n "$BUILD_FLAG" ]; then
   $COMPOSE build
 fi
 
-# ── Start the full stack — depends_on handles ordering:
+# ── Start the full stack - depends_on handles ordering:
 #    timescaledb → migrations → server → seeder → pytest / playwright
 #    timescaledb → pgbouncer  → server
 #    server      → frontend   → playwright

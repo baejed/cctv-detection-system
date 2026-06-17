@@ -86,6 +86,7 @@ export function ReportsPage() {
     searchParams.get('intersection_id') ?? 'all'
   );
   const [selectedStreet, setSelectedStreet] = useState<string>('all');
+  const [selectedDirection, setSelectedDirection] = useState<'all' | 'inbound' | 'outbound' | 'unknown'>('all');
 
   const [preset, setPreset]         = useState<Preset>('30d');
   const [customStart, setCustomStart] = useState('');
@@ -119,11 +120,12 @@ export function ReportsPage() {
       bucket,
       intersection_id: selectedIntersection !== 'all' ? Number(selectedIntersection) : null,
       street_id:       selectedStreet !== 'all'       ? Number(selectedStreet)       : null,
+      direction:       selectedDirection !== 'all'    ? selectedDirection            : null,
     })
       .then(setData)
       .catch(err => toast.error(err.message ?? 'Failed to load history'))
       .finally(() => setLoading(false));
-  }, [start, end, bucket, selectedIntersection, selectedStreet, preset, customStart, customEnd]);
+  }, [start, end, bucket, selectedIntersection, selectedStreet, selectedDirection, preset, customStart, customEnd]);
 
   const filteredStreets = streets.filter(s =>
     selectedIntersection === 'all' || s.intersection_id === Number(selectedIntersection)
@@ -264,7 +266,7 @@ export function ReportsPage() {
         )}
 
         <div className="flex flex-wrap gap-3">
-          <Select value={selectedIntersection} onValueChange={v => { setSelectedIntersection(v); setSelectedStreet('all'); }}>
+          <Select value={selectedIntersection} onValueChange={v => { setSelectedIntersection(v); setSelectedStreet('all'); setSelectedDirection('all'); }}>
             <SelectTrigger className="w-48 h-8 text-sm">
               <SelectValue placeholder="All intersections" />
             </SelectTrigger>
@@ -280,6 +282,20 @@ export function ReportsPage() {
             <SelectContent>
               <SelectItem value="all">All streets</SelectItem>
               {filteredStreets.map(s => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Select
+            value={selectedDirection}
+            onValueChange={v => setSelectedDirection(v as 'all' | 'inbound' | 'outbound' | 'unknown')}
+          >
+            <SelectTrigger className="w-36 h-8 text-sm" data-testid="select-direction">
+              <SelectValue placeholder="All directions" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All directions</SelectItem>
+              <SelectItem value="inbound">↓ Inbound</SelectItem>
+              <SelectItem value="outbound">↑ Outbound</SelectItem>
+              <SelectItem value="unknown">Unspecified</SelectItem>
             </SelectContent>
           </Select>
         </div>

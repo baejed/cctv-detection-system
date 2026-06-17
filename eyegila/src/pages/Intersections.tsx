@@ -10,7 +10,6 @@ import { cctvsApi } from '@/services/cctvs';
 import { recommendationsApi, type RecommendationResponse } from '@/services/recommendations';
 import type { Intersection, Street, CCTV, AggregationRow } from '@/types';
 import type { SSEStatus } from '@/hooks/useSSE';
-import { IntersectionSetupWizard } from '@/components/IntersectionSetupWizard';
 import { SettingsSheet } from '@/components/IntersectionSettingsSheet';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -363,7 +362,7 @@ const TYPE_HEX: Record<string, string> = {
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export function IntersectionsPage() {
-  const { sseData, onOpenWizard } = useOutletContext<{ sseData: AggregationRow[] | null; sseStatus: SSEStatus; onOpenWizard: () => void }>();
+  const { sseData, onOpenWizard } = useOutletContext<{ sseData: AggregationRow[] | null; sseStatus: SSEStatus; onOpenWizard: (step?: string) => void }>();
 
   const [intersections, setIntersections] = useState<Intersection[]>([]);
   const [streets, setStreets]             = useState<Street[]>([]);
@@ -396,7 +395,6 @@ export function IntersectionsPage() {
 
   const [viewMode, setViewMode]               = useState<'grid' | 'map'>('grid');
   const [generatingAll, setGeneratingAll]     = useState(false);
-  const [wizardOpen, setWizardOpen]           = useState(false);
   const [settingsTarget, setSettingsTarget]   = useState<Intersection | null>(null);
 
   async function runAllAnalyses() {
@@ -489,7 +487,7 @@ export function IntersectionsPage() {
               {generatingAll ? 'Analysing…' : 'Run all analyses'}
             </Button>
           )}
-          <Button data-testid="btn-add-intersection" onClick={() => setWizardOpen(true)}>
+          <Button data-testid="btn-add-intersection" onClick={() => onOpenWizard('discover')}>
             <Plus className="size-4 mr-2" />
             Set up intersection
           </Button>
@@ -616,13 +614,9 @@ export function IntersectionsPage() {
             </p>
           </div>
           <div className="flex items-center gap-3">
-            <Button onClick={onOpenWizard}>
+            <Button onClick={() => onOpenWizard('welcome')}>
               <Rocket className="size-4 mr-2" />
               Get Started
-            </Button>
-            <Button variant="outline" onClick={() => setWizardOpen(true)}>
-              <Plus className="size-4 mr-2" />
-              Quick add
             </Button>
           </div>
         </div>
@@ -648,12 +642,6 @@ export function IntersectionsPage() {
           ))}
         </div>
       )}
-
-      <IntersectionSetupWizard
-        open={wizardOpen}
-        onClose={() => setWizardOpen(false)}
-        onCreated={() => { setWizardOpen(false); load(); }}
-      />
 
       <SettingsSheet
         inter={settingsTarget}

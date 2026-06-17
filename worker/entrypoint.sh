@@ -11,7 +11,7 @@ LOCKFILE="${TRT_CACHE}/export.lock"
 (
   flock -x 200
   if [ ! -f "$ENGINE" ]; then
-    echo "[entrypoint] TensorRT FP16 engine not found for ${MODEL} — exporting (first run, ~5-15 min)..."
+    echo "[entrypoint] TensorRT FP16 engine not found for ${MODEL} - exporting (first run, ~5-15 min)..."
     python - <<PYEOF
 import os, shutil
 from ultralytics import YOLO

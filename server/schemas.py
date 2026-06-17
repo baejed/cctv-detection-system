@@ -120,12 +120,13 @@ class CCTVResponse(CCTVBase):
     status: str
     last_error: str | None = None
     is_being_viewed: bool
+    enabled: bool
     time: datetime
     model_config = ConfigDict(from_attributes=True)
 
 
 class DetectionBase(BaseModel):
-    cctv_id: Optional[int] = None  # nullable — video detections have no cctv
+    cctv_id: Optional[int] = None  # nullable - video detections have no cctv
     object_type: str
 
 

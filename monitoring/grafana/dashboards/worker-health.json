@@ -228,7 +228,7 @@
   "time": { "from": "now-30m", "to": "now" },
   "timepicker": {},
   "timezone": "browser",
-  "title": "EyeGila — Worker Health",
+  "title": "EyeGila - Worker Health",
   "uid": "eyegila-workers",
   "version": 1
 }

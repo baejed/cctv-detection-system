@@ -26,7 +26,7 @@ from common.geometry import is_point_in_polygon
 VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY", "")
 VAPID_CLAIMS = {"sub": "mailto:admin@eyegila.local"}
 
-PROGRESS_INTERVAL = 100  # update processed_frames every N frames
+PROGRESS_INTERVAL = 10  # update processed_frames every N frames
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +152,7 @@ def process_video(video_id: int) -> None:
 
         # ── load model and regions ─────────────────────────────────────────
         # MODEL_PATH is set by docker-compose to /app/model.pt (the canonical
-        # mount path). Never use a bare filename here — the CWD is not the
+        # mount path). Never use a bare filename here - the CWD is not the
         # project root inside the container.
         model = YOLO(os.getenv("MODEL_PATH", "/app/model.pt"))
 
@@ -191,7 +191,7 @@ def process_video(video_id: int) -> None:
             frame_offset = timedelta(seconds=(frame_index - 1) / fps)
             detected_at  = base_ts + frame_offset
 
-            results = model.track(frame, persist=True, verbose=False)
+            results = model.predict(frame, verbose=False)
             if not results:
                 continue
 
@@ -200,7 +200,7 @@ def process_video(video_id: int) -> None:
                 cls_id   = int(box.cls[0])
                 cls_name = model.names[cls_id]
                 conf     = float(box.conf[0])
-                track_id = int(box.id[0]) if box.id is not None else None
+                track_id = None
 
                 cx = ((x1 + x2) / 2) / frame_w
                 cy = ((y1 + y2) / 2) / frame_h

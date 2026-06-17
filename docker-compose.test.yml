@@ -1,4 +1,4 @@
-# Full-stack E2E test stack — completely isolated from the dev stack.
+# Full-stack E2E test stack - completely isolated from the dev stack.
 # Run via: ./scripts/run-tests.sh
 # Or manually: docker compose -f docker-compose.test.yml -p eyegila-test up --build
 
@@ -56,7 +56,7 @@ services:
       timeout: 3s
       retries: 5
 
-  # ── Migrations (one-shot, direct DB connection — no pgbouncer) ───────────
+  # ── Migrations (one-shot, direct DB connection - no pgbouncer) ───────────
 
   migrations:
     build:

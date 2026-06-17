@@ -183,7 +183,7 @@ def test_claim_version_increments_on_reclaim(db, camera):
     """), {"cctv_id": cctv_id})
     db.commit()
 
-    # Second upsert — simulates a reclaim after expiry
+    # Second upsert - simulates a reclaim after expiry
     db.execute(text("""
         INSERT INTO worker_heartbeats
             (cctv_id, worker_pid, last_seen, claimed_at, claim_version, status)
@@ -226,7 +226,7 @@ def test_verify_claim_missing_row_returns_false(db, camera):
     """verify_claim returns False when no heartbeat row exists (released camera)."""
     from worker.claim import verify_claim
 
-    # No heartbeat inserted — row is absent
+    # No heartbeat inserted - row is absent
     assert verify_claim(db, camera["id"], expected_version=1) is False
 
 

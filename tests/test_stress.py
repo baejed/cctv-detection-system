@@ -1,4 +1,4 @@
-"""Production-scale stress tests — no live stack required.
+"""Production-scale stress tests - no live stack required.
 
 Covers:
   1.  Webster's formula at 100-intersection scale
@@ -35,7 +35,7 @@ def _row(street_id: int, obj_type: str, minute: int, count: int):
 # ─── 1. Webster at scale ──────────────────────────────────────────────────────
 
 def test_100_intersections_cycles_in_range():
-    """100 randomised 4-arm intersections — every cycle inside [40, 120]."""
+    """100 randomised 4-arm intersections - every cycle inside [40, 120]."""
     from server.webster import compute_timing, group_phases
     rng = random.Random(42)
     dirs = {1: "northbound", 2: "southbound", 3: "eastbound", 4: "westbound"}
@@ -487,7 +487,7 @@ def test_cycle_detection_no_data_structure():
 
 def test_poisson_arrivals_low_dispersion():
     """
-    Random (Poisson-like) minute-counts have dispersion ≈ 1 — well below
+    Random (Poisson-like) minute-counts have dispersion ≈ 1 - well below
     the 1.5 threshold for cycle detection to fire.
     """
     rng = random.Random(77)
@@ -579,7 +579,7 @@ def test_feature_tie_major_street_no_crash():
 
 
 def test_feature_60_streets_60_minutes_no_panic():
-    """60 streets × 60 minutes × 3 vehicle types = 10 800 rows — no crash."""
+    """60 streets × 60 minutes × 3 vehicle types = 10 800 rows - no crash."""
     from server.routers.recommendations import _compute_features_from_rows
     rng = random.Random(9)
     rows = []
@@ -646,20 +646,20 @@ def test_e2e_hcm_gap_delay_bounded():
 
 def test_e2e_vehicle_hours_saved_can_be_negative():
     """
-    Negative vehicle_hours_saved is EXPECTED and VALID — it means installing a
+    Negative vehicle_hours_saved is EXPECTED and VALID - it means installing a
     signal at this intersection would increase total delay (not warranted).
 
     The warrant model exists precisely to catch this case before building a signal.
     """
     from server.simulation import compute_hcm_gap_delay, compute_uniform_delay
 
-    # Very lightly loaded minor street — signal overhead would be net-negative
+    # Very lightly loaded minor street - signal overhead would be net-negative
     d_before = compute_hcm_gap_delay(600, 100)   # gap delay for 100 PCU/hr minor
     d_after  = compute_uniform_delay(90, 20, 100) # Webster at generous green
 
     vh_saved = (d_before - d_after) * 100 * 1.0 / 3600
     assert isinstance(vh_saved, float)   # must not crash
-    # The value can be positive or negative — both are valid model outputs
+    # The value can be positive or negative - both are valid model outputs
 
 
 def test_e2e_los_strings_from_pipeline():

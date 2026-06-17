@@ -1,27 +1,27 @@
-# Recommendations UI Surfacing — Implementation Plan
+# Recommendations UI Surfacing - Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to execute task-by-task. Steps use checkbox (`- [ ]`) syntax.
 
-**Goal:** Surface the warrant-model output beyond the Recommendations page — add status badges to the Intersections list and Dashboard intersection cards, hydrate the existing placeholder warrant card on the Dashboard's focused-intersection panel. Add diagnostic logs to make it easier to see "where things go wrong."
+**Goal:** Surface the warrant-model output beyond the Recommendations page - add status badges to the Intersections list and Dashboard intersection cards, hydrate the existing placeholder warrant card on the Dashboard's focused-intersection panel. Add diagnostic logs to make it easier to see "where things go wrong."
 
 **Architecture:**
-- Reuse the existing `statusBucket` / `BUCKET_LABEL` / `BUCKET_BADGE_CLASS` helpers from `components/recommendations/statusBucket.ts` — no new helper.
+- Reuse the existing `statusBucket` / `BUCKET_LABEL` / `BUCKET_BADGE_CLASS` helpers from `components/recommendations/statusBucket.ts` - no new helper.
 - Both pages fetch `recommendationsApi.list()` once on mount, map by `intersection_id`, render badge per intersection.
 - Dashboard's placeholder warrant card (lines 781-808) hydrates from the same map for `selectedInter`.
 - Backend logging via Python's `logging` module wired through FastAPI's existing logger setup; frontend logging via `console.log` / `console.error` gated behind a `DEBUG_RECOMMENDATIONS` flag from `import.meta.env` so they're easy to silence in production.
 
-**Tech Stack:** existing — React/Vite, FastAPI, no new deps.
+**Tech Stack:** existing - React/Vite, FastAPI, no new deps.
 
 ---
 
-## Task A: Intersections list — warrant badge column
+## Task A: Intersections list - warrant badge column
 
 **Files:**
 - Modify: `eyegila/src/pages/Intersections.tsx`
 
 - [ ] **Step 1: Read the current shape**
 
-Locate the list-row render (around lines 163-214). Identify a stable place to insert the badge — typically next to the street count or in the right-side actions column.
+Locate the list-row render (around lines 163-214). Identify a stable place to insert the badge - typically next to the street count or in the right-side actions column.
 
 - [ ] **Step 2: Add recommendations fetch and badge render**
 
@@ -42,7 +42,7 @@ useEffect(() => {
       if (cancelled) return;
       setRecsById(new Map(recs.map(r => [r.intersection_id, r])));
     })
-    .catch(() => { /* silent — page works without recs */ });
+    .catch(() => { /* silent - page works without recs */ });
   return () => { cancelled = true; };
 }, []);
 ```
@@ -75,7 +75,7 @@ git commit -m "feat(fe): show warrant status badge on Intersections list"
 
 ---
 
-## Task B: Dashboard intersection cards — warrant badge
+## Task B: Dashboard intersection cards - warrant badge
 
 **Files:**
 - Modify: `eyegila/src/pages/Dashboard.tsx`
@@ -136,7 +136,7 @@ git commit -m "feat(fe): show warrant status badge on Dashboard intersection car
 
 ---
 
-## Task C: Dashboard warrant card — hydrate placeholder
+## Task C: Dashboard warrant card - hydrate placeholder
 
 **Files:**
 - Modify: `eyegila/src/pages/Dashboard.tsx` (around lines 781-808)
@@ -149,9 +149,9 @@ Replace the `(['W1 - 8-Hour Volume', 'W2 - 4-Hour Volume', 'W4 - Pedestrian Volu
 {(() => {
   const rec = selectedInter ? recsById.get(selectedInter.id) : undefined;
   const rows = [
-    { label: 'W1 — 8-Hour Volume',       met: rec?.warrant_1_met, conf: rec?.warrant_1_confidence },
-    { label: 'W2 — 4-Hour Volume',       met: rec?.warrant_2_met, conf: rec?.warrant_2_confidence },
-    { label: 'W4 — Pedestrian Volume',   met: rec?.warrant_4_met, conf: rec?.warrant_4_confidence },
+    { label: 'W1 - 8-Hour Volume',       met: rec?.warrant_1_met, conf: rec?.warrant_1_confidence },
+    { label: 'W2 - 4-Hour Volume',       met: rec?.warrant_2_met, conf: rec?.warrant_2_confidence },
+    { label: 'W4 - Pedestrian Volume',   met: rec?.warrant_4_met, conf: rec?.warrant_4_confidence },
   ];
   return rows.map(r => (
     <div key={r.label} className="flex items-center justify-between">
@@ -169,7 +169,7 @@ Replace the `(['W1 - 8-Hour Volume', 'W2 - 4-Hour Volume', 'W4 - Pedestrian Volu
           {r.met ? '✓' : '·'} {((r.conf ?? 0) * 100).toFixed(0)}%
         </Badge>
       ) : (
-        <Badge variant="outline" className="text-[10px] border-slate-200 text-slate-400">—</Badge>
+        <Badge variant="outline" className="text-[10px] border-slate-200 text-slate-400">-</Badge>
       )}
     </div>
   ));
@@ -200,7 +200,7 @@ git commit -m "feat(fe): hydrate Dashboard warrant card with latest recommendati
 
 ---
 
-## Task D: Diagnostic logging — backend
+## Task D: Diagnostic logging - backend
 
 **Files:**
 - Modify: `server/routers/recommendations.py`
@@ -289,7 +289,7 @@ git commit -m "feat: structured logging in recommendations endpoints"
 
 ---
 
-## Task E: Diagnostic logging — frontend
+## Task E: Diagnostic logging - frontend
 
 **Files:**
 - Modify: `eyegila/src/pages/Recommendations.tsx`
@@ -313,7 +313,7 @@ In `load`:
 dlog('load: fetching intersections + recommendations');
 const t0 = performance.now();
 // existing Promise.all
-dlog(`load: done in ${(performance.now() - t0).toFixed(0)}ms — ${ints.length} intersections, ${r.length} recs`);
+dlog(`load: done in ${(performance.now() - t0).toFixed(0)}ms - ${ints.length} intersections, ${r.length} recs`);
 // in catch:
 derr('load failed', err);
 ```
@@ -333,7 +333,7 @@ In `regenerateAll`:
 dlog('regenerateAll: starting');
 const t0 = performance.now();
 // after success:
-dlog(`regenerateAll: done in ${(performance.now() - t0).toFixed(0)}ms — ${results.length} recs`);
+dlog(`regenerateAll: done in ${(performance.now() - t0).toFixed(0)}ms - ${results.length} recs`);
 // in catch:
 derr('regenerateAll failed', err);
 ```

@@ -57,7 +57,7 @@ def test_group_phases_single_arm_no_opposing():
 def test_group_phases_all_unknown():
     """Streets with unknown direction each get their own independent phase.
 
-    Because we cannot tell which arms conflict, each is given exclusive green —
+    Because we cannot tell which arms conflict, each is given exclusive green -
     the safe fallback. The operator should set arm directions before relying on
     the timing output for efficiency.
     """

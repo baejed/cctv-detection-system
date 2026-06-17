@@ -1,9 +1,9 @@
 """PCE (Passenger Car Equivalent) resolution for Webster's formula.
 
 Three-tier priority (highest first):
-  Tier 3 — admin override (pce_overrides table)
-  Tier 2 — auto-calibrated from 7-day detection data (pce_calibrated_values table)
-  Tier 1 — DPWH defaults (hardcoded below)
+  Tier 3 - admin override (pce_overrides table)
+  Tier 2 - auto-calibrated from 7-day detection data (pce_calibrated_values table)
+  Tier 1 - DPWH defaults (hardcoded below)
 """
 from __future__ import annotations
 
@@ -15,25 +15,25 @@ from sqlalchemy import text
 
 from common.models import PceOverride, PceCalibratedValue
 
-# Tier 1 — PCE defaults for Philippine mixed-traffic conditions.
+# Tier 1 - PCE defaults for Philippine mixed-traffic conditions.
 #
 # Sources (in order of authority):
-#   [1] DPWH Road Safety Design Manual, 2nd ed. (2012), Appendix A —
+#   [1] DPWH Road Safety Design Manual, 2nd ed. (2012), Appendix A -
 #       cites motorcycle PCE of 0.33 for urban arterials with lane-filtering.
 #   [2] JICA / NEDA Metro Manila Urban Transport Integration Study (MMUTIS, 1999),
-#       Vol. 3 Annex — measured fleet PCE: motorcycle 0.33, jeepney 1.5, bus 2.5.
-#   [3] HCM 6th Edition (2016), Exhibit 26-9 — baseline PCE table; PH practice
+#       Vol. 3 Annex - measured fleet PCE: motorcycle 0.33, jeepney 1.5, bus 2.5.
+#   [3] HCM 6th Edition (2016), Exhibit 26-9 - baseline PCE table; PH practice
 #       scales motorcycle downward from the US value (0.5) to 0.33 to reflect
 #       lane-filtering behaviour not captured in the US model.
 #
 # Pedicab and tricycle are treated as jeepney-equivalent (1.5) due to similar
-# swept-path and acceleration characteristics; no PH-specific citation exists —
+# swept-path and acceleration characteristics; no PH-specific citation exists -
 # these are calibratable engineering defaults and should be overridden per
 # intersection once 7-day observed data is available.
 DPWH_DEFAULTS: dict[str, float] = {
     "motorcycle": 0.33,  # [1][2][3]
-    "pedicab":    1.50,  # engineering estimate — calibrate after 7-day observation
-    "tricycle":   1.50,  # engineering estimate — calibrate after 7-day observation
+    "pedicab":    1.50,  # engineering estimate - calibrate after 7-day observation
+    "tricycle":   1.50,  # engineering estimate - calibrate after 7-day observation
     "bicycle":    0.50,  # HCM 6th ed. Exhibit 26-9
     "car":        1.00,  # definition (reference vehicle)
     "jeepney":    1.50,  # [2]
@@ -95,7 +95,7 @@ def calibrate_pce(db: Session, intersection_id: int) -> dict[str, float]:
     Returns the newly calibrated values keyed by vehicle_type.
     Algorithm: scale each DPWH default proportionally to how much the
     observed vehicle mix at this intersection deviates from the typical
-    distribution — clamped to ±25 % of the DPWH baseline.
+    distribution - clamped to ±25 % of the DPWH baseline.
     """
     since = datetime.now(tz=timezone.utc) - timedelta(days=7)
     rows = db.execute(

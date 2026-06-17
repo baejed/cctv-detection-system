@@ -61,11 +61,11 @@ def _compute_features_from_rows(rows) -> dict[str, float]:
 
     Returns a dict with major_volume, minor_volume, peds, vpm, phf.
     """
-    # Per-street vehicle totals (excludes pedestrians) — used to pick major street
+    # Per-street vehicle totals (excludes pedestrians) - used to pick major street
     street_veh: dict[int, int] = defaultdict(int)
     # Pedestrian total across all streets / directions
     peds_total = 0
-    # Per-(street, minute) vehicle counts — for vpm and phf on the major street
+    # Per-(street, minute) vehicle counts - for vpm and phf on the major street
     per_minute: dict[tuple[int, int], int] = defaultdict(int)
 
     for r in rows:
@@ -118,7 +118,14 @@ def _compute_features_from_rows(rows) -> dict[str, float]:
 
 
 def _compute_features(intersection_id: int, db: Session) -> tuple[dict[str, float], datetime]:
-    """Query aggregation_summaries for the most-recent-complete-hour and compute features.
+    """Query the most-recent-complete-hour and compute features.
+
+    Prefers `aggregation_summaries` (the continuous aggregate) for speed, but
+    falls back to the live `detection_street_view` when the aggregate is empty
+    for the requested window. Without this fallback, the card shows "1230
+    detected today" from the live SSE stream while the warrant badge shows
+    "No data" because the TimescaleDB continuous-aggregate job hasn't caught
+    up to the latest closed hour yet.
 
     Returns (features_dict, hour_start_utc).
     """
@@ -134,6 +141,19 @@ def _compute_features(intersection_id: int, db: Session) -> tuple[dict[str, floa
           AND window_start <  :end
         GROUP BY street_id, object_type, window_start
     """), {"iid": intersection_id, "start": hour_start, "end": hour_end}).fetchall()
+
+    if not rows:
+        rows = db.execute(text("""
+            SELECT street_id,
+                   object_type,
+                   DATE_TRUNC('minute', time) AS window_start,
+                   COUNT(*)::int              AS count
+              FROM detection_street_view
+             WHERE intersection_id = :iid
+               AND time >= :start
+               AND time <  :end
+             GROUP BY street_id, object_type, DATE_TRUNC('minute', time)
+        """), {"iid": intersection_id, "start": hour_start, "end": hour_end}).fetchall()
 
     return _compute_features_from_rows(rows), hour_start
 
@@ -314,6 +334,79 @@ def list_recommendations(
     ]
 
 
+_NOT_WARRANTED_NOTE = (
+    "Signal not warranted by current volumes and intersection is unsignalized - "
+    "no timing recommendation generated."
+)
+_NO_IMPROVEMENT_NOTE = (
+    "Existing signal timing already meets or beats Webster's proposal at every "
+    "TOD chunk - no retune recommended."
+)
+
+
+def _maybe_generate_timing_and_sim(
+    db: Session,
+    intersection: models.Intersection,
+    rec: models.Recommendation,
+    signal_off_chunks: set[str],
+) -> tuple[list, str | None]:
+    """Gate timing + simulation behind warrant + signal-status + improvement checks.
+
+    Skips Webster entirely when the intersection is unsignalized AND not warranted
+    - emitting a plan for an intersection that shouldn't have a signal misleads
+    operators into thinking the system endorses signalization.
+
+    For already-signalized intersections, runs Webster + simulation, then drops
+    the proposed plan when it doesn't beat the existing timing on any chunk -
+    a "no-op retune" is worse than no recommendation because it implies action.
+    Notes are written to rec.notes only when empty so we never clobber operator
+    annotations.
+    """
+    from server.webster import generate_timing_for_recommendation
+    from server.simulation import generate_simulation
+
+    status = (intersection.signal_status or "unsignalized").lower()
+    is_signalized = status in ("fixed_time", "actuated")
+
+    # Case 1: unsignalized + not warranted → still run Webster + simulation as
+    # informational ("what-if you signalized?"), but stamp a note so the UI
+    # makes clear no signal is actually warranted.
+    if not rec.recommended and not is_signalized and not rec.notes:
+        rec.notes = _NOT_WARRANTED_NOTE
+
+    timing_rows, peak_chunk = generate_timing_for_recommendation(
+        db, intersection, rec.id, signal_off_chunks=signal_off_chunks
+    )
+    for tr in timing_rows:
+        db.add(tr)
+    db.flush()
+
+    sim_rows = generate_simulation(db, intersection, rec.id, timing_rows)
+    for sr in sim_rows:
+        db.add(sr)
+    db.flush()
+
+    # Case 2: already signalized + Webster never beats existing → drop the rows
+    # so the UI doesn't render a "recommended" plan that's actually a regression.
+    if is_signalized and sim_rows:
+        chunk_sims = [s for s in sim_rows if s.chunk_name != "overall"]
+        beats = any(
+            (s.delay_before or 0) - (s.delay_after or 0) > 0.5  # ≥ 0.5 s/veh improvement
+            for s in chunk_sims
+        )
+        if not beats:
+            for tr in timing_rows:
+                db.delete(tr)
+            for sr in sim_rows:
+                db.delete(sr)
+            db.flush()
+            if not rec.notes:
+                rec.notes = _NO_IMPROVEMENT_NOTE
+            return [], None
+
+    return timing_rows, peak_chunk
+
+
 @router.post("/generate/{intersection_id}", response_model=RecommendationResponse)
 def generate_recommendation(
     intersection_id: int,
@@ -322,7 +415,6 @@ def generate_recommendation(
     user: Annotated[models.User, Depends(get_current_user)],
 ):
     """Run warrant analysis + timing for one intersection and insert new rows."""
-    from server.webster import generate_timing_for_recommendation
     from server.local_warrants import evaluate_all as evaluate_local_warrants
 
     intersection = db.get(models.Intersection, intersection_id)
@@ -344,17 +436,9 @@ def generate_recommendation(
     db.add(rec)
     db.flush()  # populate rec.id before using it
 
-    timing_rows, peak_chunk = generate_timing_for_recommendation(
-        db, intersection, rec.id, signal_off_chunks=set(signal_off)
+    timing_rows, peak_chunk = _maybe_generate_timing_and_sim(
+        db, intersection, rec, set(signal_off)
     )
-    for tr in timing_rows:
-        db.add(tr)
-    db.flush()
-
-    from server.simulation import generate_simulation
-    sim_rows = generate_simulation(db, intersection, rec.id, timing_rows)
-    for sr in sim_rows:
-        db.add(sr)
 
     db.commit()
     db.refresh(rec)
@@ -374,9 +458,7 @@ def run_generate_all(db: Session, artifacts) -> list[dict]:
     Callable from the API endpoint and from the background scheduler.
     Returns a list of response dicts (same shape as RecommendationResponse).
     """
-    from server.webster import generate_timing_for_recommendation
     from server.local_warrants import evaluate_all as evaluate_local_warrants
-    from server.simulation import generate_simulation
 
     intersections = db.query(models.Intersection).all()
     results = []
@@ -398,17 +480,9 @@ def run_generate_all(db: Session, artifacts) -> list[dict]:
             db.add(rec)
             db.flush()
 
-            timing_rows, peak_chunk = generate_timing_for_recommendation(
-                db, intersection, rec.id, signal_off_chunks=set(signal_off)
+            timing_rows, peak_chunk = _maybe_generate_timing_and_sim(
+                db, intersection, rec, set(signal_off)
             )
-            for tr in timing_rows:
-                db.add(tr)
-            db.flush()
-
-            sim_rows = generate_simulation(db, intersection, rec.id, timing_rows)
-            for sr in sim_rows:
-                db.add(sr)
-            db.flush()
             db.refresh(rec)
 
             overall = next((t for t in timing_rows if t.chunk_name == "overall"), None)
@@ -420,7 +494,7 @@ def run_generate_all(db: Session, artifacts) -> list[dict]:
             ))
             db.commit()
         except Exception:
-            log.exception("generate_all: failed for intersection %d — skipping", intersection.id)
+            log.exception("generate_all: failed for intersection %d - skipping", intersection.id)
             db.rollback()
 
     return results
@@ -508,7 +582,7 @@ def data_health(
 
     camera_ok = True when a detection was recorded within the last 2 hours.
     high_volume_days = days of week where average daily volume exceeds 130 % of
-    the weekly mean — a proxy for market-day or recurring event spikes.
+    the weekly mean - a proxy for market-day or recurring event spikes.
     """
     intersection = db.get(models.Intersection, intersection_id)
     if not intersection:
@@ -557,7 +631,7 @@ def data_health(
         ]
 
     note = (
-        f"Volume on {', '.join(high_volume_days)} is consistently ≥130% of weekly average — "
+        f"Volume on {', '.join(high_volume_days)} is consistently ≥130% of weekly average - "
         "likely a recurring market day or school event. Webster's timing uses a 7-day rolling "
         "average and will partially reflect this; consider a dedicated TOD chunk."
         if high_volume_days else None

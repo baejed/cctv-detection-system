@@ -200,7 +200,7 @@ def scan_nvr(
 ) -> NVRScanResult:
     """
     Probe an NVR's RTSP port and return channel URLs for channels 1..max_channels.
-    Does not verify individual channels — the worker validates on connect.
+    Does not verify individual channels - the worker validates on connect.
     """
     if not _probe_rtsp(body.host):
         return NVRScanResult(reachable=False, channels=[])
@@ -337,4 +337,46 @@ def retry_camera(
             _redis.setex(f"cam:{cctv_id}:retry_now", 60, "1")
         except Exception:
             pass
+    return Response(status_code=204)
+
+
+@router.post("/{cctv_id}/disable", status_code=204)
+def disable_camera(
+    cctv_id: int,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> Response:
+    """
+    Mark the camera as disabled so the worker stops trying to connect.
+    Deletes any existing heartbeat row so the slot is evicted immediately,
+    and the camera will not be reclaimed until it is re-enabled.
+    """
+    from sqlalchemy import text as _text
+    cctv = db.get(CCTV, cctv_id)
+    if not cctv:
+        raise HTTPException(status_code=404, detail="CCTV not found")
+    cctv.enabled = False
+    db.execute(_text("DELETE FROM worker_heartbeats WHERE cctv_id = :id"), {"id": cctv_id})
+    db.execute(_text("UPDATE cctvs SET status = 'offline' WHERE id = :id"), {"id": cctv_id})
+    log_and_commit(f"User {user.username} disabled cctv {cctv.name}", db)
+    if _redis is not None:
+        try:
+            _redis.setex(f"cam:{cctv_id}:retry_now", 10, "1")
+        except Exception:
+            pass
+    return Response(status_code=204)
+
+
+@router.post("/{cctv_id}/enable", status_code=204)
+def enable_camera(
+    cctv_id: int,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> Response:
+    """Re-enable a disabled camera so the worker will pick it up on next claim."""
+    cctv = db.get(CCTV, cctv_id)
+    if not cctv:
+        raise HTTPException(status_code=404, detail="CCTV not found")
+    cctv.enabled = True
+    log_and_commit(f"User {user.username} enabled cctv {cctv.name}", db)
     return Response(status_code=204)

@@ -44,6 +44,7 @@ export interface CCTV {
   status: 'online' | 'offline' | 'reconnecting';
   last_error: string | null;
   is_being_viewed: boolean;
+  enabled: boolean;
   time: string;
 }
 

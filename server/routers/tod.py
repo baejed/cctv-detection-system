@@ -37,7 +37,7 @@ class TodChunkUpdate(BaseModel):
         try:
             m = hhmm_to_minutes(v)
         except (ValueError, TypeError):
-            raise ValueError(f"Invalid time format {v!r} — use HH:MM")
+            raise ValueError(f"Invalid time format {v!r} - use HH:MM")
         if not (0 <= m <= 1440):
             raise ValueError("Time must be between 00:00 and 24:00")
         return v

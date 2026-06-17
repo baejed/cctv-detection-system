@@ -1,4 +1,4 @@
-"""Local warrant (W-Local 1/2/3) tests — unit (pure functions) + integration."""
+"""Local warrant (W-Local 1/2/3) tests - unit (pure functions) + integration."""
 import pytest
 from tests.conftest import API_URL
 
@@ -9,7 +9,7 @@ def test_w_local_1_triggered_by_high_moto_ratio():
     """W-Local 1 fires when motorcycle+pedicab exceed 60% in any chunk."""
     from server.local_warrants import _compute_w_local_1
 
-    # 80% motorcycle — clearly above default 60% threshold
+    # 80% motorcycle - clearly above default 60% threshold
     counts = [{"motorcycle": 80.0, "car": 20.0}]
     met, conf = _compute_w_local_1(counts, threshold=0.6)
     assert met is True
@@ -30,8 +30,8 @@ def test_w_local_1_uses_max_across_chunks():
     from server.local_warrants import _compute_w_local_1
 
     counts = [
-        {"motorcycle": 20.0, "car": 80.0},  # 20% — not triggered
-        {"motorcycle": 75.0, "car": 25.0},  # 75% — triggered
+        {"motorcycle": 20.0, "car": 80.0},  # 20% - not triggered
+        {"motorcycle": 75.0, "car": 25.0},  # 75% - triggered
     ]
     met, _ = _compute_w_local_1(counts, threshold=0.6)
     assert met is True

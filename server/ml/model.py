@@ -1,4 +1,4 @@
-"""WarrantMLP — the architecture for the saved warrant_model.pt checkpoint.
+"""WarrantMLP - the architecture for the saved warrant_model.pt checkpoint.
 
 Mirrors the architecture from the warrants/ training repo. The .pt checkpoint
 stores `input_features`, `warrants`, `hidden_dims`, and `dropout` alongside

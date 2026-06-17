@@ -15,18 +15,18 @@
 ## File Map
 
 **Create:**
-- `server/ml/__init__.py` — package marker, re-exports
-- `server/ml/model.py` — `WarrantMLP` nn.Module
-- `server/ml/inference.py` — `load_warrant_model()`, `predict_warrants()`, `WarrantArtifacts` NamedTuple
-- `server/ml/warrant_model.pt` — copied artifact (binary)
-- `server/ml/warrant_scaler.pkl` — copied artifact (binary)
-- `tests/test_recommendations.py` — unit + integration tests
+- `server/ml/__init__.py` - package marker, re-exports
+- `server/ml/model.py` - `WarrantMLP` nn.Module
+- `server/ml/inference.py` - `load_warrant_model()`, `predict_warrants()`, `WarrantArtifacts` NamedTuple
+- `server/ml/warrant_model.pt` - copied artifact (binary)
+- `server/ml/warrant_scaler.pkl` - copied artifact (binary)
+- `tests/test_recommendations.py` - unit + integration tests
 
 **Modify:**
-- `server/requirements.txt` — add torch, scikit-learn, numpy
-- `requirements-test.txt` — add torch, scikit-learn, numpy
-- `server/main.py` — load artifacts in lifespan, stash on `app.state`
-- `server/routers/recommendations.py` — replace rule-based analysis with model-driven
+- `server/requirements.txt` - add torch, scikit-learn, numpy
+- `requirements-test.txt` - add torch, scikit-learn, numpy
+- `server/main.py` - load artifacts in lifespan, stash on `app.state`
+- `server/routers/recommendations.py` - replace rule-based analysis with model-driven
 
 ---
 
@@ -128,7 +128,7 @@ Empty file:
 - [ ] **Step 2: Create `server/ml/model.py` with the WarrantMLP class**
 
 ```python
-"""WarrantMLP — the architecture for the saved warrant_model.pt checkpoint.
+"""WarrantMLP - the architecture for the saved warrant_model.pt checkpoint.
 
 Mirrors the architecture from the warrants/ training repo. The .pt checkpoint
 stores `input_features`, `warrants`, `hidden_dims`, and `dropout` alongside
@@ -210,7 +210,7 @@ print(dict(zip(ckpt['warrants'], probs)))
 
 Expected: prints something like `{'w1': 0.99..., 'w2': 0.0..., 'w4': 0.0..., 'recommended': 0.99...}`. No errors.
 
-If `load_state_dict` complains about missing/unexpected keys, the architecture in `model.py` doesn't match the checkpoint — stop and reconcile before proceeding.
+If `load_state_dict` complains about missing/unexpected keys, the architecture in `model.py` doesn't match the checkpoint - stop and reconcile before proceeding.
 
 - [ ] **Step 5: Commit**
 
@@ -433,7 +433,7 @@ docker compose up --build -d server
 docker compose logs --tail=50 server
 ```
 
-Expected: no exception in startup logs; the server is `running` in `docker compose ps`. The model file path is `/app/server/ml/warrant_model.pt` inside the container — Path resolution works because `__file__` is the in-container path.
+Expected: no exception in startup logs; the server is `running` in `docker compose ps`. The model file path is `/app/server/ml/warrant_model.pt` inside the container - Path resolution works because `__file__` is the in-container path.
 
 If running outside Docker:
 ```bash
@@ -468,7 +468,7 @@ from datetime import datetime, timezone
 from server.routers.recommendations import _compute_features_from_rows
 
 
-# Simple row objects (mimics SQLAlchemy Row) — name, value pairs the function reads.
+# Simple row objects (mimics SQLAlchemy Row) - name, value pairs the function reads.
 class _Row:
     def __init__(self, street_id, object_type, window_start, count):
         self.street_id = street_id
@@ -566,7 +566,7 @@ def test_feature_extraction_no_data_returns_zeros():
 
 def test_feature_extraction_phf_clamp_min():
     """PHF is clamped to a minimum of 0.25 (the theoretical floor)."""
-    # Construct an extreme spike — impossible normally but tests the clamp.
+    # Construct an extreme spike - impossible normally but tests the clamp.
     # 100 vehicles all in minute 0 → 15-min bucket 0 = 100; total = 100; phf = 100/(4*100)=0.25
     rows = [_Row(1, "car", _ts(0), 100)]
     feats = _compute_features_from_rows(rows)
@@ -583,7 +583,7 @@ Expected: all tests fail with `ImportError: cannot import name '_compute_feature
 
 - [ ] **Step 3: Implement `_compute_features_from_rows` and `_compute_features` in `server/routers/recommendations.py`**
 
-Add `from collections import defaultdict` to the top of the file if it's not already imported. The existing module already defines `PEDESTRIAN_TYPES = {"pedestrian", "person"}` — reuse it; do not redefine it.
+Add `from collections import defaultdict` to the top of the file if it's not already imported. The existing module already defines `PEDESTRIAN_TYPES = {"pedestrian", "person"}` - reuse it; do not redefine it.
 
 Add these functions to `server/routers/recommendations.py` (place them above `_run_warrant_analysis` for now; we'll delete `_run_warrant_analysis` in Task 6):
 
@@ -595,11 +595,11 @@ def _compute_features_from_rows(rows) -> dict[str, float]:
 
     Returns a dict with major_volume, minor_volume, peds, vpm, phf.
     """
-    # Per-street vehicle totals (excludes pedestrians) — used to pick major street
+    # Per-street vehicle totals (excludes pedestrians) - used to pick major street
     street_veh: dict[int, int] = defaultdict(int)
     # Pedestrian total across all streets / directions
     peds_total = 0
-    # Per-(street, minute) vehicle counts — for vpm and phf on the major street
+    # Per-(street, minute) vehicle counts - for vpm and phf on the major street
     per_minute: dict[tuple[int, int], int] = defaultdict(int)
 
     for r in rows:
@@ -742,7 +742,7 @@ def _analyze(
         f"Peds: {features['peds']}/hr, "
         f"VPM: {features['vpm']}, "
         f"PHF: {features['phf']:.2f}. "
-        f"Probabilities — W1: {w1:.2f}, W2: {w2:.2f}, W4: {w4:.2f}."
+        f"Probabilities - W1: {w1:.2f}, W2: {w2:.2f}, W4: {w4:.2f}."
     )
 
     return {
@@ -895,11 +895,11 @@ Append to `tests/test_recommendations.py`. Also add `import os` and `API_URL = o
 
 
 def _first_intersection_id(auth) -> int:
-    """Helper — fetch the first intersection from the live API."""
+    """Helper - fetch the first intersection from the live API."""
     r = auth.get(f"{API_URL}/intersections/")
     assert r.status_code == 200, r.text
     items = r.json()
-    assert items, "No intersections seeded — run scripts/fake_detections.py --seed first"
+    assert items, "No intersections seeded - run scripts/fake_detections.py --seed first"
     return items[0]["id"]
 
 
@@ -958,7 +958,7 @@ pytest tests/test_recommendations.py -v -k "generate"
 
 Expected: both endpoint tests pass. `generate_recommendation_endpoint` returns 200 and the response schema matches. The notes field should mention "Hour starting" or "No data for hour starting".
 
-If `test_generate_recommendation_endpoint` returns a not-warranted result with "No data" — that's fine (recent-hour may be empty in test data). What matters is the schema.
+If `test_generate_recommendation_endpoint` returns a not-warranted result with "No data" - that's fine (recent-hour may be empty in test data). What matters is the schema.
 
 - [ ] **Step 3: Commit**
 
@@ -971,7 +971,7 @@ git commit -m "test: add integration tests for warrant model recommendations end
 
 ### Task 8: Manual smoke test + final verification
 
-**Files:** None — verification only.
+**Files:** None - verification only.
 
 - [ ] **Step 1: Rebuild and run the full stack**
 

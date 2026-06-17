@@ -1,4 +1,4 @@
-# RTSP detection worker — each replica claims CAMERAS_PER_WORKER cameras.
+# RTSP detection worker - each replica claims CAMERAS_PER_WORKER cameras.
 # For a single GPU node set replicas: 1 and tune CAMERAS_PER_WORKER.
 # Requires NVIDIA Container Toolkit + device plugin (see nvidia-device-plugin.yaml).
 apiVersion: apps/v1

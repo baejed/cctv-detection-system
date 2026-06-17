@@ -1,9 +1,9 @@
 """
-Standalone ONVIF / WS-Discovery probe — runs on the host (no docker).
+Standalone ONVIF / WS-Discovery probe - runs on the host (no docker).
 
 Sends a WS-Discovery Probe to the ONVIF multicast group and listens for
 ProbeMatch responses. Optionally also probes a specific IP unicast (useful
-when you know the camera's IP but multicast isn't reaching it — e.g. across
+when you know the camera's IP but multicast isn't reaching it - e.g. across
 a wired bridge, or when the camera doesn't honor multicast).
 
 Usage
@@ -93,7 +93,7 @@ def discover(interface: str | None, timeout: float, unicast_targets: list[str], 
             print(f"→ multicast probe sent to {WS_DISCOVERY_ADDR[0]}:{WS_DISCOVERY_ADDR[1]}", file=sys.stderr)
         except OSError as e:
             print(f"⚠  multicast send failed: {e}", file=sys.stderr)
-            print("   (your current network may not route multicast — try --interface <lan-ip> or use --probe <camera-ip>)", file=sys.stderr)
+            print("   (your current network may not route multicast - try --interface <lan-ip> or use --probe <camera-ip>)", file=sys.stderr)
 
     for ip in unicast_targets:
         try:

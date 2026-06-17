@@ -16,7 +16,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Label } from '@/components/ui/label';
 import { Separator } from '@/components/ui/separator';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
-import { ArrowLeft, Plus, Trash2, Loader2, Pencil, Check, X, MapPin, MonitorPlay, Eye, EyeOff, RotateCcw } from 'lucide-react';
+import { ArrowLeft, Plus, Trash2, Loader2, Pencil, Check, X, MapPin, MonitorPlay, Eye, EyeOff, RotateCcw, RefreshCw, WifiOff } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const REGION_COLORS = [
@@ -277,9 +277,29 @@ export function CameraDetailPage() {
     setRetrying(true);
     try {
       await cctvsApi.retry(cctv.id);
-      toast.success('Retry signal sent — worker will reconnect immediately');
+      toast.success('Retry signal sent - worker will reconnect immediately');
     } catch {
       toast.error('Failed to send retry signal');
+    } finally {
+      setRetrying(false);
+    }
+    setReconnectKey(k => k + 1);
+  }
+
+  async function handleToggleEnabled() {
+    if (!cctv) return;
+    setRetrying(true);
+    try {
+      if (cctv.enabled) {
+        await cctvsApi.disable(cctv.id);
+        toast.success('Camera disabled - worker will stop trying to reconnect');
+      } else {
+        await cctvsApi.enable(cctv.id);
+        toast.success('Camera enabled - worker will reclaim shortly');
+      }
+      await loadData();
+    } catch {
+      toast.error(cctv.enabled ? 'Disable failed' : 'Enable failed');
     } finally {
       setRetrying(false);
     }
@@ -293,7 +313,7 @@ export function CameraDetailPage() {
       await cctvsApi.update(cctv.id, { rtsp_url: rtspUrlValue.trim() });
       setCctv(prev => prev ? { ...prev, rtsp_url: rtspUrlValue.trim() } : prev);
       setEditingRtspUrl(false);
-      toast.success('RTSP URL updated — camera will reconnect');
+      toast.success('RTSP URL updated - camera will reconnect');
     } catch { toast.error('Failed to update RTSP URL'); }
     finally { setSavingCam(false); }
   }
@@ -313,6 +333,10 @@ export function CameraDetailPage() {
   // WebSocket → video canvas (server burns boxes onto frames before sending)
   useEffect(() => {
     if (loading) return;
+    // Don't open the socket without a token - the server would close it with
+    // 4001 and the unauth handler would fire a "Session expired" toast. Wait
+    // for the token to arrive (effect re-runs on token change) instead.
+    if (!token) return;
     let stopped = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     // Track the most-recently created socket so reconnected sockets (spawned by
@@ -324,7 +348,7 @@ export function CameraDetailPage() {
     function connect() {
       if (stopped) return;
       setWsStatus('connecting');
-      const ws = new WebSocket(`${WS_BASE}/cctvs/${cctv_id}/ws?token=${token ?? ''}&overlay=true`);
+      const ws = new WebSocket(`${WS_BASE}/cctvs/${cctv_id}/ws?token=${token}&overlay=true`);
       activeWs = ws;
       ws.binaryType = 'arraybuffer';
       ws.onopen  = () => setWsStatus('live');
@@ -619,10 +643,31 @@ export function CameraDetailPage() {
                   onDoubleClick={() => { if (drawing && points.length >= 3) finishPolygon(); }}
                 />
                 {wsStatus === 'reconnecting' && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-black/40 pointer-events-none">
-                    <div className="flex flex-col items-center gap-2">
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/40">
+                    <div className="flex flex-col items-center gap-3">
                       <Loader2 className="size-6 text-white animate-spin" />
                       <span className="text-white/70 text-xs">Camera reconnecting…</span>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={handleRetry}
+                          disabled={retrying}
+                          className="flex items-center gap-1.5 rounded-md bg-white/10 hover:bg-white/20 transition-colors px-3 py-1.5 text-xs text-white/80 disabled:opacity-50"
+                        >
+                          {retrying ? <Loader2 className="size-3 animate-spin" /> : <RotateCcw className="size-3" />}
+                          Reconnect
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleToggleEnabled}
+                          disabled={retrying}
+                          className="flex items-center gap-1.5 rounded-md bg-white/10 hover:bg-white/20 transition-colors px-3 py-1.5 text-xs text-white/80 disabled:opacity-50"
+                          title="Disable - stop the worker from reconnecting until re-enabled"
+                        >
+                          <WifiOff className="size-3" />
+                          Disable
+                        </button>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -708,18 +753,45 @@ export function CameraDetailPage() {
                     )}
                   </div>
 
-                  {/* Retry connection */}
-                  {cctv.status !== 'online' && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={handleRetry}
-                      disabled={retrying}
-                      className="h-7 px-2.5 text-xs self-start"
-                    >
-                      {retrying ? <Loader2 className="size-3 mr-1 animate-spin" /> : <RotateCcw className="size-3 mr-1" />}
-                      Retry connection
-                    </Button>
+                  {/* Enable / retry / disable */}
+                  {!cctv.enabled ? (
+                    <div className="flex flex-col gap-1 rounded-md border border-amber-500/40 bg-amber-500/5 p-2">
+                      <span className="text-xs text-amber-600">Disabled - worker will not connect to this camera.</span>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={handleToggleEnabled}
+                        disabled={retrying}
+                        className="h-7 px-2.5 text-xs self-start"
+                      >
+                        {retrying ? <Loader2 className="size-3 mr-1 animate-spin" /> : <RefreshCw className="size-3 mr-1" />}
+                        Enable camera
+                      </Button>
+                    </div>
+                  ) : cctv.status !== 'online' && (
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={handleRetry}
+                        disabled={retrying}
+                        className="h-7 px-2.5 text-xs self-start"
+                      >
+                        {retrying ? <Loader2 className="size-3 mr-1 animate-spin" /> : <RotateCcw className="size-3 mr-1" />}
+                        Retry connection
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={handleToggleEnabled}
+                        disabled={retrying}
+                        className="h-7 px-2.5 text-xs self-start text-muted-foreground hover:text-foreground"
+                        title="Stop the worker from reconnecting until re-enabled"
+                      >
+                        <WifiOff className="size-3 mr-1" />
+                        Disable
+                      </Button>
+                    </div>
                   )}
 
                   {/* RTSP URL */}

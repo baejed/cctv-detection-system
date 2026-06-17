@@ -20,6 +20,7 @@ from ultralytics import YOLO
 from common import models
 from common.database import Base, SessionLocal, engine
 from common.geometry import is_point_in_polygon
+from common.overlay import draw_boxes as overlay_draw_boxes
 from worker.claim import try_claim_camera, release_camera, verify_claim
 from worker.heartbeat import HeartbeatThread
 from worker.stream import open_stream, reconnect_stream, resolve_rtsp_url, _stream_is_live
@@ -30,13 +31,19 @@ _redis = redis_lib.from_url(REDIS_URL)
 CAMERAS_PER_WORKER    = int(os.getenv("CAMERAS_PER_WORKER", "16"))
 INFERENCE_EVERY_N     = int(os.getenv("INFERENCE_EVERY_N", "1"))   # process 1-in-N frames for DB writes
 READER_MAX_FPS        = float(os.getenv("READER_MAX_FPS", "0"))    # 0 = unlimited (cap reader thread rate)
+# When enabled, this worker also publishes the annotated JPEG of each
+# processed frame to Redis, so the server's WS endpoint can just relay
+# them instead of opening its own RTSP capture per camera. Eliminates
+# duplicate decode + the box/frame timestamp matching dance.
+PUBLISH_FRAMES        = os.getenv("WORKER_PUBLISHES_FRAMES", "0") == "1"
+FRAME_JPEG_QUALITY    = int(os.getenv("WORKER_FRAME_JPEG_QUALITY", "75"))
 PRUNE_INTERVAL_SEC    = 10
 TRACK_MAX_AGE_SEC     = 30
 FPS_SAMPLE_INTERVAL   = 30
 FLUSH_INTERVAL_SEC    = 0.3
 MAX_BUFFER_SIZE       = 1000
 CLAIM_CHECK_FRAMES    = 100
-CLAIM_CHECK_INTERVAL  = 15.0  # time-based verify_claim — catches reconnecting slots
+CLAIM_CHECK_INTERVAL  = 15.0  # time-based verify_claim - catches reconnecting slots
 RECLAIM_INTERVAL      = 5.0   # seconds between slot-fill attempts
 REGION_REFRESH_SEC    = 60.0  # re-read regions from DB in case polygons changed
 
@@ -181,6 +188,7 @@ def main() -> None:
     print(f"[worker]   CAMERAS_PER_WORKER = {CAMERAS_PER_WORKER}")
     print(f"[worker]   INFERENCE_EVERY_N  = {INFERENCE_EVERY_N}")
     print(f"[worker]   READER_MAX_FPS     = {READER_MAX_FPS if READER_MAX_FPS > 0 else 'unlimited'}")
+    print(f"[worker]   PUBLISH_FRAMES     = {PUBLISH_FRAMES} (jpeg q={FRAME_JPEG_QUALITY})")
     print(f"[worker]   FERNET_KEY         = {'set' if os.getenv('FERNET_KEY') else 'NOT SET'}")
     print(f"[worker] ────────────────────────────────────────")
 
@@ -188,7 +196,7 @@ def main() -> None:
     db = SessionLocal()
     # Guard the DDL with an existence check so ALTER TABLE (which acquires
     # AccessExclusiveLock even with IF NOT EXISTS) is never run after the
-    # initial migration — the hot-restart path stays completely lock-free.
+    # initial migration - the hot-restart path stays completely lock-free.
     try:
         needs_col = not db.execute(text(
             "SELECT 1 FROM information_schema.columns "
@@ -242,7 +250,7 @@ def main() -> None:
             target_h, target_w = _DUMMY_FRAME.shape[:2]
 
             # When slot composition changes, reset trackers so tracker[i] always
-            # corresponds to slots[i] — prevents track ID bleed after a camera
+            # corresponds to slots[i] - prevents track ID bleed after a camera
             # is added or removed.
             slot_ids = [s.cctv_id for s in slots]
             if slot_ids != prev_slot_ids:
@@ -311,6 +319,28 @@ def main() -> None:
                     except Exception:
                         pass
 
+                    # Publish annotated JPEG so the server's WS can relay it
+                    # straight to the browser, instead of opening its own RTSP
+                    # capture. Doing the encode here once is cheaper than
+                    # doing it twice (here for archival + on the server for
+                    # the live preview), and the boxes are guaranteed to be
+                    # on the right frame because they came from the same
+                    # inference call.
+                    if PUBLISH_FRAMES:
+                        try:
+                            annotated = result.orig_img.copy()
+                            overlay_draw_boxes(annotated, boxes_payload)
+                            ok, jpeg = cv2.imencode(
+                                ".jpg", annotated,
+                                [cv2.IMWRITE_JPEG_QUALITY, FRAME_JPEG_QUALITY],
+                            )
+                            if ok:
+                                jb = jpeg.tobytes()
+                                _redis.setex(f"cam:{slot.cctv_id}:frame", 5, jb)
+                                _redis.publish(f"cam:{slot.cctv_id}:frame:ch", jb)
+                        except Exception:
+                            pass
+
                     # frame skipping: skip DB writes on non-sampled frames
                     if INFERENCE_EVERY_N > 1 and slot.frame_count % INFERENCE_EVERY_N != 0:
                         if args.show:
@@ -373,7 +403,7 @@ def main() -> None:
             if args.show and cv2.waitKey(1) & 0xFF == ord("q"):
                 break
 
-            # time-based claim check — runs even when no frames arrive (reconnecting cameras)
+            # time-based claim check - runs even when no frames arrive (reconnecting cameras)
             for slot in slots:
                 if not slot.claim_lost and now - slot.last_claim_check_ts >= CLAIM_CHECK_INTERVAL:
                     if not verify_claim(db, slot.cctv_id, slot.claim_version):

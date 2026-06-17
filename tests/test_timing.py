@@ -1,5 +1,6 @@
-"""Webster's formula tests — unit (formula correctness, clamping) + integration."""
+"""Webster's formula tests - unit (formula correctness, clamping) + integration."""
 import pytest
+from sqlalchemy import text
 from unittest.mock import MagicMock
 
 from tests.conftest import API_URL
@@ -27,7 +28,7 @@ def test_compute_timing_low_flow():
     """Low flows produce a cycle near the minimum."""
     from server.webster import compute_timing
 
-    # Y = 4 * (50/S) — stays well below 0.9 for any reasonable S
+    # Y = 4 * (50/S) - stays well below 0.9 for any reasonable S
     flows = {1: 50.0, 2: 50.0, 3: 50.0, 4: 50.0}
     cycle, splits = compute_timing(flows)
     assert 40 <= cycle <= 120
@@ -191,3 +192,110 @@ def test_generate_all_inserts_timing_rows(auth, intersection):
     results = r.json()
     for rec in results:
         assert "timing_cycle" in rec
+
+
+def test_warrant_falls_back_to_live_view_when_aggregate_is_stale(auth, db, intersection):
+    """Regression: card shows '1230 detected today' from the live SSE stream
+    while the warrant badge still says 'No data' - the continuous aggregate
+    job had not refreshed yet. _compute_features() should fall back to the
+    live detection_street_view when aggregation_summaries is empty for the
+    requested hour.
+    """
+    iid = intersection["id"]
+
+    # Build a minimal arm: street + camera + region.
+    sr = auth.post(f"{API_URL}/streets/",
+                   json={"intersection_id": iid, "name": "_fb_street",
+                         "arm_direction": "northbound"})
+    assert sr.status_code == 200
+    sid = sr.json()["id"]
+
+    cr = auth.post(f"{API_URL}/cctvs/",
+                   json={"intersection_id": iid, "name": "_fb_cam",
+                         "rtsp_url": "rtsp://192.168.254.103:1935/cam1"})
+    assert cr.status_code == 200
+    cid = cr.json()["id"]
+
+    rr = auth.post(f"{API_URL}/regions/",
+                   json={"cctv_id": cid, "street_id": sid, "direction": "inbound",
+                         "region_points": [{"x": 0.0, "y": 0.0}, {"x": 1.0, "y": 0.0},
+                                           {"x": 1.0, "y": 1.0}, {"x": 0.0, "y": 1.0}]})
+    if rr.status_code != 200:
+        pytest.skip(f"regions endpoint not available in this env: {rr.status_code} {rr.text}")
+    rid = rr.json()["id"]
+
+    try:
+        # Insert raw detections in the most-recent-complete-hour window. The
+        # continuous-aggregate refresh job won't have caught up to this - so
+        # the fallback path is the only way warrant analysis can see them.
+        db.execute(text("""
+            INSERT INTO detections (cctv_id, object_type, confidence, x1, y1, x2, y2, time)
+            SELECT :cid, 'car', 0.9, 0, 0, 100, 100,
+                   DATE_TRUNC('hour', NOW() AT TIME ZONE 'UTC') - INTERVAL '30 minutes'
+              FROM generate_series(1, 60)
+        """), {"cid": cid})
+        db.execute(text("""
+            INSERT INTO detections_in_regions (region_id, detection_id, time)
+            SELECT :rid, d.id, d.time
+              FROM detections d
+             WHERE d.cctv_id = :cid
+        """), {"rid": rid, "cid": cid})
+        db.commit()
+
+        # Bypass FastAPI route + use the function directly so this test does
+        # not depend on the continuous-aggregate refresh policy.
+        from server.routers.recommendations import _compute_features
+        features, _ = _compute_features(iid, db)
+        assert features["major_volume"] > 0, (
+            "live-view fallback should surface raw detections when "
+            "aggregation_summaries is stale - got "
+            f"major_volume={features['major_volume']}, peds={features['peds']}"
+        )
+
+    finally:
+        db.execute(text("DELETE FROM detections_in_regions WHERE region_id = :rid"), {"rid": rid})
+        db.execute(text("DELETE FROM detections WHERE cctv_id = :cid"), {"cid": cid})
+        db.commit()
+        auth.delete(f"{API_URL}/regions/{rid}")
+        auth.delete(f"{API_URL}/cctvs/{cid}")
+        auth.delete(f"{API_URL}/streets/{sid}")
+
+
+def test_timing_no_data_still_gives_each_approach_green(auth, intersection):
+    """Regression: an intersection with streets but no detections must NOT
+    return a 40s cycle with empty splits - that renders as 0g/3y/37r per
+    approach (a permanently-red signal) in the UI."""
+    iid = intersection["id"]
+
+    arms = ["northbound", "southbound", "eastbound", "westbound"]
+    street_ids = []
+    for arm in arms:
+        r = auth.post(f"{API_URL}/streets/",
+                      json={"intersection_id": iid,
+                            "name": f"_no_data_{arm}",
+                            "arm_direction": arm})
+        assert r.status_code == 200
+        street_ids.append(r.json()["id"])
+
+    try:
+        r = auth.post(f"{API_URL}/recommendations/generate/{iid}")
+        assert r.status_code == 200
+
+        rows = auth.get(f"{API_URL}/timing-recommendations/{iid}").json()
+        assert rows, "expected at least one timing row"
+
+        for row in rows:
+            splits = row["green_splits"] or {}
+            assert splits, (
+                f"chunk {row['chunk_name']!r} has empty green_splits - "
+                "every approach would render as 0s green"
+            )
+            for sid in street_ids:
+                g = splits.get(str(sid))
+                assert g is not None and g > 0, (
+                    f"chunk {row['chunk_name']!r} gives street {sid} "
+                    f"green={g} - must be > 0"
+                )
+    finally:
+        for sid in street_ids:
+            auth.delete(f"{API_URL}/streets/{sid}")

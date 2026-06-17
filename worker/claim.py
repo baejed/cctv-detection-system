@@ -18,7 +18,8 @@ def try_claim_camera(db: Session) -> tuple[models.CCTV, int] | None:
 
         result = db.execute(text("""
             SELECT id FROM cctvs
-            WHERE id NOT IN (
+            WHERE enabled = TRUE
+              AND id NOT IN (
                 SELECT cctv_id FROM worker_heartbeats
                 WHERE last_seen > NOW() - (:expiry * INTERVAL '1 second')
             )

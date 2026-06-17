@@ -1,4 +1,4 @@
-"""Auth endpoint tests — login, logout, token enforcement, rate limiting."""
+"""Auth endpoint tests - login, logout, token enforcement, rate limiting."""
 import os
 import time
 import pytest

@@ -208,7 +208,7 @@
   "time": { "from": "now-1h", "to": "now" },
   "timepicker": {},
   "timezone": "browser",
-  "title": "EyeGila — API Health",
+  "title": "EyeGila - API Health",
   "uid": "eyegila-api",
   "version": 1
 }
