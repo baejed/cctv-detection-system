@@ -95,7 +95,7 @@ export function RecommendationsTable({
                 </TableCell>
                 <TableCell onClick={e => e.stopPropagation()} className="flex gap-1">
                   {rec.timing_cycle != null && (
-                    <Link to={`/timing/${rec.intersection_id}`} tabIndex={-1}>
+                    <Link to={`/intersections/${rec.intersection_id}/timing`} tabIndex={-1}>
                       <Button size="icon" variant="ghost" className="size-7" aria-label="View timing">
                         <BarChart2 className="size-3.5" />
                       </Button>

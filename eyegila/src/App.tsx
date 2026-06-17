@@ -10,6 +10,7 @@ import { SignalTimingPage } from './pages/SignalTiming';
 import { CameraDetailPage } from './pages/CameraDetail';
 import { VideosPage } from './pages/Videos';
 import { IntersectionDetailPage } from './pages/IntersectionDetail';
+import { IntersectionReportPage } from './pages/IntersectionReport';
 
 export default function App() {
   return (
@@ -29,8 +30,8 @@ export default function App() {
             <Route path="reports" element={<ReportsPage />} />
             <Route path="users" element={<UsersPage />} />
             <Route path="intersections/:id" element={<IntersectionDetailPage />} />
-            <Route path="timing/:id" element={<SignalTimingPage />} />
-            <Route path="cameras/:id" element={<CameraDetailPage />} />
+            <Route path="intersections/:id/timing" element={<SignalTimingPage />} />
+            <Route path="intersections/:id/report" element={<IntersectionReportPage />} />
             <Route path="intersections/:intersectionId/cameras/:id" element={<CameraDetailPage />} />
             <Route path="videos"     element={<VideosPage />} />
             <Route path="videos/:id" element={<VideosPage />} />

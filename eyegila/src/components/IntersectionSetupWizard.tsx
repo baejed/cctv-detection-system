@@ -514,7 +514,7 @@ export function IntersectionSetupWizard({ open, onClose, onCreated }: Intersecti
                   {createdCameras.map(cam => (
                     <button
                       key={cam.id}
-                      onClick={() => { handleClose(); navigate(`/cameras/${cam.id}`); }}
+                      onClick={() => { handleClose(); navigate(`/intersections/${createdId}/cameras/${cam.id}`); }}
                       className="flex items-center justify-between rounded-md bg-white dark:bg-background border border-amber-200 dark:border-amber-800 px-3 py-2 text-sm font-medium hover:bg-amber-50 dark:hover:bg-amber-950/40 transition-colors"
                     >
                       <span className="flex items-center gap-2">
@@ -530,7 +530,7 @@ export function IntersectionSetupWizard({ open, onClose, onCreated }: Intersecti
               </div>
 
               <div className="flex gap-3 justify-center">
-                <Button onClick={() => { handleClose(); navigate(`/timing/${createdId}`); }} variant="outline">
+                <Button onClick={() => { handleClose(); navigate(`/intersections/${createdId}/timing`); }} variant="outline">
                   View signal timing
                 </Button>
                 <Button variant="outline" onClick={reset}>

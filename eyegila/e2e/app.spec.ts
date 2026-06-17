@@ -127,7 +127,7 @@ test.describe('Signal Timing', () => {
     const seeded = intersections.find(
       (i: { name: string }) => /junction|tagum|magugpo|poblacion/i.test(i.name),
     ) ?? intersections[0];
-    await page.goto(`${BASE_URL}/timing/${seeded.id}`);
+    await page.goto(`${BASE_URL}/intersections/${seeded.id}/timing`);
     return true;
   }
 

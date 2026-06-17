@@ -90,7 +90,7 @@ python3 -m pytest tests/test_functionality.py -v
 | FT-05 | Warrant model end-to-end | Feature extraction → inference → probabilities in [0,1]; busy intersection recommended |
 | FT-06 | CSV bulk import | 1 intersection + 2 cameras, re-import produces no duplicates |
 | FT-07 | Auth login/logout | Login → use → logout → token revoked |
-| FT-08 | Simulation quality | Rows created, LOS grades valid (A–F), metrics finite |
+`| FT-08 | Simulation delay ordering | `delay_after <= delay_before` (signal helps or is neutral), LOS grades valid (A–F), `total_vehicle_hours_saved` is finite |
 
 ---
 
@@ -132,27 +132,32 @@ cd eyegila && npm run dev
 
 # Then run Playwright:
 make test-e2e
-# or directly:
-cd eyegila && npx playwright test
+# or directly (the config lives under e2e/, so the flag is required):
+cd eyegila && npx playwright test --config e2e/playwright.config.ts
 
 # Watch the browser in headed mode:
-cd eyegila && npx playwright test --headed
+cd eyegila && npx playwright test --config e2e/playwright.config.ts --headed
 
 # Playwright interactive UI (best for debugging):
-cd eyegila && npx playwright test --ui
+cd eyegila && npx playwright test --config e2e/playwright.config.ts --ui
 ```
 
 ### What Playwright covers
 
-| Suite | Tests |
-|-------|-------|
-| Login | Fields render, wrong password stays on /login, valid creds redirect, unauthenticated nav redirects |
-| Intersections list | At least one intersection after seed, page title correct |
-| Recommendations | No JS errors, W1/W2/W4 badges visible |
-| Signal Timing | No JS errors, LOS badges visible, 3D canvas rendered, generate button works, cycle lengths in range |
-| Camera Detail | Camera list loads without errors |
-| Navigation | Nav links lead to correct routes, 404 shows fallback (not blank) |
-| Responsive | Recommendations page no horizontal overflow on 375×667 mobile |
+| Spec | Tests |
+|------|-------|
+| `app.spec.ts` — Login | Fields render, wrong password stays on /login, valid creds redirect, unauthenticated nav redirects |
+| `app.spec.ts` — Intersections list | At least one intersection after seed, page title correct |
+| `app.spec.ts` — Recommendations | No JS errors, W1/W2/W4 badges visible |
+| `app.spec.ts` — Signal Timing | No JS errors, LOS badges visible, 3D canvas rendered, timing controls visible, cycle lengths in 40–120 s range |
+| `app.spec.ts` — Camera Detail | Camera list loads without errors |
+| `app.spec.ts` — Navigation | Nav links lead to correct routes, 404 shows fallback (not blank) |
+| `app.spec.ts` — Responsive | Recommendations page no horizontal overflow on 375×667 mobile |
+| `auth-expiry.spec.ts` | Server-revoked token collapses 401 storm to ≤1 toast + one redirect; login after expiry restores access without bouncing back to /login |
+| `wizard-happy-path.spec.ts` | Full onboarding wizard: Discover → Name → Assign → Create → Done |
+| `intersection-delete.spec.ts` | Delete intersection from the settings sheet removes the card |
+| `timing-no-data.spec.ts` | Every approach gets non-zero green time even with no detections |
+| `probe.spec.ts` | Diagnostic probe — confirms login storage state is healthy |
 
 ### Tips
 

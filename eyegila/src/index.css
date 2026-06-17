@@ -106,3 +106,15 @@
 @media (prefers-reduced-motion: reduce) {
   .sse-pulse { animation: none; }
 }
+
+/* Print: the app uses h-screen + overflow-hidden for the screen layout, which
+   clips paginated content. Release the height + overflow so the printable
+   document can flow across pages. */
+@media print {
+  html, body, #root { height: auto !important; overflow: visible !important; }
+  body * { max-height: none !important; }
+  main { padding: 0 !important; overflow: visible !important; }
+  /* Hide app chrome (sidebar + top bar) */
+  [data-slot="sidebar"], [data-slot="sidebar-container"], [data-sidebar="sidebar"],
+  aside, header { display: none !important; }
+}

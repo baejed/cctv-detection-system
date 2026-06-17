@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer,
@@ -9,7 +9,10 @@ import { timingApi, type TimingChunk } from '@/services/timing';
 import { aggregationApi } from '@/services/aggregation';
 import { streetsApi } from '@/services/streets';
 import { intersectionsApi } from '@/services/intersections';
-import { recommendationsApi } from '@/services/recommendations';
+import { recommendationsApi, type RecommendationResponse } from '@/services/recommendations';
+import { IntersectionSummary } from '@/components/IntersectionSummary';
+import { IntersectionTabs } from '@/components/IntersectionTabs';
+import { ARM_SHORT, GanttDiagram, LosBadge } from '@/components/signal-timing-viz';
 import type { SignalTimingPayload } from '@/services/intersections';
 import { DualIntersectionCanvas, type VehicleType, type TypeFractions } from '@/components/IntersectionCanvas';
 import { IntersectionScene3D } from '@/components/IntersectionScene3D';
@@ -24,17 +27,11 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { ArrowLeft, TrendingDown, Printer, Play, Pause, Columns2, MonitorPlay, TrendingUp, X, Pencil, History, Loader2, FlaskConical, RefreshCw } from 'lucide-react';
+import { ArrowLeft, TrendingDown, Printer, Play, Pause, Columns2, MonitorPlay, X, Pencil, History, Loader2, FlaskConical, RefreshCw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 
 const APPROACH_COLORS = ['#6366f1', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6', '#06b6d4'];
-
-const ARM_SHORT: Record<string, string> = {
-  northbound: 'N', southbound: 'S', eastbound: 'E', westbound: 'W', unknown: '?',
-};
-
-const YELLOW_S = 3;
 
 const OBJECT_TO_VEHICLE: Record<string, VehicleType> = {
   motorcycle: 'MC', pedicab: 'MC', tricycle: 'MC', bicycle: 'MC',
@@ -68,23 +65,6 @@ function buildTypeMix(rows: AggregationRow[]): Record<string, TypeFractions> {
     };
   }
   return mix;
-}
-
-const LOS_COLORS: Record<string, string> = {
-  A: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300',
-  B: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
-  C: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-300',
-  D: 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300',
-  E: 'bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300',
-  F: 'bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300',
-};
-
-function LosBadge({ grade }: { grade: string }) {
-  return (
-    <span className={cn('inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold tabular-nums', LOS_COLORS[grade] ?? '')}>
-      {grade}
-    </span>
-  );
 }
 
 function fmt(n: number | null | undefined, unit = 's'): string {
@@ -146,60 +126,6 @@ function ChunkQueueChart({ chunk }: { chunk: SimulationChunk }) {
   );
 }
 
-function GanttBar({ label, greenSec, cycleLength }: { label: string; greenSec: number; cycleLength: number }) {
-  const redSec = Math.max(0, cycleLength - greenSec - YELLOW_S);
-  const greenPct = (greenSec / cycleLength) * 100;
-  const yellowPct = (YELLOW_S / cycleLength) * 100;
-  const redPct = (redSec / cycleLength) * 100;
-  return (
-    <div className="flex items-center gap-2">
-      <span className="text-[11px] text-muted-foreground w-24 shrink-0 truncate" title={label}>{label}</span>
-      <div className="flex flex-1 rounded overflow-hidden h-5">
-        <div
-          style={{ width: `${greenPct}%` }}
-          className="bg-emerald-500 flex items-center justify-center text-[10px] text-white font-medium"
-          title={`Green: ${greenSec.toFixed(0)}s`}
-        >
-          {greenPct > 10 ? `${greenSec.toFixed(0)}s` : ''}
-        </div>
-        <div
-          style={{ width: `${yellowPct}%` }}
-          className="bg-amber-400"
-          title={`Yellow: ${YELLOW_S}s`}
-        />
-        <div
-          style={{ width: `${redPct}%` }}
-          className="bg-rose-400/40 flex items-center justify-center text-[10px] text-rose-700 dark:text-rose-300"
-          title={`Red: ${redSec.toFixed(0)}s`}
-        >
-          {redPct > 15 ? `${redSec.toFixed(0)}s` : ''}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function GanttDiagram({
-  title,
-  cycleLength,
-  approaches,
-  titleClassName,
-}: {
-  title: string;
-  cycleLength: number;
-  approaches: { label: string; greenSec: number }[];
-  titleClassName?: string;
-}) {
-  return (
-    <div className="flex-1 min-w-0">
-      <p className={cn('text-xs font-semibold text-center', titleClassName ?? 'text-foreground')}>{title}</p>
-      <p className="text-[10px] text-muted-foreground text-center mb-3">{cycleLength}s cycle</p>
-      <div className="space-y-2">
-        {approaches.map(a => <GanttBar key={a.label} {...a} cycleLength={cycleLength} />)}
-      </div>
-    </div>
-  );
-}
 
 // ── Traffic timeline picker ──────────────────────────────────────────────────
 
@@ -216,7 +142,7 @@ function barGradient(count: number, max: number): string {
 
 interface TrafficTimelineProps {
   intersectionId: number;
-  onRange: (start: string, end: string) => void;
+  onRange: (start: string, end: string, vph: number) => void;
 }
 
 function TrafficTimeline({ intersectionId, onRange }: TrafficTimelineProps) {
@@ -280,7 +206,10 @@ function TrafficTimeline({ intersectionId, onRange }: TrafficTimelineProps) {
       next.setDate(next.getDate() + 1);
       endStr = next.toISOString().slice(0, 10) + 'T00:00';
     }
-    onRange(`${date}T${pad2(h1)}:00`, endStr);
+    const total = bars.slice(h1, h2 + 1).reduce((s, b) => s + b.count, 0);
+    const hours = h2 - h1 + 1;
+    const vph = hours > 0 ? total / hours : 0;
+    onRange(`${date}T${pad2(h1)}:00`, endStr, vph);
   }
 
   function onPointerDown(e: React.PointerEvent<HTMLDivElement>) {
@@ -474,12 +403,14 @@ function TrafficTimeline({ intersectionId, onRange }: TrafficTimelineProps) {
 export function SignalTimingPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const intersectionId = Number(id);
 
   const [data, setData] = useState<SimulationResponse | null>(null);
   const [timingData, setTimingData] = useState<TimingChunk[]>([]);
   const [streets, setStreets] = useState<Street[]>([]);
   const [intersection, setIntersection] = useState<Intersection | null>(null);
+  const [rec, setRec] = useState<RecommendationResponse | null>(null);
   const [typeMix, setTypeMix] = useState<Record<string, TypeFractions>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -503,6 +434,9 @@ export function SignalTimingPage() {
   const [histLoading, setHistLoading] = useState(false);
   const [histError, setHistError] = useState<string | null>(null);
   const [histMode, setHistMode]   = useState(false);
+  // Bar-chart-derived rate fed to the 3D scene while in histMode.
+  // Raw count over the selected window divided by hour span (no PCE).
+  const [histVph, setHistVph]     = useState<number | null>(null);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setPresentMode(false); };
@@ -521,7 +455,7 @@ export function SignalTimingPage() {
     const start = new Date(end.getTime() - 3600 * 1000);
 
     try {
-      const [sim, tim, agg, allStreets, inter] = await Promise.all([
+      const [sim, tim, agg, allStreets, inter, latestRec] = await Promise.all([
         simulationApi.get(intersectionId),
         timingApi.list(intersectionId).catch(() => [] as TimingChunk[]),
         aggregationApi.history({
@@ -532,11 +466,13 @@ export function SignalTimingPage() {
         }).catch(() => []),
         streetsApi.list().catch(() => [] as Street[]),
         intersectionsApi.get(intersectionId).catch(() => null),
+        recommendationsApi.latest(intersectionId).catch(() => null),
       ]);
       setData(sim);
       setTimingData(tim);
       setStreets(allStreets.filter(s => s.intersection_id === intersectionId));
       setIntersection(inter);
+      setRec(latestRec);
       setTypeMix(buildTypeMix(agg));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -546,6 +482,19 @@ export function SignalTimingPage() {
   }, [intersectionId]);
 
   useEffect(() => { loadAll(); }, [loadAll]);
+
+  // Deep-link from a Fix button (e.g. /intersections/:id/timing?edit=1) opens
+  // the edit-timing modal as soon as the intersection has loaded, then strips
+  // the param so a manual refresh doesn't keep re-opening it.
+  useEffect(() => {
+    if (!intersection) return;
+    if (searchParams.get('edit') !== '1') return;
+    openEdit();
+    const next = new URLSearchParams(searchParams);
+    next.delete('edit');
+    setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [intersection, searchParams]);
 
   const [generating, setGenerating] = useState(false);
   async function runAnalyse() {
@@ -576,6 +525,14 @@ export function SignalTimingPage() {
     ? [...displayData.chunks].sort((a, b) => b.volume_pcu_hr - a.volume_pcu_hr)[0] ?? null
     : null;
   const activeChunk = displayChunk ?? peakChunk;
+  // As soon as the user picks a range on the bar chart, that rate feeds the 3D
+  // visual - no need to wait for the Analyse button. Visual-only: analytical
+  // numbers still come from the server-side compute. Raw veh/hr (no PCE) is
+  // intentional - the scene is illustrative, not analytical, so we don't
+  // duplicate PCE multipliers client-side.
+  const effectiveVolumePcuHr = histVph != null
+    ? histVph
+    : (activeChunk?.volume_pcu_hr ?? 0);
 
   // Synthesize a TimingChunk from historical proposed splits so Gantt + 3D still work
   const histTiming = histMode && activeChunk?.proposed_cycle_s != null ? {
@@ -672,11 +629,12 @@ export function SignalTimingPage() {
     setHistMode(false);
     setHistData(null);
     setHistError(null);
+    setHistVph(null);
     setSelectedChunk(null);
   }
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex flex-col gap-5 print:gap-2">
       {/* Header */}
       <div className="flex items-center gap-3 print:hidden">
         <Button variant="ghost" size="icon" className="size-8" onClick={() => navigate(-1)}>
@@ -719,23 +677,7 @@ export function SignalTimingPage() {
             Print / Export PDF
           </Button>
         )}
-        <div className="flex rounded-md border border-border overflow-hidden shrink-0">
-          <button
-            type="button"
-            onClick={() => navigate(`/intersections/${id}`)}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
-          >
-            <MonitorPlay className="size-3" />
-            Live
-          </button>
-          <button
-            type="button"
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border-l border-border bg-foreground text-background"
-          >
-            <TrendingUp className="size-3" />
-            Timing
-          </button>
-        </div>
+        {id && <IntersectionTabs intersectionId={id} />}
       </div>
 
       {/* Print header - only visible when printing */}
@@ -808,7 +750,7 @@ export function SignalTimingPage() {
 
             <TrafficTimeline
               intersectionId={intersectionId}
-              onRange={(start, end) => { setHistStart(start); setHistEnd(end); }}
+              onRange={(start, end, vph) => { setHistStart(start); setHistEnd(end); setHistVph(vph); }}
             />
 
             <div className="flex items-center gap-2 mt-3">
@@ -840,7 +782,7 @@ export function SignalTimingPage() {
               : (positive ? 'Re-timing recommended' : 'Current timing near-optimal');
             return (
               <div className={cn(
-                'rounded-xl border p-5 flex flex-col gap-1',
+                'rounded-xl border p-5 flex flex-col gap-1 print:hidden',
                 positive
                   ? 'border-emerald-300 bg-emerald-50 dark:border-emerald-800 dark:bg-emerald-950/30'
                   : 'border-border bg-card',
@@ -862,7 +804,7 @@ export function SignalTimingPage() {
           })()}
 
           {/* Global chunk filter */}
-          <div className="flex flex-wrap items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-1.5 print:hidden">
             <button
               data-testid="btn-chunk-all"
               onClick={() => setSelectedChunk(null)}
@@ -904,7 +846,7 @@ export function SignalTimingPage() {
             const vhLabel     = displayChunk ? 'vh saved this period' : (histMode ? 'vh for this window' : 'vh saved per day');
             return (
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <div className="rounded-lg border border-border bg-card p-4">
+                <div className="rounded-lg border border-border bg-card p-4 print:p-3">
                   <p className="text-xs text-muted-foreground">Avg delay before</p>
                   <p className="text-xl font-semibold mt-1">{fmt(delayBefore)}</p>
                   <div className="flex items-center gap-1.5 mt-1">
@@ -912,7 +854,7 @@ export function SignalTimingPage() {
                     <LosBadge grade={losBefore} />
                   </div>
                 </div>
-                <div className="rounded-lg border border-border bg-card p-4">
+                <div className="rounded-lg border border-border bg-card p-4 print:p-3">
                   <p className="text-xs text-muted-foreground">Avg delay after</p>
                   <p className="text-xl font-semibold mt-1 text-emerald-600">{fmt(delayAfter)}</p>
                   <div className="flex items-center gap-1.5 mt-1">
@@ -920,14 +862,14 @@ export function SignalTimingPage() {
                     <LosBadge grade={losAfter} />
                   </div>
                 </div>
-                <div className="rounded-lg border border-border bg-card p-4">
+                <div className="rounded-lg border border-border bg-card p-4 print:p-3">
                   <p className="text-xs text-muted-foreground">Vehicle-hours saved</p>
                   <p className={cn('text-xl font-semibold mt-1', vhSaved > 0 && 'text-emerald-600')}>
                     {vhSaved.toFixed(1)} vh
                   </p>
                   <p className="text-xs text-muted-foreground mt-1">{vhLabel}</p>
                 </div>
-                <div className="rounded-lg border border-border bg-card p-4">
+                <div className="rounded-lg border border-border bg-card p-4 print:p-3">
                   <p className="text-xs text-muted-foreground">Total flow</p>
                   <p className="text-xl font-semibold mt-1">{totalFlow.toFixed(0)}</p>
                   <p className="text-xs text-muted-foreground mt-1">{flowLabel}</p>
@@ -937,7 +879,7 @@ export function SignalTimingPage() {
           })()}
 
           {/* LOS legend */}
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground print:hidden">
             <span className="font-medium text-foreground">LOS grade:</span>
             {([
               ['A', '≤10s - free flow'],
@@ -954,7 +896,7 @@ export function SignalTimingPage() {
           </div>
 
           {/* Per-chunk table - click a row to select it for the chart / simulation */}
-          <div className="rounded-lg border border-border overflow-hidden">
+          <div className="rounded-lg border border-border overflow-hidden print:hidden">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -1024,8 +966,8 @@ export function SignalTimingPage() {
 
           {/* Phase comparison - Current vs Recommended */}
           {activeTiming && streets.length > 0 && (
-            <div className="rounded-lg border border-border bg-card p-5 print:break-inside-avoid">
-              <h2 className="text-sm font-semibold mb-4">Phase comparison - {selectedChunk ? activeTiming.chunk_name : `All periods · using ${activeTiming.chunk_name} (peak)`}</h2>
+            <div className="rounded-lg border border-border bg-card p-5 print:p-3 print:break-inside-avoid">
+              <h2 className="text-sm font-semibold mb-4 print:mb-2">Phase comparison - {selectedChunk ? activeTiming.chunk_name : `All periods · using ${activeTiming.chunk_name} (peak)`}</h2>
               <div className="flex gap-6 flex-col sm:flex-row">
                 {intersection?.existing_cycle_length && intersection?.existing_green_splits ? (
                   <GanttDiagram
@@ -1098,6 +1040,11 @@ export function SignalTimingPage() {
                   <p className="text-xs text-muted-foreground mt-0.5">
                     {view3D ? 'drag to orbit · scroll to zoom' : 'top-down · queue bars grow on red, clear on green'}
                   </p>
+                  {histVph != null && view3D && (
+                    <p className="text-[11px] text-teal-600 dark:text-teal-400 mt-1 font-medium">
+                      Visual rate: {Math.round(histVph)} veh/hr · selected range
+                    </p>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-2 flex-wrap shrink-0">
@@ -1183,7 +1130,7 @@ export function SignalTimingPage() {
                   timing={activeTiming}
                   streets={streets}
                   signalOff={activeTiming.signal_off}
-                  volumePcuHr={activeChunk.volume_pcu_hr}
+                  volumePcuHr={effectiveVolumePcuHr}
                   typeMix={typeMix}
                   showBefore={show3DBefore}
                   signalStatus={displayData.signal_status}
@@ -1203,7 +1150,7 @@ export function SignalTimingPage() {
                       timing={activeTiming}
                       streets={streets}
                       signalOff={activeTiming.signal_off}
-                      volumePcuHr={activeChunk.volume_pcu_hr}
+                      volumePcuHr={effectiveVolumePcuHr}
                       typeMix={typeMix}
                       showBefore={true}
                       signalStatus={displayData.signal_status}
@@ -1221,7 +1168,7 @@ export function SignalTimingPage() {
                       timing={activeTiming}
                       streets={streets}
                       signalOff={activeTiming.signal_off}
-                      volumePcuHr={activeChunk.volume_pcu_hr}
+                      volumePcuHr={effectiveVolumePcuHr}
                       typeMix={typeMix}
                       showBefore={false}
                       signalStatus={displayData.signal_status}
@@ -1246,7 +1193,7 @@ export function SignalTimingPage() {
 
           {/* Calculation basis */}
           {activeTiming && (
-            <div className="rounded-lg border border-border bg-card p-5">
+            <div className="rounded-lg border border-border bg-card p-5 print:hidden">
               <h2 className="text-sm font-semibold mb-3">Calculation basis - {activeTiming.chunk_name}</h2>
 
               {activeTiming.assumptions && (
@@ -1302,6 +1249,18 @@ export function SignalTimingPage() {
             <div className="flex flex-col items-center gap-3 py-16 text-muted-foreground">
               <TrendingDown className="size-10 opacity-30" />
               <p className="text-sm">No simulation data - regenerate the recommendation to compute delay estimates.</p>
+            </div>
+          )}
+
+          {/* Per-approach action card + narrative summary - visible on-screen and at the bottom of the print */}
+          {intersection && (
+            <div className="mt-2 print:mt-3">
+              <IntersectionSummary
+                intersection={intersection}
+                streets={streets}
+                sim={displayData}
+                rec={rec}
+              />
             </div>
           )}
         </>
@@ -1429,7 +1388,7 @@ export function SignalTimingPage() {
                     timing={activeTiming}
                     streets={streets}
                     signalOff={activeTiming.signal_off}
-                    volumePcuHr={activeChunk.volume_pcu_hr}
+                    volumePcuHr={effectiveVolumePcuHr}
                     typeMix={typeMix}
                     showBefore={true}
                     signalStatus={displayData.signal_status}
@@ -1447,7 +1406,7 @@ export function SignalTimingPage() {
                     timing={activeTiming}
                     streets={streets}
                     signalOff={activeTiming.signal_off}
-                    volumePcuHr={activeChunk.volume_pcu_hr}
+                    volumePcuHr={effectiveVolumePcuHr}
                     typeMix={typeMix}
                     showBefore={false}
                     signalStatus={displayData.signal_status}

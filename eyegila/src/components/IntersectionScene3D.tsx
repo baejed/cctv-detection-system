@@ -17,7 +17,7 @@
  *   E arm (x = +XWALK): peds walk N–S; WALK when EW vehicles are RED
  *   W arm (x = –XWALK): peds walk S–N; WALK when EW vehicles are RED
  */
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { clone as skeletonClone } from 'three/examples/jsm/utils/SkeletonUtils.js';
@@ -594,6 +594,9 @@ interface Veh {
   wpIdx: number;
   rotOffset: number;  // extra Y-rotation for Z-elongated GLB models
   yOffset: number;    // Y-lift so GLB model base sits on road surface
+  // Audio event tracking
+  stoppedFor: number; // seconds spent below threshold speed in the current queue
+  honked: boolean;    // already triggered a horn during this stop
 }
 
 interface Ped {
@@ -819,6 +822,181 @@ export function IntersectionScene3D({
   useEffect(() => { speedRef.current   = speed;      }, [speed]);
   useEffect(() => { volumeRef.current  = volumePcuHr; }, [volumePcuHr]);
   useEffect(() => { typeMixRef.current = typeMix;    }, [typeMix]);
+
+  // ── Audio ─────────────────────────────────────────────────────────────
+  // Synthesized via Web Audio so no external MP3 assets are required.
+  // - Ambient: brown-noise through low-pass = constant city rumble
+  // - Horn:    two stacked oscillators with a short envelope
+  // - Brake:   white-noise burst through a band-pass with quick decay
+  // Default muted - browser autoplay policies block sound until a user gesture,
+  // and an analyst opening this page likely doesn't want a horn blast.
+  const [audioEnabled, setAudioEnabled] = useState(false);
+  const [audioVolume, setAudioVolume] = useState(0.5);
+  const audioEnabledRef = useRef(false);
+  const audioVolumeRef = useRef(0.5);
+  useEffect(() => { audioEnabledRef.current = audioEnabled; }, [audioEnabled]);
+  useEffect(() => { audioVolumeRef.current = audioVolume; }, [audioVolume]);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const masterGainRef = useRef<GainNode | null>(null);
+  const ambientSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const ambientGainRef = useRef<GainNode | null>(null);
+  const lastHornAtRef = useRef(0);
+  const lastBrakeAtRef = useRef(0);
+  // The run() loop reads from this ref to fire event sounds.
+  const triggersRef = useRef<{ horn: () => void; brake: () => void }>({
+    horn: () => {},
+    brake: () => {},
+  });
+
+  // Lazily create the AudioContext + ambient loop the first time the user enables
+  // sound (browsers require a user gesture to start an AudioContext).
+  function ensureAudioContext(): AudioContext | null {
+    if (audioCtxRef.current) return audioCtxRef.current;
+    const Ctor = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    if (!Ctor) return null;
+    const ctx = new Ctor();
+    audioCtxRef.current = ctx;
+
+    // Master gain controlled by the volume slider.
+    const master = ctx.createGain();
+    master.gain.value = audioVolumeRef.current;
+    master.connect(ctx.destination);
+    masterGainRef.current = master;
+
+    // Ambient: 2 seconds of brown noise looped through a low-pass filter.
+    const sampleRate = ctx.sampleRate;
+    const ambientBuf = ctx.createBuffer(1, sampleRate * 2, sampleRate);
+    const ch = ambientBuf.getChannelData(0);
+    let lastSample = 0;
+    for (let i = 0; i < ch.length; i++) {
+      const white = Math.random() * 2 - 1;
+      // Brown noise is an integrated random walk; the 3.5 multiplier keeps it
+      // peaking near +-1 without clipping after the low-pass filter below.
+      lastSample = (lastSample + 0.02 * white) / 1.02;
+      ch[i] = lastSample * 3.5;
+    }
+    const src = ctx.createBufferSource();
+    src.buffer = ambientBuf;
+    src.loop = true;
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 600;
+    lp.Q.value = 0.7;
+    const ambientGain = ctx.createGain();
+    ambientGain.gain.value = 0.0;  // muted until enabled
+    src.connect(lp);
+    lp.connect(ambientGain);
+    ambientGain.connect(master);
+    src.start();
+    ambientSourceRef.current = src;
+    ambientGainRef.current = ambientGain;
+
+    return ctx;
+  }
+
+  // Event sound generators - created on demand, auto-disposed when the envelope
+  // completes. Throttled at the trigger call site to avoid pile-ups.
+  function playHorn() {
+    const ctx = audioCtxRef.current;
+    const master = masterGainRef.current;
+    if (!ctx || !master) return;
+    const now = ctx.currentTime;
+    // Two-tone honk: 320 Hz + 440 Hz square waves.
+    const osc1 = ctx.createOscillator();
+    const osc2 = ctx.createOscillator();
+    osc1.type = 'square';
+    osc2.type = 'square';
+    osc1.frequency.value = 320;
+    osc2.frequency.value = 440;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0, now);
+    g.gain.linearRampToValueAtTime(0.18, now + 0.02);
+    g.gain.setValueAtTime(0.18, now + 0.35);
+    g.gain.linearRampToValueAtTime(0, now + 0.45);
+    osc1.connect(g);
+    osc2.connect(g);
+    g.connect(master);
+    osc1.start(now);
+    osc2.start(now);
+    osc1.stop(now + 0.5);
+    osc2.stop(now + 0.5);
+  }
+
+  function playBrake() {
+    const ctx = audioCtxRef.current;
+    const master = masterGainRef.current;
+    if (!ctx || !master) return;
+    const now = ctx.currentTime;
+    const len = 0.3;
+    const buf = ctx.createBuffer(1, ctx.sampleRate * len, ctx.sampleRate);
+    const ch = buf.getChannelData(0);
+    for (let i = 0; i < ch.length; i++) ch[i] = Math.random() * 2 - 1;
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    // Band-pass around 2.5 kHz gives the characteristic squeal/skid timbre.
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = 2500;
+    bp.Q.value = 8;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0, now);
+    g.gain.linearRampToValueAtTime(0.25, now + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.001, now + len);
+    src.connect(bp);
+    bp.connect(g);
+    g.connect(master);
+    src.start(now);
+    src.stop(now + len);
+  }
+
+  // Wire triggers once - they read from refs so state changes don't recreate them.
+  useEffect(() => {
+    triggersRef.current = {
+      horn: () => {
+        if (!audioEnabledRef.current) return;
+        const now = performance.now();
+        if (now - lastHornAtRef.current < 2000) return;
+        lastHornAtRef.current = now;
+        playHorn();
+      },
+      brake: () => {
+        if (!audioEnabledRef.current) return;
+        const now = performance.now();
+        if (now - lastBrakeAtRef.current < 400) return;
+        lastBrakeAtRef.current = now;
+        playBrake();
+      },
+    };
+  }, []);
+
+  // Enable/volume changes: open the AudioContext lazily, then ramp ambient gain.
+  useEffect(() => {
+    if (audioEnabled) {
+      const ctx = ensureAudioContext();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+    }
+    const master = masterGainRef.current;
+    const ambientGain = ambientGainRef.current;
+    if (master) master.gain.value = audioVolume;
+    if (ambientGain) {
+      // Ambient layered at ~35% of master so it sits beneath event sounds.
+      ambientGain.gain.value = audioEnabled ? 0.35 : 0.0;
+    }
+  }, [audioEnabled, audioVolume]);
+
+  // Tear down the AudioContext on unmount.
+  useEffect(() => {
+    return () => {
+      const ctx = audioCtxRef.current;
+      try { ambientSourceRef.current?.stop(); } catch { /* already stopped */ }
+      ctx?.close().catch(() => {});
+      audioCtxRef.current = null;
+      masterGainRef.current = null;
+      ambientSourceRef.current = null;
+      ambientGainRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     const el = mountRef.current;
@@ -1172,7 +1350,7 @@ export function IntersectionScene3D({
           .reduce((mx, v) => Math.max(mx, v.dist + VPARAMS[v.type].len / 2), 0);
         const p    = VPARAMS[type];
         const dist = Math.max(tail + p.gap + p.len / 2, ARM - p.len / 2);
-        const veh: Veh = { id: nextVehId++, type, app, dist, speed: 0, obj, turn: null, waypoints: [], wpIdx: 0, rotOffset: vehRotOffset, yOffset: vehYOffset };
+        const veh: Veh = { id: nextVehId++, type, app, dist, speed: 0, obj, turn: null, waypoints: [], wpIdx: 0, rotOffset: vehRotOffset, yOffset: vehYOffset, stoppedFor: 0, honked: false };
         vehicles.push(veh);
         placeVehicle(veh);  // position immediately so vehicles appear on first render
       }
@@ -1290,7 +1468,22 @@ export function IntersectionScene3D({
           const dv    = v.speed - (isFinite(vLead) ? vLead : 0);
           const sStar = p.gap + Math.max(0, v.speed * 1.2 + v.speed * dv / (2 * Math.sqrt(p.accel * p.dec)));
           const acc   = p.accel * (1 - Math.pow(Math.max(v.speed, 0) / p.spd, 4) - Math.pow(sStar / Math.max(sGap, 0.01), 2));
+          // Audio: trigger brake squeal on hard deceleration while still moving fast enough to skid.
+          if (acc < -3 && v.speed > 1) triggersRef.current.brake();
           v.speed = Math.max(0, v.speed + acc * dt);
+
+          // Audio: queue-frustration honk. After ~8s stopped behind a leader, the
+          // vehicle honks once; the flag resets when it moves again.
+          if (v.speed < 0.5 && leader3D) {
+            v.stoppedFor += dt;
+            if (v.stoppedFor > 8 && !v.honked) {
+              v.honked = true;
+              triggersRef.current.horn();
+            }
+          } else {
+            v.stoppedFor = 0;
+            v.honked = false;
+          }
 
           const rawNext3D = v.dist - v.speed * dt;
 
@@ -1408,8 +1601,8 @@ export function IntersectionScene3D({
         const rawDt = Math.min((now - lastT) / 1000, 0.1);
         lastT = now;
         if (!pausedRef.current) {
-          // Match 2D canvas: speed=1 → 60 sim-seconds per real-second (sps=60 × speed)
-          let rem = Math.min(rawDt * speedRef.current * 60, 1.0);
+          // Match 2D canvas: speed=1 → 30 sim-seconds per real-second (sps=30 × speed)
+          let rem = Math.min(rawDt * speedRef.current * 30, 1.0);
           while (rem > 0) { const step = Math.min(rem, MAX_PHYS_DT); update(step); rem -= step; }
         }
         renderer.render(scene, camera);
@@ -1450,6 +1643,42 @@ export function IntersectionScene3D({
         ref={overlayRef}
         style={{ position: 'absolute', top: 10, left: 10, pointerEvents: 'none', zIndex: 1 }}
       />
+      {/* Audio controls overlay - top-right */}
+      <div
+        style={{
+          position: 'absolute', top: 10, right: 10, zIndex: 2,
+          display: 'flex', alignItems: 'center', gap: 8,
+          background: 'rgba(10, 15, 26, 0.7)', borderRadius: 8,
+          padding: '6px 10px', backdropFilter: 'blur(4px)',
+          color: 'white', fontSize: 11,
+        }}
+      >
+        <button
+          type="button"
+          onClick={() => setAudioEnabled(v => !v)}
+          aria-label={audioEnabled ? 'Mute simulation audio' : 'Unmute simulation audio'}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 4,
+            border: 0, background: 'transparent', color: 'white',
+            cursor: 'pointer', padding: 2, fontSize: 11,
+          }}
+        >
+          <span style={{ fontSize: 14, lineHeight: 1 }}>{audioEnabled ? '🔊' : '🔇'}</span>
+          {audioEnabled ? 'Sound on' : 'Sound off'}
+        </button>
+        {audioEnabled && (
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.05}
+            value={audioVolume}
+            onChange={e => setAudioVolume(Number(e.target.value))}
+            aria-label="Audio volume"
+            style={{ width: 70 }}
+          />
+        )}
+      </div>
     </div>
   );
 }

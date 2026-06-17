@@ -532,7 +532,7 @@ export function OnboardingWizard({ open, initialStep, onClose }: OnboardingWizar
                   {cam.name}
                 </span>
                 <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]" asChild>
-                  <Link to={`/cameras/${cam.id}`}>
+                  <Link to={`/intersections/${createdIntersectionId}/cameras/${cam.id}`}>
                     Open
                     <ExternalLink className="size-2.5 ml-1" />
                   </Link>

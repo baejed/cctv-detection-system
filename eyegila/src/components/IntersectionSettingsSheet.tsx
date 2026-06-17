@@ -24,6 +24,7 @@ import {
 import { Separator } from '@/components/ui/separator';
 import {
   Plus, Trash2, WifiOff, RefreshCw, Loader2, ScanSearch, ExternalLink,
+  TrendingUp, FileText,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -260,6 +261,21 @@ export function SettingsSheet({ inter, streets, cameras, rec, open, onClose, onR
               </span>
             )}
           </div>
+          {/* Quick-jump shortcuts */}
+          <div className="flex gap-2 mt-4">
+            <Button asChild size="sm" className="flex-1 h-8 text-xs gap-1.5">
+              <Link to={`/intersections/${inter.id}/timing`}>
+                <TrendingUp className="size-3.5" />
+                Open Signal Timing
+              </Link>
+            </Button>
+            <Button asChild size="sm" variant="secondary" className="flex-1 h-8 text-xs gap-1.5">
+              <Link to={`/intersections/${inter.id}/report`}>
+                <FileText className="size-3.5" />
+                View Report
+              </Link>
+            </Button>
+          </div>
         </div>
 
         {/* Scrollable body */}
@@ -363,7 +379,7 @@ export function SettingsSheet({ inter, streets, cameras, rec, open, onClose, onR
                         <p className="text-sm font-medium truncate">{cam.name}</p>
                         <p className="text-[10px] text-muted-foreground font-mono truncate">{cam.rtsp_url}</p>
                       </div>
-                      <Link to={`/cameras/${cam.id}`} className="shrink-0" title="Draw detection regions">
+                      <Link to={`/intersections/${inter.id}/cameras/${cam.id}`} className="shrink-0" title="Draw detection regions">
                         <Button size="sm" variant="ghost" className="h-7 px-2 text-[10px] gap-1">
                           <ExternalLink className="size-3" />
                           Regions

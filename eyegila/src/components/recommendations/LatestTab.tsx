@@ -308,7 +308,7 @@ export function LatestTab({ rec, onRegenerate, regenerating, onNotesSaved }: Pro
       <Separator />
 
       {/* Signal timing link */}
-      <Link to={`/timing/${rec.intersection_id}`} className="block">
+      <Link to={`/intersections/${rec.intersection_id}/timing`} className="block">
         <div className="rounded-md border border-border bg-card px-4 py-3 flex items-center justify-between hover:bg-muted/40 transition-colors">
           <div>
             <div className="text-xs font-medium">Signal timing &amp; simulation</div>

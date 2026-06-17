@@ -18,11 +18,11 @@ const PHASE_GROUPS: number[][] = [[0], [1], [2], [3]];
 const COLORS = ['#6366f1', '#f59e0b', '#10b981', '#ef4444'];
 const DIR_LABELS = ['N', 'E', 'S', 'W'];
 const SPEEDS = [
-  { label: '⅒×', sps: 6 },
-  { label: '¼×', sps: 15 },
-  { label: '1×',  sps: 60 },
-  { label: '5×',  sps: 300 },
-  { label: '10×', sps: 600 },
+  { label: '⅒×', sps: 3 },
+  { label: '¼×', sps: 8 },
+  { label: '1×',  sps: 30 },
+  { label: '5×',  sps: 150 },
+  { label: '10×', sps: 300 },
 ];
 const SIM_DURATION = 3600;
 const ARM_UNITS = 118;
@@ -822,7 +822,7 @@ export function IntersectionCanvas({
   const lastRtRef    = useRef<number>(0);
 
   const playingRef      = useRef(false);
-  const spsRef          = useRef(6);
+  const spsRef          = useRef(3);
   const modeRef         = useRef<'before' | 'after'>('after');
   const simTRef         = useRef(0);
   const pausePaintedRef = useRef(false);
@@ -870,7 +870,7 @@ export function IntersectionCanvas({
   idsRef.current = ids;
 
   const [playing, setPlaying] = useState(false);
-  const [sps, setSps] = useState(6);
+  const [sps, setSps] = useState(3);
   const [mode, setMode] = useState<'before' | 'after'>('after');
   const [isFullscreen, setIsFullscreen] = useState(false);
 
@@ -1198,7 +1198,7 @@ export function DualIntersectionCanvas({
   const rafRef          = useRef<number>(0);
   const lastRtRef       = useRef<number>(0);
   const playingRef      = useRef(false);
-  const spsRef          = useRef(6);
+  const spsRef          = useRef(3);
   const simTRef         = useRef(0);
   const frameRef        = useRef(0);
   const pausePaintedRef = useRef(false);
@@ -1253,7 +1253,7 @@ export function DualIntersectionCanvas({
 
   // Sync external paused / speed props into refs used by the RAF loop
   useEffect(() => { playingRef.current = !paused; }, [paused]);
-  useEffect(() => { spsRef.current = 60 * speed; }, [speed]);
+  useEffect(() => { spsRef.current = 30 * speed; }, [speed]);
 
   useEffect(() => {
     const series = (chunk.queue_series_after ?? chunk.queue_series_before) ?? {};

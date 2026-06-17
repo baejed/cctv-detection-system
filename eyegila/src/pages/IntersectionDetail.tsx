@@ -4,6 +4,9 @@ import { intersectionsApi } from '@/services/intersections';
 import { cctvsApi } from '@/services/cctvs';
 import { streetsApi } from '@/services/streets';
 import { recommendationsApi, type RecommendationResponse } from '@/services/recommendations';
+import { simulationApi, type SimulationResponse } from '@/services/simulation';
+import { IntersectionSummary } from '@/components/IntersectionSummary';
+import { IntersectionTabs } from '@/components/IntersectionTabs';
 import { AuthContext } from '@/context/AuthContext';
 import { triggerUnauthorized } from '@/services/api';
 import type { Intersection, CCTV, Street, AggregationRow } from '@/types';
@@ -11,7 +14,7 @@ import type { SSEStatus } from '@/hooks/useSSE';
 import { SettingsSheet } from '@/components/IntersectionSettingsSheet';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { ArrowLeft, MonitorPlay, TrendingUp, Settings2, RefreshCw, Loader2, RotateCcw } from 'lucide-react';
+import { ArrowLeft, Settings2, RefreshCw, Loader2, RotateCcw } from 'lucide-react';
 import { statusBucket, BUCKET_LABEL, BUCKET_BADGE_CLASS } from '@/components/recommendations/statusBucket';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
@@ -182,6 +185,7 @@ export function IntersectionDetailPage() {
   const [streets,      setStreets]      = useState<Street[]>([]);
   const [loading,      setLoading]      = useState(true);
   const [rec,          setRec]          = useState<RecommendationResponse | null>(null);
+  const [sim,          setSim]          = useState<SimulationResponse | null>(null);
   const [generating,   setGenerating]   = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -199,8 +203,12 @@ export function IntersectionDetailPage() {
       // error (including network failures) is absorbed here so that a missing
       // badge never blocks the rest of the page from loading. Auth errors are
       // already handled inside request() before the error is thrown.
-      const r = await recommendationsApi.latest(interId).catch(() => null);
+      const [r, s] = await Promise.all([
+        recommendationsApi.latest(interId).catch(() => null),
+        simulationApi.get(interId).catch(() => null),
+      ]);
       setRec(r);
+      setSim(s);
     } catch {
       toast.error('Failed to load intersection');
     } finally {
@@ -275,23 +283,7 @@ export function IntersectionDetailPage() {
           >
             <Settings2 className="size-4" />
           </button>
-          <div className="flex rounded-md border border-border overflow-hidden">
-            <button
-              type="button"
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-foreground text-background"
-            >
-              <MonitorPlay className="size-3" />
-              Live
-            </button>
-            <button
-              type="button"
-              onClick={() => navigate(`/timing/${id}`)}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs border-l border-border text-muted-foreground hover:text-foreground transition-colors"
-            >
-              <TrendingUp className="size-3" />
-              Timing
-            </button>
-          </div>
+          {id && <IntersectionTabs intersectionId={id} />}
         </div>
       </div>
 
@@ -309,6 +301,15 @@ export function IntersectionDetailPage() {
           />
         ))}
       </div>
+
+      {intersection && (
+        <IntersectionSummary
+          intersection={intersection}
+          streets={streets}
+          sim={sim}
+          rec={rec}
+        />
+      )}
 
       <SettingsSheet
         inter={intersection}

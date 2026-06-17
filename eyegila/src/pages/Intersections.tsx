@@ -19,6 +19,7 @@ import {
   Plus, Settings2, WifiOff, RefreshCw, Wifi,
   Loader2, TrendingUp, AlertTriangle,
   Camera, Rocket, LayoutGrid, Map as MapIcon, Users, MapPin, MonitorPlay,
+  Wrench, ArrowRight,
 } from 'lucide-react';
 import { statusBucket, BUCKET_LABEL, BUCKET_BADGE_CLASS } from '@/components/recommendations/statusBucket';
 import { cn } from '@/lib/utils';
@@ -150,7 +151,7 @@ function CameraGrid({ cameras }: { cameras: CCTV[] }) {
         return (
           <Link
             key={cam.id}
-            to={`/cameras/${cam.id}`}
+            to={`/intersections/${cam.intersection_id}/cameras/${cam.id}`}
             className="relative group bg-black block"
             style={{ aspectRatio: shown.length === 1 ? '16/9' : '3/2' }}
           >
@@ -319,7 +320,7 @@ function IntersectionCard({ inter, cameras, rec, streets, liveCount, onRefresh, 
               Live
             </Button>
           </Link>
-          <Link to={`/timing/${inter.id}`}>
+          <Link to={`/intersections/${inter.id}/timing`}>
             <Button size="sm" variant="outline" className="h-7 text-xs gap-1.5">
               <TrendingUp className="size-3" />
               Signal Timing
@@ -377,6 +378,21 @@ export function IntersectionsPage() {
     }
     return m;
   }, [sseData]);
+
+  const needsAction = useMemo(() => {
+    const items: { inter: Intersection; rec: RecommendationResponse; reason: string }[] = [];
+    for (const inter of intersections) {
+      const rec = recs.get(inter.id);
+      if (!rec || !rec.recommended) continue;
+      const signalized = inter.signal_status !== 'unsignalized';
+      const reason = signalized
+        ? (rec.timing_cycle != null ? `Re-time to ${rec.timing_cycle}s cycle` : 'Re-timing recommended')
+        : 'Install signal';
+      items.push({ inter, rec, reason });
+    }
+    items.sort((a, b) => (b.rec.recommended_confidence ?? 0) - (a.rec.recommended_confidence ?? 0));
+    return items.slice(0, 5);
+  }, [intersections, recs]);
 
   const heroStats = useMemo(() => {
     let vehicles = 0, pedestrians = 0;
@@ -595,6 +611,40 @@ export function IntersectionsPage() {
               </p>
             </CardContent>
           </Card>
+        </div>
+      )}
+
+      {!loading && needsAction.length > 0 && (
+        <div className="rounded-xl border border-border bg-card p-5">
+          <div className="flex items-center gap-2 mb-3">
+            <div className="size-7 rounded-md bg-amber-100 dark:bg-amber-950/40 flex items-center justify-center">
+              <Wrench className="size-3.5 text-amber-600 dark:text-amber-400" />
+            </div>
+            <div>
+              <h2 className="text-sm font-semibold">Needs action</h2>
+              <p className="text-[11px] text-muted-foreground">
+                Intersections with a warranted timing or signal change
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            {needsAction.map(({ inter, rec, reason }) => (
+              <Link
+                key={inter.id}
+                to={`/intersections/${inter.id}`}
+                className="flex items-center gap-3 rounded-md border border-border/60 px-3 py-2 text-xs hover:bg-muted/50 transition-colors"
+              >
+                <span className="flex-1 font-medium truncate">{inter.name}</span>
+                <span className="text-muted-foreground truncate">{reason}</span>
+                {rec.recommended_confidence != null && (
+                  <span className="font-mono tabular-nums text-muted-foreground/80 w-10 text-right">
+                    {Math.round(rec.recommended_confidence * 100)}%
+                  </span>
+                )}
+                <ArrowRight className="size-3 text-muted-foreground shrink-0" />
+              </Link>
+            ))}
+          </div>
         </div>
       )}
 

@@ -1,4 +1,4 @@
-import { useOutletContext, useSearchParams } from 'react-router-dom';
+import { Link, useOutletContext, useSearchParams } from 'react-router-dom';
 import { useState, useEffect, useMemo } from 'react';
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis,
@@ -13,7 +13,7 @@ import { intersectionsApi } from '@/services/intersections';
 import { streetsApi } from '@/services/streets';
 import type { AggregationRow, Intersection, Street } from '@/types';
 import type { SSEStatus } from '@/hooks/useSSE';
-import { Download, TrendingUp, Users, Clock, Car, Loader2 } from 'lucide-react';
+import { Download, TrendingUp, Users, Clock, Car, Loader2, FileText, ArrowRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 
@@ -214,12 +214,23 @@ export function ReportsPage() {
     <div className="flex flex-col gap-6">
 
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
         <h1 className="text-lg font-semibold tracking-tight text-green-950">Reports</h1>
-        <Button variant="outline" size="sm" onClick={exportCSV} disabled={!data.length}>
-          <Download data-icon="inline-start" />
-          Export CSV
-        </Button>
+        <div className="flex items-center gap-2 flex-wrap">
+          {selectedIntersection !== 'all' && (
+            <Button asChild variant="default" size="sm">
+              <Link to={`/intersections/${selectedIntersection}/report`}>
+                <FileText className="size-3.5 mr-1.5" />
+                View full report
+                <ArrowRight className="size-3 ml-1" />
+              </Link>
+            </Button>
+          )}
+          <Button variant="outline" size="sm" onClick={exportCSV} disabled={!data.length}>
+            <Download data-icon="inline-start" />
+            Export CSV
+          </Button>
+        </div>
       </div>
 
       {/* Date range selector */}
