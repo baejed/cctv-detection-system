@@ -10,6 +10,9 @@ the PRD §Synthetic data extensions deltas required by
   * **Intersection metadata sampling** — `IntersectionMeta(major_lanes,
     minor_lanes, posted_speed_kph, is_signalized, n_approaches)` drawn from
     Tagum-realistic priors.
+  * **Per-sample labels (T06)** — emit MUTCD W1–W4 + W-Local 2/3 warrant
+    results, Webster's critical v/c, and the precedence-derived intervention
+    class alongside every (flow_matrix, metadata) draw.
 
 The output flow matrix is shape ``(5, 96)`` (channels-first, matching
 `server.warrant_rules` and the PRD's CNN input convention):
@@ -27,17 +30,22 @@ The output flow matrix is shape ``(5, 96)`` (channels-first, matching
 Each value is the average hourly rate during a 15-min slot — the same
 convention `server.warrant_rules._hourly_volumes` expects when reducing slots
 to hourly volumes for MUTCD threshold evaluation.
-
-Per-sample warrant and intervention labels are added in T06 (next task);
-this module only emits raw flow matrices + metadata.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Mapping
 
 import numpy as np
 
-from server.warrant_rules import IntersectionMeta
+from server.intervention_rules import assign_intervention_label
+from server.local_warrants import (
+    DEFAULT_W_LOCAL_2_THRESHOLD,
+    DEFAULT_W_LOCAL_3_MIN_PCU,
+    _compute_w_local_2,
+    _compute_w_local_3,
+)
+from server.warrant_rules import IntersectionMeta, evaluate_all_mutcd
 
 
 N_SLOTS = 96
@@ -230,3 +238,183 @@ def sample_intersection_modifier(rng: np.random.Generator) -> np.ndarray:
     array so it slots directly into `generate_day_flow_matrix`.
     """
     return rng.uniform(0.8, 1.2, size=N_VEHICLE_CHANNELS).astype(np.float64)
+
+
+# ── Per-day labels (PRD T06) ─────────────────────────────────────────────────
+
+# Mirrors `server.webster.SATURATION_FLOW`. Duplicated as a module-local
+# constant so this generator stays import-free of the DB-backed webster module
+# (sqlalchemy / models). Update both together if the calibrated saturation
+# flow changes.
+SATURATION_FLOW_PCU_HR = 1400
+
+# Six warrants the multi-task head predicts: 4 MUTCD + 2 Tagum-local.
+WARRANT_NAMES_ALL: tuple[str, ...] = (
+    "w1", "w2", "w3", "w4", "w_local_2", "w_local_3",
+)
+
+# Ground-truth TOD chunks used in place of K-means-discovered chunks for
+# synthetic label generation. On parameter-realistic synthetic data, K-means
+# converges back to these regime boundaries; using them directly avoids
+# coupling label generation to a clustering step that is still in flight
+# (parent plan Phase 2).
+_TOD_CHUNK_NAMES: tuple[str, ...] = ("AM_RUSH", "MIDDAY", "PM_RUSH", "OFF_PEAK")
+_CHUNK_SLOT_INDICES: Mapping[str, tuple[int, ...]] = {
+    name: tuple(s for s in range(N_SLOTS) if regime_for_slot(s) == name)
+    for name in _TOD_CHUNK_NAMES
+}
+
+
+def _chunk_vehicle_total(flow_matrix: np.ndarray, slot_indices: tuple[int, ...]) -> float:
+    """Sum vehicle-channel slot values across a chunk.
+
+    Used as a linear measure for W-Local 2's concentration ratio; the slot-rate
+    units cancel out in the top-2 / total quotient.
+    """
+    if not slot_indices:
+        return 0.0
+    return float(flow_matrix[:N_VEHICLE_CHANNELS, list(slot_indices)].sum())
+
+
+def _chunk_avg_pcu_per_approach(
+    flow_matrix: np.ndarray, slot_indices: tuple[int, ...]
+) -> float:
+    """Average PCU/hr per approach over a chunk.
+
+    Each slot value is already an hourly rate, so the mean across the chunk's
+    (approach, slot) pairs equals the avg-PCU/hr per approach that W-Local 3
+    expects.
+    """
+    if not slot_indices:
+        return 0.0
+    return float(flow_matrix[:N_VEHICLE_CHANNELS, list(slot_indices)].mean())
+
+
+def evaluate_w_local_2_synthetic(
+    flow_matrix: np.ndarray,
+    threshold: float = DEFAULT_W_LOCAL_2_THRESHOLD,
+) -> tuple[bool, float]:
+    """W-Local 2 (peak concentration) on a synthetic (5, 96) flow matrix.
+
+    Wraps the DB-free `_compute_w_local_2` helper from `server.local_warrants`
+    with chunk totals derived from the ground-truth TOD chunks.
+    """
+    chunk_totals = [
+        _chunk_vehicle_total(flow_matrix, slots)
+        for slots in _CHUNK_SLOT_INDICES.values()
+    ]
+    return _compute_w_local_2(chunk_totals, threshold)
+
+
+def evaluate_w_local_3_synthetic(
+    flow_matrix: np.ndarray,
+    min_pcu: float = DEFAULT_W_LOCAL_3_MIN_PCU,
+) -> tuple[bool, float]:
+    """W-Local 3 (lights off) on a synthetic (5, 96) flow matrix.
+
+    Wraps the DB-free `_compute_w_local_3` helper. The third return value of
+    that helper (the per-chunk signal_off list) is dropped here; only `met`
+    and `confidence` participate in the multi-task warrant head's labels.
+    """
+    items = [
+        (name, _chunk_avg_pcu_per_approach(flow_matrix, slots))
+        for name, slots in _CHUNK_SLOT_INDICES.items()
+    ]
+    met, conf, _signal_off = _compute_w_local_3(items, min_pcu)
+    return met, conf
+
+
+def critical_vc_for_day(flow_matrix: np.ndarray) -> float:
+    """Webster's critical flow ratio Y at the worst-loaded TOD chunk.
+
+    Independent-phase plan with one phase per directional approach:
+        Y_chunk = Σ (avg-PCU/hr per approach in chunk) / SATURATION_FLOW
+    Returns the max Y across the four TOD chunks. Values > 0.90 trigger the
+    `road_widening` precedence in `assign_intervention_label`.
+    """
+    y_max = 0.0
+    for slot_indices in _CHUNK_SLOT_INDICES.values():
+        if not slot_indices:
+            continue
+        chunk = flow_matrix[:N_VEHICLE_CHANNELS, list(slot_indices)]
+        per_approach_avg = chunk.mean(axis=1)
+        y = float(per_approach_avg.sum() / SATURATION_FLOW_PCU_HR)
+        if y > y_max:
+            y_max = y
+    return y_max
+
+
+def evaluate_all_warrants(
+    flow_matrix: np.ndarray,
+    meta: IntersectionMeta,
+) -> dict[str, tuple[bool, float]]:
+    """Return all 6 warrant labels {name: (met, confidence)} for one sample."""
+    results: dict[str, tuple[bool, float]] = dict(evaluate_all_mutcd(flow_matrix, meta))
+    results["w_local_2"] = evaluate_w_local_2_synthetic(flow_matrix)
+    results["w_local_3"] = evaluate_w_local_3_synthetic(flow_matrix)
+    return results
+
+
+@dataclass(frozen=True)
+class LabeledSample:
+    """One (intersection × day) sample with the full multi-task label set.
+
+    Attributes
+    ----------
+    flow_matrix : np.ndarray
+        Shape ``(5, 96)``, channels-first; the CNN input.
+    meta : IntersectionMeta
+        Sampled intersection metadata; the CNN's late-fusion side input.
+    is_weekend : bool
+        Day-type marker (the flow_matrix already reflects the schedule).
+    warrants : dict[str, tuple[bool, float]]
+        Six entries keyed by `WARRANT_NAMES_ALL`, each (met, confidence).
+    critical_vc : float
+        Webster's max-chunk critical flow ratio for the day.
+    intervention : str
+        One of `INTERVENTION_CLASSES` ("signalize" / "road_widening" /
+        "timing_only") from `assign_intervention_label`.
+    """
+    flow_matrix: np.ndarray
+    meta: IntersectionMeta
+    is_weekend: bool
+    warrants: dict[str, tuple[bool, float]]
+    critical_vc: float
+    intervention: str
+
+
+def generate_labeled_sample(
+    rng: np.random.Generator,
+    meta: IntersectionMeta | None = None,
+    is_weekend: bool = False,
+    intersection_modifier: np.ndarray | None = None,
+) -> LabeledSample:
+    """Draw one fully-labeled (intersection × day) sample.
+
+    Samples missing metadata and per-intersection modifier from the
+    Tagum-realistic priors when not supplied, then runs the rule pipeline:
+    MUTCD W1–W4 + W-Local 2/3 → critical v/c → intervention precedence.
+    """
+    if meta is None:
+        meta = sample_intersection_meta(rng)
+    if intersection_modifier is None:
+        intersection_modifier = sample_intersection_modifier(rng)
+
+    flow_matrix = generate_day_flow_matrix(
+        rng, is_weekend=is_weekend, intersection_modifier=intersection_modifier,
+    )
+    warrants = evaluate_all_warrants(flow_matrix, meta)
+    critical_vc = critical_vc_for_day(flow_matrix)
+    intervention = assign_intervention_label(
+        critical_vc=critical_vc,
+        is_signalized=meta.is_signalized,
+        warrant_results=warrants,
+    )
+    return LabeledSample(
+        flow_matrix=flow_matrix,
+        meta=meta,
+        is_weekend=is_weekend,
+        warrants=warrants,
+        critical_vc=critical_vc,
+        intervention=intervention,
+    )
