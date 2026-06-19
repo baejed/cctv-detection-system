@@ -22,7 +22,7 @@ Legend: [ ] todo  [x] done  [~] in progress
 [x] T14  scripts/evaluate_multitask_cnn.py — evaluation + saliency CLI
 [x] T15  server/main.py — load recommender artifacts in lifespan
 [x] T16  server/routers/recommendations.py — switch _analyze to predict_recommendations
-[ ] T17  eyegila — surface `intervention` field in recommendation card
+[x] T17  eyegila — surface `intervention` field in recommendation card
 
 ----------------------------------------------------------
 Per-task notes
@@ -1881,3 +1881,105 @@ precedent on purpose):
   field in the recommendation card so operators see the
   CNN-recommended structural intervention alongside the existing
   warrant chips).
+
+2026-06-19 — T17 done:
+
+  Added:
+    - eyegila/src/types/index.ts
+        New exports:
+          InterventionClass = 'signalize' | 'road_widening' | 'timing_only'
+          Intervention { class: InterventionClass; confidence: number }
+        Recommendation gains `intervention: Intervention | null` so the
+        T16 wire field round-trips through the same shared type the
+        rest of the FE uses (RecommendationResponse extends this).
+
+    - eyegila/src/components/recommendations/LatestTab.tsx
+        InterventionBanner sub-component renders only when
+        rec.intervention != null. One banner per recommendation card,
+        placed between the camera-health line and the warrant
+        progress bars (high-prominence position; first thing the
+        operator reads after the camera-state alert).
+        Three class-keyed presentations driven by an
+        INTERVENTION_META lookup:
+          signalize     → TrafficCone icon  + emerald theme
+                          "Install traffic signal" / "Warrant met
+                          and intersection is currently unsignalized."
+          road_widening → Construction icon + amber theme
+                          "Widen approach lanes" / "Post-Webster
+                          critical v/c exceeds 0.90 - signal timing
+                          alone cannot clear demand."
+          timing_only   → Clock icon        + muted theme
+                          "Timing adjustments only" / "No structural
+                          change recommended - existing signal
+                          timing can absorb the demand."
+        Confidence rendered as "{pct}% confidence" right-aligned in
+        the banner header. pct = Math.round(confidence * 100).
+
+  Decisions:
+    - Banner sits ABOVE the warrant progress bars, not below them.
+      The whole point of the intervention head is to give the
+      operator a single decision-level recommendation rather than
+      making them read three warrant bars and infer one. Placing it
+      first matches the PRD's User Story #8 ("a single
+      recommendation per intersection that names the appropriate
+      structural intervention") and CTMO triage flow ("which
+      intersections need capex this quarter?").
+    - Conditional render (`rec.intervention && <...>`) so the
+      banner is invisible on:
+        (a) history rows (T16 chose not to persist intervention),
+        (b) the scalar-baseline path (returns intervention=None),
+        (c) any pre-CNN data already in the DB.
+      No empty-state placeholder - hiding the banner is the correct
+      behaviour when the CNN didn't run, since rendering "no
+      intervention available" would be more confusing than the
+      absence itself.
+    - Color theming mirrors existing BUCKET_BADGE_CLASS choices:
+      emerald = positive action, amber = significant capex
+      warning, muted = no-op. Operator already reads emerald/amber
+      semantics on the status badges in RecommendationsTable, so
+      the banner palette stays inside the FE's established color
+      vocabulary.
+    - Type lives in src/types/index.ts (the shared domain types
+      file) rather than in services/recommendations.ts. The PRD
+      describes intervention as a bundle-level field on the
+      Recommendation contract, not a service-specific transport
+      shape. Defining it next to Recommendation keeps the
+      RecommendationResponse extension trivial (it picks the field
+      up automatically via `extends Recommendation`).
+    - Confidence display uses Math.round + integer percent (not
+      .toFixed(2) like the warrant bars). The intervention is a
+      categorical decision; an integer percent matches the
+      "headline confidence" framing better than two-decimal
+      precision and keeps the banner header line short.
+    - RecommendationsTable was NOT updated. The PRD's frontend
+      ask is "render the new intervention field in the existing
+      recommendation card" - the card is the LatestTab. Adding an
+      intervention column to the table is a visual-redesign-tier
+      change that the PRD explicitly puts out of scope ("Frontend
+      redesign for intervention display ... visual redesign is
+      not [in scope]"). Operators see the intervention when they
+      click into a row, which matches the existing read flow
+      (row click → DetailSheet → LatestTab).
+    - HistoryTab was NOT updated. History rows never carry the
+      intervention field (server returns None on history reads
+      per T16's persistence decision); rendering an absent field
+      with placeholder text would be misleading. The Latest tab
+      remains the single surface for the intervention call.
+    - Icons sourced from lucide-react (TrafficCone, Construction,
+      Clock) - all three verified present in node_modules. No new
+      icon dependency added.
+
+  Verification:
+    - npx tsc --noEmit: clean (no new type errors).
+    - npx vitest run: 73 tests pass (2 files), same as pre-change.
+    - npx vite build: 2515 modules transformed, build OK.
+    - LatestTab renders the banner whenever rec.intervention is
+      present; legacy rec rows (intervention=null/undefined) skip
+      the banner cleanly. No new fetch / mutation - the field is
+      already on the wire from T16.
+
+  All 17 tasks in the PRD task list are now complete. The
+  remaining work surfaced by the PRD (multi-seed training run,
+  Optuna search, evaluation harness execution, Grad-CAM figure
+  generation, methods-chapter writing) is operational and
+  thesis-writing work, not module implementation.
