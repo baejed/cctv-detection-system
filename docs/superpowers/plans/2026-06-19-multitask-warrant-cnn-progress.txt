@@ -20,7 +20,7 @@ Legend: [ ] todo  [x] done  [~] in progress
 [x] T12  scripts/train_multitask_cnn.py — training CLI (5-seed harness, early stop)
 [x] T13  scripts/tune_multitask_cnn.py — Optuna HP search CLI
 [x] T14  scripts/evaluate_multitask_cnn.py — evaluation + saliency CLI
-[ ] T15  server/main.py — load recommender artifacts in lifespan
+[x] T15  server/main.py — load recommender artifacts in lifespan
 [ ] T16  server/routers/recommendations.py — switch _analyze to predict_recommendations
 [ ] T17  eyegila — surface `intervention` field in recommendation card
 
@@ -1590,3 +1590,79 @@ precedent on purpose):
   FastAPI lifespan alongside the existing warrant_artifacts so the
   recommender is reachable from request handlers without per-request
   checkpoint loading).
+
+2026-06-19 — T15 done:
+
+  Modified:
+    - server/main.py (lifespan)
+        Added a second try-block after the existing warrant_artifacts
+        load that calls server.ml.temporal_inference.load_recommender
+        (T10) and caches the resulting RecommenderArtifacts on
+        app.state.recommender_artifacts. The block mirrors the
+        warrant block exactly — broad except → logging.warning →
+        app.state.recommender_artifacts = None on any failure — so a
+        missing checkpoint never blocks server startup. The warrant
+        baseline continues to load independently regardless of
+        recommender state, satisfying user-story #13 (baseline must
+        remain callable during rollout).
+
+        Path resolution:
+          default = ml_dir / "temporal_cnn_model.pt"
+          override = env TEMPORAL_CNN_MODEL_PATH (full path string)
+        ml_dir was hoisted out of the warrant try-block so both loads
+        share the same resolved path without re-computing it; no
+        behaviour change to the warrant load.
+
+  Decisions:
+    - Path defaults to server/ml/temporal_cnn_model.pt to mirror the
+      existing server/ml/warrant_model.pt convention. T12's training
+      CLI writes per-seed checkpoints under runs/temporal_cnn/
+      temporal_cnn_seed{N}.pt; the operator either copies/symlinks
+      the chosen seed into server/ml/ or sets the env var. Both flows
+      work without code changes.
+    - Env-var override (TEMPORAL_CNN_MODEL_PATH) added because, unlike
+      the warrant artifact which is a single committed file, the
+      recommender checkpoint is a moving target during the multi-seed
+      training rollout. Tying production loading to an env var keeps
+      checkpoint promotion a 1-line config change rather than a copy
+      step. The warrant load was left without an env var to keep its
+      behaviour exactly as-was (no scope creep).
+    - Failure log says "falling back to warrant baseline" not just
+      "predictions disabled" — this signals to ops that the system
+      is still functional (via the scalar MLP) when the recommender
+      is missing, which is the explicit rollout-safety story in
+      user-story #13. T16 will branch on app.state.recommender_artifacts
+      to either call predict_recommendations or fall through to
+      predict_warrants.
+    - No new dependencies, no model files committed. server/ml/ is
+      intentionally still empty of the recommender checkpoint; the
+      lifespan's graceful-None path is the correct behaviour until a
+      trained checkpoint is promoted.
+    - Did NOT add a /metrics or /health line for recommender
+      availability in this task. Surfacing availability is a separate
+      ops concern; ops can inspect app.state.recommender_artifacts via
+      the existing admin paths if needed.
+
+  Manual smoke check:
+    - python -c "import server.main" → imports cleanly, FastAPI app
+      built, lifespan callable.
+    - load_recommender on a missing path raises FileNotFoundError
+      (verified) → confirms the warning branch in lifespan will fire
+      on a fresh checkout where no recommender checkpoint exists yet.
+    - Env-var resolution: with TEMPORAL_CNN_MODEL_PATH unset, the
+      resolved path is server/ml/temporal_cnn_model.pt; with it set
+      to a runs/temporal_cnn/temporal_cnn_seed0.pt path, that path is
+      used instead (verified by inspection).
+
+  Existing test suites still pass: 61 passed across
+    test_warrant_rules.py + test_intervention_rules.py +
+    test_temporal_warrant.py. Touching only the lifespan loader did
+    not regress the pure-function rule tests or the inference
+    contract test.
+
+  Next: T16 (server/routers/recommendations.py — switch the
+  _analyze helper from predict_warrants to predict_recommendations
+  so the new intervention field flows into the recommendation bundle.
+  Should branch on app.state.recommender_artifacts so the warrant
+  baseline still serves when no recommender checkpoint is loaded,
+  preserving user-story #13).
