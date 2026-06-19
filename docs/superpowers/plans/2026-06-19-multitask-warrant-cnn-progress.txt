@@ -9,7 +9,7 @@ Legend: [ ] todo  [x] done  [~] in progress
 [x] T01  warrant_rules.py — MUTCD W1–W4 pure-function evaluators
 [x] T02  tests/test_warrant_rules.py — unit tests for MUTCD evaluators
 [x] T03  intervention_rules.py — assign_intervention_label precedence function
-[ ] T04  tests/test_intervention_rules.py — unit tests for precedence
+[x] T04  tests/test_intervention_rules.py — unit tests for precedence
 [ ] T05  synthetic_traffic.py extension — pedestrian channel + intersection metadata
 [ ] T06  synthetic_traffic.py extension — per-sample warrant + intervention labels
 [ ] T07  tests/test_synthetic_traffic.py extension — schema + class balance
@@ -122,5 +122,70 @@ precedent on purpose):
 
   Next: T04 (tests/test_intervention_rules.py — unit tests for the three
   outcomes + pairwise-tie precedence checks).
-</content>
-</invoke>
+
+2026-06-19 — T04 done:
+
+  Added:
+    - tests/test_intervention_rules.py
+        24 pure-function tests, all passing. Coverage:
+
+        Module-level constants:
+          INTERVENTION_CLASSES is exactly the three locked labels
+          (signalize / road_widening / timing_only).
+          DEFAULT_WIDENING_VC_THRESHOLD == 0.90 (PRD value).
+
+        Helper _any_warrant_met:
+          true when any flag true; false for all-false and for {}.
+
+        Each of the three outcomes:
+          road_widening — vc > threshold (also dominates when already
+            signalized, confirming widening is unconditional w.r.t.
+            signal status).
+          signalize — unsignalized + any warrant met + vc low. Tested
+            parametrically over all six warrant names (w1–w4,
+            w_local_2, w_local_3) to confirm the rule reads `any`,
+            not a single warrant.
+          timing_only — fall-through paths: no warrant met; already
+            signalized even when a warrant is met; empty warrant dict.
+
+        Three pairwise-tie precedence checks (the PRD's required
+        coverage for this task):
+          widening + signalize eligible → widening wins
+          widening + timing_only eligible (only widening) → widening
+          signalize + timing_only eligible (only signalize) → signalize
+
+        Boundary at vc == threshold (strict `>` is locked):
+          vc == 0.90, no warrant → timing_only
+          vc == 0.90, warrant met + unsignalized → signalize
+            (precedence falls through because vc is not strictly above)
+          vc == 0.9000001 → road_widening
+
+        Custom threshold override:
+          caller-supplied widening_vc_threshold replaces the default
+          in both directions (lower threshold fires earlier; vc below
+          the custom threshold falls through to signalize/timing_only).
+
+        Return-value contract:
+          parametrized check that the function always returns a label
+          in INTERVENTION_CLASSES across all branches.
+
+  Decisions:
+    - Test style mirrors tests/test_warrant_rules.py and
+      tests/test_local_warrants.py — pure-function, no DB / FastAPI
+      fixtures, small `_warrants(**flags)` builder for terse fixtures.
+    - The strict-`>` boundary at vc == 0.90 is pinned explicitly in
+      two tests (one falls through to timing_only, one to signalize)
+      so any future loosening of the comparison would break both and
+      force a deliberate PRD update.
+    - The "signalize + timing_only tie" interpretation: there is no
+      true tie between signalize and timing_only — they are
+      mutually exclusive on whether (not is_signalized AND any
+      warrant). The "tie" test covers the case where only signalize
+      conditions are met (and not widening), which is the precedence
+      check the PRD intended.
+    - Also cleaned up two stray XML-ish tags (`</content>`,
+      `</invoke>`) at the end of this progress file left over from
+      an earlier write; not meaningful content.
+
+  Next: T05 (synthetic_traffic.py extension — pedestrian channel +
+  intersection metadata sampling per PRD §Synthetic data extensions).
