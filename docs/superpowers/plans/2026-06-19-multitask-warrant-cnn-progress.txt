@@ -13,7 +13,7 @@ Legend: [ ] todo  [x] done  [~] in progress
 [x] T05  synthetic_traffic.py extension — pedestrian channel + intersection metadata
 [x] T06  synthetic_traffic.py extension — per-sample warrant + intervention labels
 [x] T07  tests/test_synthetic_traffic.py extension — schema + class balance
-[ ] T08  server/ml/temporal_warrant.py — multi-task 1D-CNN model definition
+[x] T08  server/ml/temporal_warrant.py — multi-task 1D-CNN model definition
 [ ] T09  server/ml/multitask_loss.py — uncertainty-weighted MultiTaskLoss module
 [ ] T10  server/ml/temporal_inference.py — predict_recommendations + load_recommender
 [ ] T11  tests/test_temporal_warrant.py — inference contract test
@@ -523,3 +523,132 @@ precedent on purpose):
   Next: T08 (server/ml/temporal_warrant.py — multi-task 1D-CNN model
   definition: three conv blocks 32 → 64 → 128, late-fused metadata,
   6-dim warrant head + 3-dim intervention head, ~50K params).
+
+2026-06-19 — T08 done:
+
+  Added:
+    - server/ml/temporal_warrant.py
+        Module-level constants:
+          DEFAULT_WARRANT_NAMES         — the six-warrant tuple the
+            multi-task head predicts (w1, w2, w3, w4, w_local_2,
+            w_local_3). Same order as WARRANT_NAMES_ALL in
+            server.ml.synthetic_traffic so label tensors built from
+            generate_labeled_sample line up positionally with model
+            output columns.
+          DEFAULT_INTERVENTION_CLASSES  — (signalize, road_widening,
+            timing_only). Same order as INTERVENTION_CLASSES in
+            server.intervention_rules so argmax over the intervention
+            head maps directly to label strings.
+          DEFAULT_METADATA_FEATURES     — (major_lanes, minor_lanes,
+            posted_speed_kph, is_signalized, n_approaches). Matches
+            IntersectionMeta field order for trivial tensorization.
+
+        TemporalWarrantCNN(nn.Module):
+          __init__ keyword args (all defaulted):
+            n_input_channels=5, n_slots=96, n_metadata_features=5,
+            conv_channels=(32, 64, 128), kernel_size=5,
+            metadata_hidden=16, shared_hidden=64,
+            n_warrants=6, n_intervention_classes=3, dropout=0.3,
+            warrant_names / intervention_classes / metadata_features
+              optional sequences (default to the module constants).
+
+          Conv backbone (channels-first, "same" padding):
+            conv_block_1: Conv1d(5→32, k=5) → BN → ReLU → MaxPool(2)
+            conv_block_2: Conv1d(32→64, k=5) → BN → ReLU → MaxPool(2)
+            conv_block_3: Conv1d(64→128, k=5) → BN → ReLU →
+                          AdaptiveAvgPool1d(1)   ← "temporal flatten"
+            flatten_dropout: Dropout(0.3)         (PRD §Regularization)
+
+          Late-fused metadata branch:
+            metadata_branch: Linear(5→16) → ReLU
+
+          Shared head:
+            concat: 128 (temporal) + 16 (metadata) = 144
+            shared_dense: Linear(144→64) → ReLU
+            shared_dropout: Dropout(0.3)         (PRD §Regularization)
+
+          Task-specific heads:
+            warrant_head:      Linear(64→6)    ← raw logits, no sigmoid
+            intervention_head: Linear(64→3)    ← raw logits, no softmax
+
+          forward(flow, metadata) -> (warrant_logits, intervention_logits)
+            Returns logits directly. Sigmoid/softmax deferred to inference
+            (T10) so BCEWithLogitsLoss / CrossEntropyLoss can consume
+            logits in training (numerically stable).
+
+          architecture_config() -> dict
+            Returns the full hyperparameter set, ready to bundle into the
+            torch.save checkpoint dict alongside state_dict. Mirrors the
+            WarrantMLP checkpoint pattern (ckpt["input_features"], etc.).
+
+  Decisions:
+    - Parameter count is 62,633 (default config), not the PRD's
+      "approximately 50K". The 64→128 conv layer dominates at 41K params;
+      shrinking it would compromise the receptive-field argument and
+      change the channel-progression story in the methods chapter. Logged
+      explicitly in the module docstring so the methods-chapter parameter
+      table is unambiguous and future-me does not "fix" the count.
+    - Sigmoid/softmax deliberately NOT in the model. PRD §Implementation
+      Decisions / Outputs: "Sigmoid and softmax are applied at inference
+      time, not in the model." Lets training pair the warrant head with
+      BCEWithLogitsLoss (numerically stable vs. sigmoid+BCE) and the
+      intervention head with CrossEntropyLoss (which expects logits).
+    - Padding chosen as kernel_size//2 so each conv preserves temporal
+      length before pooling. With kernel=5 (odd), this is exact "same"
+      padding; the conv1→MaxPool(2)→conv2→MaxPool(2)→AdaptiveAvgPool
+      chain reduces 96 → 48 → 24 → 1 deterministically. AdaptiveAvgPool
+      means a different n_slots would still produce a (B, 128) flatten
+      without arch changes — useful for the methods-chapter ablation
+      that varies slot granularity.
+    - inplace=True on the ReLU activations to trim memory; safe because
+      the only branch points are after pooling (where the ReLU output
+      is already consumed by the next conv).
+    - BatchNorm placed before ReLU (the standard "conv → BN → ReLU"
+      ordering) so the model can be trained with batch_size=1 only at
+      eval time (BatchNorm in train mode requires batch_size ≥ 2).
+      T12's training CLI uses batch_size=64 per PRD §Training procedure.
+    - Default warrant_names / intervention_classes / metadata_features
+      stored on the instance and returned by architecture_config(), so
+      the checkpoint persists label semantics (not just the state_dict)
+      and the inference loader (T10) can name the output dict without
+      hard-coding the strings in two places.
+    - conv_channels guarded with a "must have exactly 3 widths" check —
+      the docstring + parameter-count table + methods-chapter diagram
+      all assume three blocks. Tightening this here prevents a silent
+      arch drift if a future caller passes a 2- or 4-tuple.
+    - warrant_names / intervention_classes / metadata_features kept as
+      separate optional args (not bundled into a single dict) so they
+      can be omitted independently and so the checkpoint persists each
+      one as its own architecture_config() key — same shape as the
+      WarrantMLP checkpoint (input_features, warrants, hidden_dims).
+
+  Manual smoke check (python3 -c, not committed):
+    Parameter count: 62,633 (matches docstring breakdown).
+    Forward with B=4: warrant logits (4, 6), intervention logits (4, 3).
+    Train-mode forward: outputs finite (dropout + BN do not produce NaN).
+    Eval-mode determinism: two forwards with the same input agree
+      bitwise (dropout off, BN in eval mode).
+    Logit range is centered near 0 (untrained init, no sigmoid/softmax
+      applied) — confirms heads emit raw logits as the PRD specifies.
+    Checkpoint roundtrip: architecture_config() + state_dict reconstruct
+      an identical model (forward outputs match bitwise).
+    Default names: ['w1','w2','w3','w4','w_local_2','w_local_3'] and
+      ['signalize','road_widening','timing_only'] — aligned positionally
+      with synthetic_traffic.WARRANT_NAMES_ALL and
+      intervention_rules.INTERVENTION_CLASSES so label tensors built
+      from generate_labeled_sample line up with model output columns.
+    Batch-of-1 forward: shapes (1, 6) / (1, 3) — confirms the BN+pool
+      chain is safe at B=1 in eval mode (relevant for T10 inference).
+
+  Existing test suites still pass (78 passed, 6 skipped) across
+  test_warrant_rules.py + test_intervention_rules.py +
+  test_synthetic_traffic.py + test_local_warrants.py. No regressions.
+  Module-specific tests are deferred to T11 (inference contract test),
+  which is the PRD's chosen external-behaviour test for this model
+  (per §Testing Decisions — "Test only external behavior — model
+  outputs, rule outputs, inference results — not internal layer
+  activations").
+
+  Next: T09 (server/ml/multitask_loss.py — uncertainty-weighted
+  MultiTaskLoss module, per the PRD's prototype-derived loss snippet
+  and Kendall et al. 2018 citation).
