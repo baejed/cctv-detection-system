@@ -11,7 +11,7 @@ Legend: [ ] todo  [x] done  [~] in progress
 [x] T03  intervention_rules.py — assign_intervention_label precedence function
 [x] T04  tests/test_intervention_rules.py — unit tests for precedence
 [x] T05  synthetic_traffic.py extension — pedestrian channel + intersection metadata
-[ ] T06  synthetic_traffic.py extension — per-sample warrant + intervention labels
+[x] T06  synthetic_traffic.py extension — per-sample warrant + intervention labels
 [ ] T07  tests/test_synthetic_traffic.py extension — schema + class balance
 [ ] T08  server/ml/temporal_warrant.py — multi-task 1D-CNN model definition
 [ ] T09  server/ml/multitask_loss.py — uncertainty-weighted MultiTaskLoss module
@@ -276,3 +276,121 @@ precedent on purpose):
 
   Next: T06 (synthetic_traffic.py extension — per-sample warrant +
   intervention labels emitted alongside the flow matrix).
+
+2026-06-19 — T06 done:
+
+  Added to server/ml/synthetic_traffic.py:
+    Module-level constants:
+      SATURATION_FLOW_PCU_HR = 1400 — mirrors server.webster's value;
+        duplicated locally so the synthetic generator stays free of the
+        DB-backed webster module's sqlalchemy/models imports.
+      WARRANT_NAMES_ALL = ("w1","w2","w3","w4","w_local_2","w_local_3")
+        — the six-warrant set the multi-task CNN head predicts.
+      _TOD_CHUNK_NAMES + _CHUNK_SLOT_INDICES — ground-truth TOD chunks
+        derived from regime_for_slot. Used in place of K-means-discovered
+        chunks for synthetic label generation, since on parameter-realistic
+        synthetic data K-means converges back to these regime boundaries;
+        avoids coupling T06 to parent-plan Phase 2 (K-means) which is not
+        yet implemented in-tree.
+
+    Pure helpers (DB-free):
+      _chunk_vehicle_total — Σ vehicle-channel slot values over chunk
+        (linear measure for W-Local 2's ratio).
+      _chunk_avg_pcu_per_approach — mean over (approach, slot) pairs;
+        each slot value is already an hourly rate so the mean equals
+        avg PCU/hr per approach, matching what _compute_w_local_3 expects.
+
+    Synthetic warrant evaluators (thin wrappers over the existing
+    server.local_warrants helpers — the W-Local 2/3 logic is reused per
+    PRD §Synthetic data extensions, not reimplemented):
+      evaluate_w_local_2_synthetic(flow_matrix, threshold=0.70)
+        → (met, confidence) via _compute_w_local_2.
+      evaluate_w_local_3_synthetic(flow_matrix, min_pcu=30.0)
+        → (met, confidence) via _compute_w_local_3 (drops signal_off list).
+
+    Webster's critical v/c per day:
+      critical_vc_for_day(flow_matrix) — max over the four TOD chunks of
+        Y_chunk = Σ (avg-PCU/hr per approach in chunk) / SATURATION_FLOW.
+        Independent-phase plan (one phase per directional approach), which
+        matches server.webster.compute_timing's default phase-grouping
+        convention. Worst chunk drives the road_widening precedence.
+
+    Top-level label pipeline:
+      evaluate_all_warrants(flow_matrix, meta) → {warrant_name: (met, conf)}
+        Six entries (MUTCD W1–W4 from server.warrant_rules.evaluate_all_mutcd
+        + the two synthetic W-Local wrappers above).
+
+      LabeledSample dataclass (frozen):
+        flow_matrix, meta, is_weekend, warrants, critical_vc, intervention.
+
+      generate_labeled_sample(rng, meta=None, is_weekend=False,
+                              intersection_modifier=None) → LabeledSample
+        Samples missing metadata + modifier from the Tagum priors, generates
+        the day's (5, 96) flow matrix, then runs MUTCD W1–W4 + W-Local 2/3
+        → critical_vc → assign_intervention_label (precedence rule from
+        server.intervention_rules).
+
+  Decisions:
+    - K-means TOD chunks substitute: PRD §Intervention label assignment
+      specifies Webster's-against-K-means-derived-chunks, but K-means
+      (parent-plan Phase 2) is not yet implemented in-tree. Used the
+      ground-truth regime boundaries from regime_for_slot instead. On
+      parameter-realistic synthetic data this is what K-means would
+      recover; T07 can re-test with real K-means chunks once Phase 2
+      lands without changing T06's label semantics.
+    - Saturation flow constant: duplicated as SATURATION_FLOW_PCU_HR rather
+      than imported from server.webster, because webster imports SQLAlchemy
+      Session and common.models. Keeping synthetic_traffic.py DB-free is
+      important for the training CLI (T12) which should not require a DB
+      connection. Documented duplication-coupling in the module docstring.
+    - W-Local 2/3 wrappers reach into server.local_warrants' underscore
+      helpers (_compute_w_local_2/3). This is intentional per that module's
+      own docstring ("Pure computation helpers (DB-free, fully unit-
+      testable)") and per PRD's "reuse W-Local 2 and W-Local 3 logic from
+      the existing server/local_warrants.py rules" wording.
+    - W-Local 3 signal_off list discarded: the multi-task warrant head
+      predicts only (met, confidence) per warrant; per-chunk signal-off
+      naming is a production-runtime concern, not a label.
+    - critical_vc uses chunk-averaged per-approach flows (not peak-slot
+      flows). Matches Webster's convention of averaging over the TOD chunk
+      that signal timing applies to. Peak-slot would over-fire widening on
+      noise.
+    - intervention rule called with critical_vc unconditionally. The
+      precedence (widening > signalize > timing_only) is already pinned
+      by T03/T04; T06 just supplies the inputs.
+
+  Manual smoke check (python3 -c, not committed):
+    Determinism: same seed → identical flow_matrix, warrants, critical_vc,
+      intervention.
+    Schema: flow_matrix.shape == (5, 96), warrants.keys() == WARRANT_NAMES_ALL,
+      each (met, conf) has conf ∈ [0, 1], intervention ∈ INTERVENTION_CLASSES,
+      critical_vc ≥ 0.
+    Forced widening: large intersection_modifier (×4) drives critical_vc
+      ~6.0 → intervention == "road_widening" (precedence rule fires).
+    Existing test suites: tests/test_warrant_rules.py and
+      tests/test_intervention_rules.py still 44/44 pass.
+
+  Known calibration mismatch (defers to T07 / generator tuning, not a
+  T06 bug):
+    Over a 500-sample weekday/weekend mix:
+      intervention distribution: 100% road_widening (PRD §Risks expects
+        <10%); 0% signalize / 0% timing_only.
+      warrant fire rates: w1=1.00, w2=1.00, w3=0.96, w4=0.91,
+        w_local_2=0.00, w_local_3=0.00.
+    Root cause: GROUND_TRUTH_REGIMES base AM_RUSH sums to 2100 PCU/hr
+      across 4 approaches → Y_peak ≈ 2100/1400 ≈ 1.5 (well above the 0.90
+      widening threshold) at the current ±20% intersection_modifier range.
+      Generator was calibrated for "peak demand at a busy intersection",
+      not "typical intersection across all 30". W-Local 2 also under-fires
+      because synthetic load is spread across AM+MIDDAY+PM (top-2
+      concentration ~59% vs. 70% threshold), and W-Local 3 never fires
+      because the OFF chunk's avg approach flow (~82 PCU/hr) stays above
+      the 30 PCU/hr lights-off floor.
+    Resolution path: T07's class-balance sanity test will codify the
+      expected per-class proportions; if it fails (it will, with the
+      current generator), the fix is to widen intersection_modifier
+      downward (e.g., 0.3–1.2) and/or trim the base regimes — pure
+      generator tuning. The label rules themselves are correct.
+
+  Next: T07 (tests/test_synthetic_traffic.py extension — determinism,
+  schema completeness, class-balance sanity check).
