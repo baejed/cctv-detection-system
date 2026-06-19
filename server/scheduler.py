@@ -37,7 +37,11 @@ async def analysis_loop(app) -> None:
             from server.routers.recommendations import run_generate_all
 
             with SessionLocal() as db:
-                results = run_generate_all(db, app.state.warrant_artifacts)
+                results = run_generate_all(
+                    db,
+                    app.state.warrant_artifacts,
+                    getattr(app.state, "recommender_artifacts", None),
+                )
             log.info("scheduler: generate-all complete - %d intersections updated", len(results))
         except asyncio.CancelledError:
             raise

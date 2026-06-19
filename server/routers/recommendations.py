@@ -9,17 +9,33 @@ from common import models
 from server.improvement import evaluate as evaluate_improvement
 from server.utils import get_current_user
 from server.rate_limit import limiter
+from server.warrant_rules import IntersectionMeta
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Optional
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 log = logging.getLogger("recommendations")
 
 router = APIRouter(prefix="/recommendations", tags=["Recommendations"])
 
 PEDESTRIAN_TYPES = {"pedestrian", "person"}
+
+# Temporal CNN input convention (mirrors server.ml.synthetic_traffic constants).
+_CNN_N_SLOTS = 96
+_CNN_N_VEHICLE_CHANNELS = 4
+_CNN_PED_CHANNEL_INDEX = 4
+_CNN_N_CHANNELS = 5
+_CNN_SLOT_MINUTES = 15
+
+
+class InterventionInfo(BaseModel):
+    """The new T16 bundle field: which structural intervention the CNN picks."""
+    name: str = Field(alias="class")
+    confidence: float
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class RecommendationResponse(BaseModel):
@@ -51,6 +67,7 @@ class RecommendationResponse(BaseModel):
     w_local_2_confidence: Optional[float] = None
     w_local_3_met: Optional[bool] = None
     w_local_3_confidence: Optional[float] = None
+    intervention: Optional[InterventionInfo] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -159,17 +176,122 @@ def _compute_features(intersection_id: int, db: Session) -> tuple[dict[str, floa
     return _compute_features_from_rows(rows), hour_start
 
 
-def _analyze(
-    intersection_id: int,
-    artifacts,
-    db: Session,
-) -> dict:
-    """Compute features for the most recent hour, run the model, return a flat dict
-    suitable for kwargs into `models.Recommendation(...)`.
+def _build_flow_matrix(intersection_id: int, db: Session) -> "np.ndarray":
+    """Build a (5, 96) flow matrix for the trailing 24 hours, matching the CNN
+    input convention (4 per-approach vehicle channels + 1 pedestrian channel,
+    96 fifteen-minute slots).
+
+    Streams are mapped to channels deterministically by ascending street_id,
+    capped at four streets. The fifth channel sums pedestrian counts across
+    all streets. Prefers `aggregation_summaries` for speed, falls back to the
+    live `detection_street_view` when the continuous aggregate is empty so a
+    just-rebooted system can still drive inference.
     """
-    if artifacts is None:
-        raise HTTPException(status_code=503, detail="Warrant model not available")
-    from server.ml.inference import predict_warrants  # local import keeps top of file clean
+    import numpy as np
+
+    now = datetime.now(timezone.utc)
+    window_end = now.replace(minute=0, second=0, microsecond=0)
+    window_start = window_end - timedelta(hours=24)
+
+    rows = db.execute(text("""
+        SELECT street_id, object_type, window_start, SUM(count)::int AS count
+        FROM aggregation_summaries
+        WHERE intersection_id = :iid
+          AND window_start >= :start
+          AND window_start <  :end
+        GROUP BY street_id, object_type, window_start
+    """), {"iid": intersection_id, "start": window_start, "end": window_end}).fetchall()
+
+    if not rows:
+        rows = db.execute(text("""
+            SELECT street_id,
+                   object_type,
+                   DATE_TRUNC('minute', time) AS window_start,
+                   COUNT(*)::int              AS count
+              FROM detection_street_view
+             WHERE intersection_id = :iid
+               AND time >= :start
+               AND time <  :end
+             GROUP BY street_id, object_type, DATE_TRUNC('minute', time)
+        """), {"iid": intersection_id, "start": window_start, "end": window_end}).fetchall()
+
+    veh_street_ids = sorted({r.street_id for r in rows if r.object_type not in PEDESTRIAN_TYPES})
+    street_to_channel = {sid: idx for idx, sid in enumerate(veh_street_ids[:_CNN_N_VEHICLE_CHANNELS])}
+
+    flow = np.zeros((_CNN_N_CHANNELS, _CNN_N_SLOTS), dtype=np.float32)
+    for r in rows:
+        wstart = r.window_start if r.window_start.tzinfo else r.window_start.replace(tzinfo=timezone.utc)
+        slot_minutes = int((wstart - window_start).total_seconds() // 60)
+        slot_idx = max(0, min(_CNN_N_SLOTS - 1, slot_minutes // _CNN_SLOT_MINUTES))
+        if r.object_type in PEDESTRIAN_TYPES:
+            flow[_CNN_PED_CHANNEL_INDEX, slot_idx] += float(r.count)
+        else:
+            ch = street_to_channel.get(r.street_id)
+            if ch is not None:
+                flow[ch, slot_idx] += float(r.count)
+    return flow
+
+
+def _intersection_to_meta(intersection: models.Intersection) -> IntersectionMeta:
+    """Project an Intersection row into the IntersectionMeta dataclass the CNN
+    expects. Lane count and posted speed are not yet stored on the schema; fall
+    back to the Tagum-realistic defaults the PRD calls out (major_lanes=2,
+    minor_lanes=2, posted_speed_kph=40) until they are surfaced through the
+    onboarding flow. n_approaches is clipped to the {3, 4} range the training
+    distribution covers.
+    """
+    status = (intersection.signal_status or "unsignalized").lower()
+    is_signalized = status in ("fixed_time", "actuated")
+    streets = getattr(intersection, "streets", None) or []
+    n_approaches = max(3, min(4, len(streets) or 4))
+    return IntersectionMeta(
+        major_lanes=2,
+        minor_lanes=2,
+        posted_speed_kph=40,
+        is_signalized=is_signalized,
+        n_approaches=n_approaches,
+    )
+
+
+def _empty_analysis(hour_start: datetime) -> dict:
+    return {
+        "warrant_1_met": False, "warrant_1_confidence": 0.0,
+        "warrant_2_met": False, "warrant_2_confidence": 0.0,
+        "warrant_4_met": False, "warrant_4_confidence": 0.0,
+        "recommended":            False,
+        "recommended_confidence": 0.0,
+        "major_volume": 0, "minor_volume": 0, "peds": 0, "vpm": 0, "phf": 1.0,
+        "hour_start": hour_start,
+        "notes": None,
+    }
+
+
+def _analyze(
+    intersection: models.Intersection,
+    warrant_artifacts,
+    recommender_artifacts,
+    db: Session,
+) -> tuple[dict, Optional[dict]]:
+    """Compute the recommendation analysis for `intersection`.
+
+    Returns ``(analysis_dict, intervention_info)``. ``analysis_dict`` is the
+    flat kwargs bundle for ``models.Recommendation(...)``. ``intervention_info``
+    is the additive PRD §API-contract field (``{"class", "confidence"}``) when
+    the temporal CNN path ran successfully, or ``None`` when the scalar baseline
+    served the request (no recommender loaded, recommender raised, or empty
+    data).
+
+    Dispatch:
+      * If ``recommender_artifacts`` is loaded → temporal CNN path
+        (predict_recommendations over a 24-hour flow matrix + intersection
+        metadata).
+      * Otherwise → scalar baseline path (predict_warrants over the 5 hand-
+        engineered scalars), preserving user-story #13 rollback safety.
+      * On any failure in the temporal path the function logs and falls
+        through to the baseline so a transient ML issue cannot brick the
+        recommendations API.
+    """
+    intersection_id = intersection.id
 
     t0 = time.perf_counter()
     features, hour_start = _compute_features(intersection_id, db)
@@ -180,24 +302,77 @@ def _analyze(
             "analyze intersection=%d hour=%s EMPTY_DATA (feat_ms=%.1f)",
             intersection_id, hour_start.isoformat(), elapsed_feat,
         )
-        return {
-            "warrant_1_met": False, "warrant_1_confidence": 0.0,
-            "warrant_2_met": False, "warrant_2_confidence": 0.0,
-            "warrant_4_met": False, "warrant_4_confidence": 0.0,
-            "recommended":            False,
-            "recommended_confidence": 0.0,
-            "major_volume": 0, "minor_volume": 0, "peds": 0, "vpm": 0, "phf": 1.0,
-            "hour_start": hour_start,
-            "notes": None,
-        }
+        return _empty_analysis(hour_start), None
+
+    if recommender_artifacts is not None:
+        try:
+            from server.ml.temporal_inference import predict_recommendations
+
+            flow_matrix = _build_flow_matrix(intersection_id, db)
+            meta = _intersection_to_meta(intersection)
+
+            t1 = time.perf_counter()
+            result = predict_recommendations(recommender_artifacts, flow_matrix, meta)
+            elapsed_pred = (time.perf_counter() - t1) * 1000
+
+            wp = result.warrant_probs
+            w1, w2, w4 = wp.get("w1", 0.0), wp.get("w2", 0.0), wp.get("w4", 0.0)
+            recommended = result.intervention != "timing_only"
+            conf = float(result.intervention_confidence)
+
+            log.info(
+                "analyze intersection=%d hour=%s mode=cnn "
+                "feat=(maj=%d min=%d ped=%d vpm=%d phf=%.2f) "
+                "prob=(w1=%.2f w2=%.2f w4=%.2f) "
+                "intervention=%s(conf=%.2f) "
+                "(feat_ms=%.1f pred_ms=%.1f)",
+                intersection_id, hour_start.isoformat(),
+                features["major_volume"], features["minor_volume"], features["peds"],
+                features["vpm"], features["phf"],
+                w1, w2, w4,
+                result.intervention, conf,
+                elapsed_feat, elapsed_pred,
+            )
+
+            analysis = {
+                "warrant_1_met":          w1 >= 0.5,
+                "warrant_1_confidence":   round(float(w1), 4),
+                "warrant_2_met":          w2 >= 0.5,
+                "warrant_2_confidence":   round(float(w2), 4),
+                "warrant_4_met":          w4 >= 0.5,
+                "warrant_4_confidence":   round(float(w4), 4),
+                "recommended":            recommended,
+                "recommended_confidence": round(conf, 4),
+                "major_volume":           int(features["major_volume"]),
+                "minor_volume":           int(features["minor_volume"]),
+                "peds":                   int(features["peds"]),
+                "vpm":                    int(features["vpm"]),
+                "phf":                    float(features["phf"]),
+                "hour_start":             hour_start,
+                "notes":                  None,
+            }
+            intervention_info = {
+                "class": result.intervention,
+                "confidence": round(conf, 4),
+            }
+            return analysis, intervention_info
+        except Exception:
+            log.exception(
+                "analyze intersection=%d cnn path failed - falling back to scalar baseline",
+                intersection_id,
+            )
+
+    if warrant_artifacts is None:
+        raise HTTPException(status_code=503, detail="Warrant model not available")
+    from server.ml.inference import predict_warrants  # local import keeps top of file clean
 
     t1 = time.perf_counter()
-    probs = predict_warrants(artifacts, features)
+    probs = predict_warrants(warrant_artifacts, features)
     elapsed_pred = (time.perf_counter() - t1) * 1000
     w1, w2, w4, rec = probs["w1"], probs["w2"], probs["w4"], probs["recommended"]
 
     log.info(
-        "analyze intersection=%d hour=%s "
+        "analyze intersection=%d hour=%s mode=mlp "
         "feat=(maj=%d min=%d ped=%d vpm=%d phf=%.2f) "
         "prob=(w1=%.2f w2=%.2f w4=%.2f rec=%.2f) "
         "(feat_ms=%.1f pred_ms=%.1f)",
@@ -224,7 +399,7 @@ def _analyze(
         "phf":                    float(features["phf"]),
         "hour_start":             hour_start,
         "notes":                  None,
-    }
+    }, None
 
 
 def _data_age_hours(hour_start: datetime | None) -> float | None:
@@ -239,6 +414,7 @@ def _rec_to_response(
     intersection_name: str,
     timing_cycle: int | None = None,
     timing_chunk: str | None = None,
+    intervention: Optional[dict] = None,
 ) -> dict:
     return {
         "id": rec.id,
@@ -269,6 +445,7 @@ def _rec_to_response(
         "w_local_2_confidence": rec.w_local_2_confidence,
         "w_local_3_met": rec.w_local_3_met,
         "w_local_3_confidence": rec.w_local_3_confidence,
+        "intervention": intervention,
     }
 
 
@@ -418,7 +595,12 @@ def generate_recommendation(
     if not intersection:
         raise HTTPException(status_code=404, detail="Intersection not found")
 
-    analysis = _analyze(intersection_id, request.app.state.warrant_artifacts, db)
+    analysis, intervention = _analyze(
+        intersection,
+        request.app.state.warrant_artifacts,
+        request.app.state.recommender_artifacts,
+        db,
+    )
 
     chunks = (
         db.query(models.TodChunk)
@@ -446,10 +628,15 @@ def generate_recommendation(
         intersection.name,
         timing_cycle=overall.cycle_length if overall else None,
         timing_chunk=peak_chunk,
+        intervention=intervention,
     )
 
 
-def run_generate_all(db: Session, artifacts) -> list[dict]:
+def run_generate_all(
+    db: Session,
+    warrant_artifacts,
+    recommender_artifacts=None,
+) -> list[dict]:
     """Run warrant analysis + timing + simulation for every intersection.
 
     Callable from the API endpoint and from the background scheduler.
@@ -462,7 +649,9 @@ def run_generate_all(db: Session, artifacts) -> list[dict]:
 
     for intersection in intersections:
         try:
-            analysis = _analyze(intersection.id, artifacts, db)
+            analysis, intervention = _analyze(
+                intersection, warrant_artifacts, recommender_artifacts, db,
+            )
 
             chunks = (
                 db.query(models.TodChunk)
@@ -488,6 +677,7 @@ def run_generate_all(db: Session, artifacts) -> list[dict]:
                 intersection.name,
                 timing_cycle=overall.cycle_length if overall else None,
                 timing_chunk=peak_chunk,
+                intervention=intervention,
             ))
             db.commit()
         except Exception:
@@ -505,7 +695,11 @@ def generate_all_recommendations(
     user: Annotated[models.User, Depends(get_current_user)],
 ):
     """Run warrant analysis + timing for every intersection (on-demand)."""
-    return run_generate_all(db, request.app.state.warrant_artifacts)
+    return run_generate_all(
+        db,
+        request.app.state.warrant_artifacts,
+        request.app.state.recommender_artifacts,
+    )
 
 
 class NotesUpdate(BaseModel):
