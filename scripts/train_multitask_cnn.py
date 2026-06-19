@@ -45,7 +45,7 @@ from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
 from server.intervention_rules import INTERVENTION_CLASSES
-from server.ml.multitask_loss import UncertaintyWeightedLoss
+from server.ml.multitask_loss import EqualWeightedLoss, UncertaintyWeightedLoss
 from server.ml.synthetic_traffic import (
     WARRANT_NAMES_ALL,
     generate_labeled_sample,
@@ -55,6 +55,11 @@ from server.ml.temporal_warrant import (
     DEFAULT_METADATA_FEATURES,
     TemporalWarrantCNN,
 )
+
+
+LOSS_TYPE_UNCERTAINTY = "uncertainty"
+LOSS_TYPE_EQUAL = "equal"
+LOSS_TYPE_CHOICES = (LOSS_TYPE_UNCERTAINTY, LOSS_TYPE_EQUAL)
 
 
 logger = logging.getLogger("train_multitask_cnn")
@@ -252,6 +257,29 @@ def _eval_loss(
     return total / max(n, 1)
 
 
+def _build_loss_module(
+    loss_type: str,
+    *,
+    init_log_sigma_warrant: float,
+    init_log_sigma_intervention: float,
+) -> nn.Module:
+    """Construct the multi-task combiner the training loop sums BCE + CE into.
+
+    `loss_type == "uncertainty"` is the production / PRD-default head (Kendall
+    et al. 2018). `loss_type == "equal"` is the equal-weighted ablation called
+    out in PRD §Implementation Decisions / Multi-task loss; T14's evaluation
+    harness compares the two via the `--ablation-dir` flag.
+    """
+    if loss_type == LOSS_TYPE_UNCERTAINTY:
+        return UncertaintyWeightedLoss(
+            init_log_sigma_warrant=init_log_sigma_warrant,
+            init_log_sigma_intervention=init_log_sigma_intervention,
+        )
+    if loss_type == LOSS_TYPE_EQUAL:
+        return EqualWeightedLoss()
+    raise ValueError(f"unknown loss_type: {loss_type!r}; expected one of {LOSS_TYPE_CHOICES}")
+
+
 def train_one_seed(
     seed: int,
     data: SyntheticTensors,
@@ -269,7 +297,8 @@ def train_one_seed(
     device: torch.device,
     init_log_sigma_warrant: float = 0.0,
     init_log_sigma_intervention: float = 0.0,
-) -> tuple[TemporalWarrantCNN, UncertaintyWeightedLoss, TrainMetrics, torch.Tensor]:
+    loss_type: str = LOSS_TYPE_UNCERTAINTY,
+) -> tuple[TemporalWarrantCNN, nn.Module, TrainMetrics, torch.Tensor]:
     """Train one TemporalWarrantCNN at the given seed; return best-val checkpoint pieces.
 
     ``init_log_sigma_warrant`` / ``init_log_sigma_intervention`` seed the
@@ -277,6 +306,12 @@ def train_one_seed(
     (0.0, 0.0) reproduce the original ``UncertaintyWeightedLoss()`` init
     used by the production training run. Optuna (T13) overrides these to
     tune loss-weight initialisation per PRD §Training procedure.
+
+    ``loss_type`` selects between the uncertainty-weighted production loss
+    and the equal-weighted ablation called out in the PRD. When equal, the
+    init_log_sigma_* kwargs are ignored (the equal-weighted loss has no
+    learnable sigma parameters); the checkpoint records the loss_type so
+    downstream tooling can tell uncertainty runs apart from ablation runs.
     """
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -293,7 +328,8 @@ def train_one_seed(
         n_intervention_classes=n_intervention_classes,
         dropout=dropout,
     ).to(device)
-    loss_module = UncertaintyWeightedLoss(
+    loss_module = _build_loss_module(
+        loss_type,
         init_log_sigma_warrant=init_log_sigma_warrant,
         init_log_sigma_intervention=init_log_sigma_intervention,
     ).to(device)
@@ -372,13 +408,19 @@ def train_one_seed(
         else:
             epochs_since_improve += 1
 
-        sigma_w, sigma_i = loss_module.sigmas()
-        logger.info(
-            "seed=%d epoch=%03d train=%.4f val=%.4f best=%.4f@%d "
-            "sigma_w=%.3f sigma_i=%.3f",
-            seed, epoch, train_loss, val_loss, best_val, best_epoch,
-            sigma_w, sigma_i,
-        )
+        if hasattr(loss_module, "sigmas"):
+            sigma_w, sigma_i = loss_module.sigmas()
+            logger.info(
+                "seed=%d epoch=%03d train=%.4f val=%.4f best=%.4f@%d "
+                "sigma_w=%.3f sigma_i=%.3f",
+                seed, epoch, train_loss, val_loss, best_val, best_epoch,
+                sigma_w, sigma_i,
+            )
+        else:
+            logger.info(
+                "seed=%d epoch=%03d train=%.4f val=%.4f best=%.4f@%d (equal-weighted)",
+                seed, epoch, train_loss, val_loss, best_val, best_epoch,
+            )
 
         if epochs_since_improve >= patience:
             logger.info("seed=%d early stop at epoch=%d (patience=%d)",
@@ -401,30 +443,34 @@ def train_one_seed(
 def save_checkpoint(
     path: Path,
     model: TemporalWarrantCNN,
-    loss_module: UncertaintyWeightedLoss,
+    loss_module: nn.Module,
     metrics: TrainMetrics,
     seed: int,
     intervention_classes: list[str],
     class_weights: torch.Tensor,
+    loss_type: str = LOSS_TYPE_UNCERTAINTY,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    sigma_w, sigma_i = loss_module.sigmas()
+    training_metadata: dict = {
+        "seed": seed,
+        "loss_type": loss_type,
+        "best_epoch": metrics.best_epoch,
+        "best_val_loss": metrics.best_val_loss,
+        "final_train_loss": metrics.final_train_loss,
+        "final_val_loss": metrics.final_val_loss,
+        "epochs_run": metrics.epochs_run,
+        "intervention_class_weights": {
+            name: float(w)
+            for name, w in zip(intervention_classes, class_weights.tolist())
+        },
+    }
+    if hasattr(loss_module, "sigmas"):
+        sigma_w, sigma_i = loss_module.sigmas()
+        training_metadata["sigma_warrant"] = sigma_w
+        training_metadata["sigma_intervention"] = sigma_i
     ckpt = model.architecture_config() | {
         "state_dict": model.state_dict(),
-        "training_metadata": {
-            "seed": seed,
-            "best_epoch": metrics.best_epoch,
-            "best_val_loss": metrics.best_val_loss,
-            "final_train_loss": metrics.final_train_loss,
-            "final_val_loss": metrics.final_val_loss,
-            "epochs_run": metrics.epochs_run,
-            "sigma_warrant": sigma_w,
-            "sigma_intervention": sigma_i,
-            "intervention_class_weights": {
-                name: float(w)
-                for name, w in zip(intervention_classes, class_weights.tolist())
-            },
-        },
+        "training_metadata": training_metadata,
     }
     torch.save(ckpt, path)
 
@@ -460,6 +506,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--device", type=str, default="cpu",
         help='Torch device, e.g. "cpu" or "cuda".',
+    )
+    parser.add_argument(
+        "--loss-type", type=str, default=LOSS_TYPE_UNCERTAINTY,
+        choices=LOSS_TYPE_CHOICES,
+        help=(
+            "Multi-task loss combiner. 'uncertainty' is the PRD-default Kendall "
+            "et al. 2018 head; 'equal' is the equal-weighted ablation consumed "
+            "by the T14 evaluation harness."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -523,11 +578,13 @@ def main(argv: list[str] | None = None) -> None:
             dropout=args.dropout,
             patience=args.patience,
             device=device,
+            loss_type=args.loss_type,
         )
         ckpt_path = args.output_dir / f"temporal_cnn_seed{seed}.pt"
         save_checkpoint(
             ckpt_path, model, loss_module, metrics, seed,
             intervention_classes, class_weights,
+            loss_type=args.loss_type,
         )
         logger.info(
             "saved seed=%d checkpoint → %s (best_val=%.4f @ epoch %d)",
