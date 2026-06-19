@@ -21,7 +21,7 @@ Legend: [ ] todo  [x] done  [~] in progress
 [x] T13  scripts/tune_multitask_cnn.py — Optuna HP search CLI
 [x] T14  scripts/evaluate_multitask_cnn.py — evaluation + saliency CLI
 [x] T15  server/main.py — load recommender artifacts in lifespan
-[ ] T16  server/routers/recommendations.py — switch _analyze to predict_recommendations
+[x] T16  server/routers/recommendations.py — switch _analyze to predict_recommendations
 [ ] T17  eyegila — surface `intervention` field in recommendation card
 
 ----------------------------------------------------------
@@ -1666,3 +1666,218 @@ precedent on purpose):
   Should branch on app.state.recommender_artifacts so the warrant
   baseline still serves when no recommender checkpoint is loaded,
   preserving user-story #13).
+
+2026-06-19 — T16 done:
+
+  Modified:
+    - server/routers/recommendations.py
+        New imports: server.warrant_rules.IntersectionMeta and
+        pydantic.Field (for the InterventionInfo alias).
+
+        Module-level constants mirroring server.ml.synthetic_traffic:
+          _CNN_N_SLOTS = 96, _CNN_N_VEHICLE_CHANNELS = 4,
+          _CNN_PED_CHANNEL_INDEX = 4, _CNN_N_CHANNELS = 5,
+          _CNN_SLOT_MINUTES = 15.
+
+        New pydantic sub-model:
+          class InterventionInfo(BaseModel):
+              name: str = Field(alias="class")
+              confidence: float
+              model_config = ConfigDict(populate_by_name=True)
+          `name` carries an alias because `class` is a Python keyword
+          and cannot be a field name; by_alias=True serialisation
+          emits the PRD's exact `{class, confidence}` shape.
+
+        RecommendationResponse gains:
+          intervention: Optional[InterventionInfo] = None
+        Optional so legacy reads from /recommendations and
+        /recommendations/history/{iid} — which never persisted an
+        intervention column — round-trip cleanly with None. Pydantic
+        coerces the dict from _rec_to_response into the sub-model on
+        the wire.
+
+        New helpers:
+          _build_flow_matrix(intersection_id, db) -> np.ndarray
+              Builds a (5, 96) float32 channels-first matrix over the
+              trailing 24 hours. Streets are mapped to the first four
+              vehicle channels by ascending street_id (deterministic);
+              the 5th channel sums pedestrian counts across all
+              streets. Mirrors the existing _compute_features data
+              source: prefers aggregation_summaries, falls back to
+              detection_street_view on empty windows. numpy is
+              imported lazily inside the helper to avoid paying the
+              import cost on the scalar-baseline path.
+          _intersection_to_meta(intersection) -> IntersectionMeta
+              Projects an Intersection row into the dataclass the CNN
+              expects. is_signalized is derived from signal_status
+              ("fixed_time"/"actuated" → True). The lane-count and
+              posted-speed fields are not on the schema yet; until
+              they surface through onboarding the helper falls back
+              to the Tagum-realistic defaults the PRD calls out
+              (major_lanes=2, minor_lanes=2, posted_speed_kph=40).
+              n_approaches is clipped to {3, 4} to match the training
+              distribution and defaults to 4 when streets is empty.
+          _empty_analysis(hour_start) -> dict
+              The empty-data analysis dict factored out of _analyze so
+              both branches return the same shape on zero-volume hours.
+
+        Rewrote _analyze with the new signature:
+          _analyze(
+              intersection: models.Intersection,
+              warrant_artifacts,
+              recommender_artifacts,
+              db,
+          ) -> tuple[dict, Optional[dict]]
+        Returns (analysis_dict, intervention_info_or_none).
+        Dispatch:
+          1. Compute the 5 hand-engineered scalars from the most
+             recent hour (still required for the DB columns and the
+             feat=(...) log line).
+          2. Zero-volume hour → _empty_analysis(...) + intervention=None.
+          3. recommender_artifacts present → build the flow matrix +
+             meta, call predict_recommendations, map
+             warrant_probs[w1|w2|w4] into warrant_{N}_{met,confidence},
+             set recommended = (intervention != "timing_only"),
+             recommended_confidence = intervention_confidence, and
+             return intervention_info = {"class": ..., "confidence":
+             ...}. predict_recommendations is imported lazily so the
+             torch import cost only fires on the CNN path.
+          4. On any CNN-path exception → log.exception(...) +
+             fall through to the scalar baseline. Keeps a transient
+             ML issue from bricking /recommendations.
+          5. Scalar baseline path is the prior implementation
+             verbatim (predict_warrants + scalar dict), now also
+             returning intervention=None so the caller's tuple
+             unpack works uniformly.
+
+        Log line gains a mode= tag (`mode=cnn` / `mode=mlp`) so the
+        operator can tell which path served a given request without
+        tailing two separate log lines. CNN path logs warrant probs
+        and intervention(conf=…); MLP path keeps the prior
+        prob=(w1=… w2=… w4=… rec=…) shape so existing log scrapers
+        don't break on the baseline.
+
+        _rec_to_response gains an optional intervention kwarg and
+        returns it in the response dict. Legacy callers
+        (update_notes, list_history, list_recommendations) pass
+        nothing and so the intervention key falls back to None,
+        which the RecommendationResponse sub-model accepts.
+
+        Both endpoint callers updated to the new signature:
+          generate_recommendation reads
+            request.app.state.recommender_artifacts alongside the
+            existing warrant_artifacts and passes (intersection, …)
+            instead of (intersection_id, …).
+          run_generate_all gains a recommender_artifacts kwarg
+            (defaulted to None so any non-FastAPI caller still
+            compiles), forwards it into _analyze, and threads the
+            returned intervention_info into _rec_to_response.
+          generate_all_recommendations forwards
+            request.app.state.recommender_artifacts into
+            run_generate_all.
+
+    - server/scheduler.py
+        analysis_loop passes
+          getattr(app.state, "recommender_artifacts", None)
+        as the new third arg to run_generate_all. getattr-with-default
+        is defensive against any test that constructs a bare FastAPI
+        app without going through the lifespan; production startup
+        always sets the attribute (T15).
+
+  Decisions:
+    - intervention is NOT persisted on the Recommendation table.
+      Adding an `intervention_class` column would have required an
+      Alembic-style ALTER and a backfill question (NULL vs. a
+      default) on existing rows. The PRD calls intervention "an
+      additive change … at the recommendation-bundle level" — it
+      does not require persistence — so the simplest scope-matching
+      implementation is: return it on the live API response when the
+      CNN runs, None on history reads and on the scalar-baseline
+      path. Persistence can be added later without changing the API
+      contract.
+    - Streets-to-channels mapping is ascending street_id, capped at
+      four streets. The CNN was trained on 4 vehicle channels and
+      arm_direction (N/S/E/W) is not reliably populated on every
+      intersection row in this repo (it's `unknown` by default).
+      street_id ordering is the only deterministic, always-available
+      key. n_approaches > 4 is silently truncated to 4 channels,
+      which matches the {3, 4}-clipped IntersectionMeta — both ends
+      of the pipeline see the same approach count.
+    - 24-hour window ends on the most recent closed hour
+      (now.replace(minute=0, …) − 24h, now.replace(…)). The CNN
+      was trained on intersection-day samples covering full 24-hour
+      windows; aligning the live window to closed-hour boundaries
+      avoids partially-filled trailing slots that would distort the
+      tail of the timeseries. Same boundary that _compute_features
+      already uses for the scalar features.
+    - IntersectionMeta defaults to the Tagum-realistic medians
+      (major_lanes=2, minor_lanes=2, posted_speed_kph=40) rather
+      than the lowest or highest plausible values. PRD §Synthetic
+      data extensions samples these with "Tagum-realistic
+      probabilities" — the medians are the safest fallback until
+      onboarding surfaces the real values. is_signalized is the
+      only meta field with ground truth from the DB and it is
+      taken from intersection.signal_status verbatim.
+    - Exception in the CNN path is swallowed and logged, NOT
+      re-raised, so the scalar baseline still serves. The PRD's
+      user-story #13 ("baseline must remain callable during the
+      rollout … for comparison and rollback safety") is the
+      strongest contract on this path; treating a torch import
+      error or a checkpoint-arch mismatch as a hard 500 would
+      defeat that rollback safety. log.exception(...) captures the
+      full traceback for the ops view.
+    - InterventionInfo uses `populate_by_name=True` so both call
+      sites (passing a dict with a `class` key, or constructing it
+      from `InterventionInfo(name=..., confidence=...)`) work.
+      Constructing from dict is what the router currently does;
+      the kwarg form is left available for future tests.
+    - Log line was widened with mode={cnn,mlp} rather than split
+      into two separate logger names. The single-log-line pattern
+      matches the rest of recommendations.py (status_code + ms
+      + features inline) and a single grep over `analyze
+      intersection=N` reads both paths.
+    - The /recommendations history endpoint and list_recommendations
+      DO NOT surface intervention. The DB doesn't store it, so
+      returning a stale or None value on history rows would be
+      misleading. _rec_to_response's intervention kwarg defaults to
+      None and all the history callers omit it; only freshly
+      generated recommendations (post-generate, post-generate-all)
+      carry the CNN's intervention class on the wire.
+    - Did NOT add w3 / w_local_2 / w_local_3 mapping into the
+      bundle. The schema's warrant_{1,2,4}_{met,confidence} columns
+      cover the existing four MUTCD warrants in the response; w3 is
+      not in the schema and w_local_{2,3} are already populated by
+      the local_warrants pipeline that runs after _analyze. The
+      CNN's predictions for those warrants are computed but not
+      surfaced — the local_warrants rules remain authoritative for
+      the local-warrant fields, consistent with the PRD's
+      "production source while the warrant baseline remains
+      callable" framing.
+
+  Manual smoke check (no DB, Python smoke):
+    - _intersection_to_meta(FakeSignalized) →
+        IntersectionMeta(major_lanes=2, minor_lanes=2,
+        posted_speed_kph=40, is_signalized=True, n_approaches=4).
+    - _intersection_to_meta(FakeUnsignalized, streets=[]) →
+        is_signalized=False, n_approaches=4 (default for missing).
+    - _empty_analysis(now) returns the zero-volume dict with
+        recommended=False, major_volume=0, hour_start=now.
+    - RecommendationResponse(...intervention={'class':
+        'road_widening', 'confidence': 0.81})
+        .model_dump(by_alias=True)['intervention'] →
+        {'class': 'road_widening', 'confidence': 0.81}.
+    - RecommendationResponse(...no intervention...) → intervention
+        is None (legacy reads round-trip cleanly).
+
+  Existing test suites still pass: 106 passed, 13 skipped across
+    test_warrant_rules.py + test_intervention_rules.py +
+    test_synthetic_traffic.py + test_temporal_warrant.py +
+    test_local_warrants.py + test_recommendations.py. The
+    test_regression_generate_all_commits_per_intersection
+    source-inspection regression test in test_stress.py still passes
+    — db.commit() remains inside the try block in run_generate_all.
+
+  Next: T17 (eyegila frontend — surface the new `intervention`
+  field in the recommendation card so operators see the
+  CNN-recommended structural intervention alongside the existing
+  warrant chips).
