@@ -1,0 +1,75 @@
+Progress log for `2026-06-19-multitask-warrant-cnn-prd.md`
+==========================================================
+
+Task list (derived from PRD §Module changes + §Testing decisions, ordered by
+dependency: pure rules → synthetic data → ML model → training/eval → wiring).
+
+Legend: [ ] todo  [x] done  [~] in progress
+
+[x] T01  warrant_rules.py — MUTCD W1–W4 pure-function evaluators
+[x] T02  tests/test_warrant_rules.py — unit tests for MUTCD evaluators
+[ ] T03  intervention_rules.py — assign_intervention_label precedence function
+[ ] T04  tests/test_intervention_rules.py — unit tests for precedence
+[ ] T05  synthetic_traffic.py extension — pedestrian channel + intersection metadata
+[ ] T06  synthetic_traffic.py extension — per-sample warrant + intervention labels
+[ ] T07  tests/test_synthetic_traffic.py extension — schema + class balance
+[ ] T08  server/ml/temporal_warrant.py — multi-task 1D-CNN model definition
+[ ] T09  server/ml/multitask_loss.py — uncertainty-weighted MultiTaskLoss module
+[ ] T10  server/ml/temporal_inference.py — predict_recommendations + load_recommender
+[ ] T11  tests/test_temporal_warrant.py — inference contract test
+[ ] T12  scripts/train_multitask_cnn.py — training CLI (5-seed harness, early stop)
+[ ] T13  scripts/tune_multitask_cnn.py — Optuna HP search CLI
+[ ] T14  scripts/evaluate_multitask_cnn.py — evaluation + saliency CLI
+[ ] T15  server/main.py — load recommender artifacts in lifespan
+[ ] T16  server/routers/recommendations.py — switch _analyze to predict_recommendations
+[ ] T17  eyegila — surface `intervention` field in recommendation card
+
+----------------------------------------------------------
+Per-task notes
+----------------------------------------------------------
+
+2026-06-19 — T01 + T02 done (bundled because the PRD pairs each rule module
+with its unit test suite under "Testing decisions"):
+
+  Added:
+    - server/warrant_rules.py
+        IntersectionMeta dataclass (major_lanes, minor_lanes,
+        posted_speed_kph, is_signalized, n_approaches).
+        Helpers: _hourly_volumes (96-slot → 24-hour reduction),
+        _major_minor_axes (volume-based NS-vs-EW axis assignment),
+        _speed_factor (0.70 if posted_speed_kph ≤ 40, MUTCD §4C.01).
+        MUTCD threshold tables for Table 4C-1 Conditions A and B as
+        lane-count-keyed dicts.
+        evaluate_w1 — eight-hour vehicular volume (Cond A OR Cond B,
+        ≥ 8 qualifying hours, confidence = hours/8).
+        evaluate_w2 — four-hour vehicular volume, piecewise-linear fit
+        to Figure 4C-1 with minor-lane-dependent floor + intercept.
+        evaluate_w3 — peak-hour curve ~150 vph above W2.
+        evaluate_w4 — pedestrian volume (4-hour ≥ 107 OR 1-hour ≥ 133),
+        low-speed factor applied to both thresholds.
+        evaluate_all_mutcd — aggregate API returning
+        {warrant_name: (met, confidence)}.
+
+    - tests/test_warrant_rules.py
+        20 pure-function tests covering helpers + each warrant's
+        triggered / not-triggered / low-speed / lane-count behaviour
+        + aggregate API. All 20 pass (verified locally on Python 3.12).
+
+  Decisions:
+    - File placed in server/ (next to local_warrants.py) rather than
+      server/ml/ — these are rule evaluators, not ML code, and they
+      mirror the existing W-Local 1/2/3 module's layout.
+    - flow_matrix convention chosen: (5, 96), channels-first, with
+      channel 4 = pedestrian crossing volume. Matches PRD §Implementation
+      Decisions / Algorithmic centerpiece / Inputs.
+    - Each slot value is treated as a PCU/hr rate (matching the existing
+      synthetic-traffic generator's slot semantics from the parent plan);
+      hourly volume = mean of 4 slot rates.
+    - Figure 4C-1 and 4C-3 are encoded as piecewise-linear fits with
+      lane-dependent floor/intercept rather than as digitized lookup
+      tables, to keep the module dependency-free. Methods chapter will
+      cite the figures and document the fit constants.
+
+  Next: T03 (intervention_rules.py — assign_intervention_label).
+</content>
+</invoke>

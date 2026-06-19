@@ -13,6 +13,7 @@ import { recommendationsApi, type RecommendationResponse } from '@/services/reco
 import { IntersectionSummary } from '@/components/IntersectionSummary';
 import { IntersectionTabs } from '@/components/IntersectionTabs';
 import { ARM_SHORT, GanttDiagram, LosBadge } from '@/components/signal-timing-viz';
+import { selectPeakChunk } from '@/lib/simulation';
 import type { SignalTimingPayload } from '@/services/intersections';
 import { DualIntersectionCanvas, type VehicleType, type TypeFractions } from '@/components/IntersectionCanvas';
 import { IntersectionScene3D } from '@/components/IntersectionScene3D';
@@ -521,9 +522,7 @@ export function SignalTimingPage() {
 
   // For charts that require a single chunk (queue, simulation, Gantt),
   // fall back to the highest-volume chunk when "All" is selected.
-  const peakChunk = displayData
-    ? [...displayData.chunks].sort((a, b) => b.volume_pcu_hr - a.volume_pcu_hr)[0] ?? null
-    : null;
+  const peakChunk = selectPeakChunk(displayData);
   const activeChunk = displayChunk ?? peakChunk;
   // As soon as the user picks a range on the bar chart, that rate feeds the 3D
   // visual - no need to wait for the Analyse button. Visual-only: analytical

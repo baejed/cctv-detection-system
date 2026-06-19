@@ -26,6 +26,7 @@ Arrival model justification (Tagum City context):
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
@@ -357,3 +358,77 @@ def generate_timing_for_recommendation(
     ))
 
     return chunk_results, peak_chunk_name
+
+
+# ── Read-side: "latest timing for an intersection" ─────────────────────────
+
+@dataclass
+class TimingRowWithFlows:
+    """A persisted TimingRecommendation row paired with its measured flows.
+
+    measured_flows is keyed by street_id and reports PCU/hr per approach;
+    None when no matching TodChunk exists for the row's chunk_name (e.g.
+    for the synthesised "overall" row).
+    """
+    row: TimingRecommendation
+    measured_flows: dict | None
+
+
+def _latest_recommendation_id(db: Session, intersection_id: int) -> int | None:
+    rec = db.execute(text("""
+        SELECT id FROM recommendations
+         WHERE intersection_id = :iid
+         ORDER BY generated_at DESC
+         LIMIT 1
+    """), {"iid": intersection_id}).fetchone()
+    return rec.id if rec else None
+
+
+def get_latest_timing(
+    db: Session,
+    intersection: Intersection,
+) -> tuple[list[TimingRowWithFlows], dict | None]:
+    """Return latest timing rows for an intersection + the assumptions used.
+
+    Empty list (and None assumptions) when no recommendation has been generated.
+    Assumptions are intersection-wide and the same for every row; emitted once
+    so the caller doesn't have to deduplicate.
+    """
+    latest_rec_id = _latest_recommendation_id(db, intersection.id)
+    if latest_rec_id is None:
+        return [], None
+
+    rows = (
+        db.query(TimingRecommendation)
+        .filter_by(recommendation_id=latest_rec_id)
+        .order_by(TimingRecommendation.chunk_name)
+        .all()
+    )
+    if not rows:
+        return [], None
+
+    pce_map = resolve_pce(db, intersection.id)
+    chunks_by_name = {
+        c.name: c
+        for c in db.query(TodChunk).filter_by(intersection_id=intersection.id).all()
+    }
+    pce_tier = rows[0].pce_tier_used
+    assumptions = {
+        "saturation_flow_pcu_hr": SATURATION_FLOW,
+        "lost_time_per_phase_s":  intersection.lost_time_per_phase or 4,
+        "all_red_clearance_s":    intersection.all_red_clearance or 3,
+        "min_cycle_s":            intersection.min_cycle_length or 40,
+        "max_cycle_s":            intersection.max_cycle_length or 120,
+        "pce_tier":               pce_tier,
+    }
+
+    result: list[TimingRowWithFlows] = []
+    for row in rows:
+        chunk = chunks_by_name.get(row.chunk_name)
+        flows: dict | None = None
+        if chunk:
+            raw = pcu_flow_per_street(db, intersection.id, chunk, pce_map)
+            flows = {str(k): round(v, 1) for k, v in raw.items()} if raw else None
+        result.append(TimingRowWithFlows(row=row, measured_flows=flows))
+
+    return result, assumptions

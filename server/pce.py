@@ -89,6 +89,46 @@ def resolve_pce(db: Session, intersection_id: int) -> dict[str, dict]:
     return result
 
 
+def set_override(
+    db: Session,
+    intersection_id: int,
+    vehicle_type: str,
+    pce_value: float,
+) -> None:
+    """Upsert an admin PCE override. Caller commits."""
+    existing = (
+        db.query(PceOverride)
+        .filter_by(intersection_id=intersection_id, vehicle_type=vehicle_type)
+        .first()
+    )
+    if existing:
+        existing.pce_value = pce_value
+    else:
+        db.add(PceOverride(
+            intersection_id=intersection_id,
+            vehicle_type=vehicle_type,
+            pce_value=pce_value,
+        ))
+
+
+def delete_override(
+    db: Session,
+    intersection_id: int,
+    vehicle_type: str,
+) -> bool:
+    """Remove an admin PCE override. Returns False if no override existed.
+    Caller commits."""
+    override = (
+        db.query(PceOverride)
+        .filter_by(intersection_id=intersection_id, vehicle_type=vehicle_type)
+        .first()
+    )
+    if not override:
+        return False
+    db.delete(override)
+    return True
+
+
 def calibrate_pce(db: Session, intersection_id: int) -> dict[str, float]:
     """Compute calibrated PCE from 7-day aggregation_summaries and persist.
 

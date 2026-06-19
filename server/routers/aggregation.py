@@ -11,6 +11,7 @@ from sqlalchemy import text
 
 from common import models
 from common.database import SessionLocal
+from server.aggregation_source import build_history_query
 from server.utils import get_bearer_token, get_current_user, get_user_from_token
 
 logger = logging.getLogger(__name__)
@@ -126,76 +127,23 @@ def get_history(
     bucket: Literal["hour", "day", "week"] = "day",
     user: models.User = Depends(get_current_user),
 ):
-    """Return aggregation_summaries for a date range, bucketed by hour/day/week."""
-    _TRUNC_ALLOWLIST = {"hour": "hour", "day": "day", "week": "week"}
-    trunc = _TRUNC_ALLOWLIST[bucket]
+    """Return aggregation history for a date range, bucketed by hour/day/week.
 
-    conditions = ["a.window_start >= :start", "a.window_start < :end"]
-    params: dict = {"start": start, "end": end}
-
-    if intersection_id is not None:
-        conditions.append("a.intersection_id = :intersection_id")
-        params["intersection_id"] = intersection_id
-    if street_id is not None:
-        conditions.append("a.street_id = :street_id")
-        params["street_id"] = street_id
-    if direction is not None:
-        conditions.append("a.direction = :direction")
-        params["direction"] = direction
-
-    where = " AND ".join(conditions)
-
-    # For recent ranges (≤2 days, hour bucket) query the live view directly
-    # so data is real-time. For longer ranges use the continuous aggregate
-    # which is pre-computed and fast over large windows.
-    use_live = (bucket == "hour" and (end - start).total_seconds() <= 172_800)
-
-    if use_live:
-        conditions_live = [c.replace("a.window_start", "a.time") for c in conditions]
-        where_live = " AND ".join(conditions_live)
-        query = f"""
-            SELECT
-                a.intersection_id,
-                a.intersection_name,
-                a.street_id,
-                a.direction,
-                a.object_type,
-                DATE_TRUNC('{trunc}', a.time)  AS window_start,
-                COUNT(*)::int                   AS count
-            FROM detection_street_view a
-            WHERE {where_live}
-            GROUP BY
-                a.intersection_id, a.intersection_name, a.street_id, a.direction, a.object_type,
-                DATE_TRUNC('{trunc}', a.time)
-            ORDER BY
-                DATE_TRUNC('{trunc}', a.time),
-                a.intersection_id, a.street_id, a.direction, a.object_type
-        """
-    else:
-        query = f"""
-            SELECT
-                a.intersection_id,
-                i.name          AS intersection_name,
-                a.street_id,
-                a.direction,
-                a.object_type,
-                DATE_TRUNC('{trunc}', a.window_start) AS window_start,
-                SUM(a.count)::int                      AS count
-            FROM aggregation_summaries a
-            JOIN intersections i ON i.id = a.intersection_id
-            WHERE {where}
-            GROUP BY
-                a.intersection_id, i.name, a.street_id, a.direction, a.object_type,
-                DATE_TRUNC('{trunc}', a.window_start)
-            ORDER BY
-                DATE_TRUNC('{trunc}', a.window_start),
-                a.intersection_id, a.street_id, a.direction, a.object_type
-        """
+    Source (live view vs continuous aggregate) is picked by
+    server.aggregation_source.
+    """
+    sql, params, _source = build_history_query(
+        start=start,
+        end=end,
+        bucket=bucket,
+        intersection_id=intersection_id,
+        street_id=street_id,
+        direction=direction,
+    )
 
     db = SessionLocal()
     try:
-        rows = db.execute(text(query), params).fetchall()
-
+        rows = db.execute(text(sql), params).fetchall()
         return [
             {
                 "intersection_id": r.intersection_id,

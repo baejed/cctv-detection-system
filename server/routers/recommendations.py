@@ -6,6 +6,7 @@ from collections import defaultdict
 from fastapi import APIRouter, Depends, HTTPException, Request
 from common.database import SessionLocal, get_db
 from common import models
+from server.improvement import evaluate as evaluate_improvement
 from server.utils import get_current_user
 from server.rate_limit import limiter
 from sqlalchemy.orm import Session
@@ -389,12 +390,8 @@ def _maybe_generate_timing_and_sim(
     # Case 2: already signalized + Webster never beats existing → drop the rows
     # so the UI doesn't render a "recommended" plan that's actually a regression.
     if is_signalized and sim_rows:
-        chunk_sims = [s for s in sim_rows if s.chunk_name != "overall"]
-        beats = any(
-            (s.delay_before or 0) - (s.delay_after or 0) > 0.5  # ≥ 0.5 s/veh improvement
-            for s in chunk_sims
-        )
-        if not beats:
+        improvement = evaluate_improvement(sim_rows)
+        if not improvement.meets_threshold:
             for tr in timing_rows:
                 db.delete(tr)
             for sr in sim_rows:
