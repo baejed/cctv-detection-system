@@ -15,7 +15,7 @@ Legend: [ ] todo  [x] done  [~] in progress
 [x] T07  tests/test_synthetic_traffic.py extension — schema + class balance
 [x] T08  server/ml/temporal_warrant.py — multi-task 1D-CNN model definition
 [x] T09  server/ml/multitask_loss.py — uncertainty-weighted MultiTaskLoss module
-[ ] T10  server/ml/temporal_inference.py — predict_recommendations + load_recommender
+[x] T10  server/ml/temporal_inference.py — predict_recommendations + load_recommender
 [ ] T11  tests/test_temporal_warrant.py — inference contract test
 [ ] T12  scripts/train_multitask_cnn.py — training CLI (5-seed harness, early stop)
 [ ] T13  scripts/tune_multitask_cnn.py — Optuna HP search CLI
@@ -750,3 +750,114 @@ precedent on purpose):
   function returning a RecommendationResult NamedTuple, plus a
   load_recommender helper that reconstructs TemporalWarrantCNN from
   its checkpoint dict).
+
+2026-06-19 — T10 done:
+
+  Added:
+    - server/ml/temporal_inference.py
+        Mirrors the server.ml.inference (WarrantMLP) layout so the
+        recommender plugs into the same lifespan + app.state pattern.
+
+        Public API:
+          RecommenderArtifacts(NamedTuple):
+            model, warrant_names, intervention_classes, metadata_features
+          RecommendationResult(NamedTuple):
+            warrant_probs: dict[str, float]
+            intervention: str
+            intervention_confidence: float
+
+          load_recommender(model_path) -> RecommenderArtifacts
+            Reads the checkpoint dict, reconstructs TemporalWarrantCNN
+            from the architecture_config() keys (n_input_channels,
+            n_slots, n_metadata_features, conv_channels, kernel_size,
+            metadata_hidden, shared_hidden, n_warrants,
+            n_intervention_classes, dropout, warrant_names,
+            intervention_classes, metadata_features), loads state_dict,
+            switches to eval mode.
+
+          predict_recommendations(artifacts, flow_matrix, metadata)
+            -> RecommendationResult
+            One forward pass:
+              flow:  (5, 96) ndarray → unsqueeze(0) → (1, 5, 96)
+              meta:  IntersectionMeta or Mapping[str, float] →
+                     positional vector in artifacts.metadata_features
+                     order → unsqueeze(0) → (1, 5)
+            Sigmoid over warrant logits → {name: prob ∈ [0, 1]} (six
+              entries, ordered by artifacts.warrant_names).
+            Softmax over intervention logits → argmax class string +
+              its softmax probability as confidence.
+
+        Private helper:
+          _metadata_to_vector(metadata, feature_order) — accepts
+            IntersectionMeta (attribute access) or Mapping[str, float]
+            (key access). Returns a float32 ndarray in the order
+            persisted on the checkpoint. The router (T16) will pass an
+            IntersectionMeta built from the DB row; tests can pass a
+            dict (T11 will exercise both paths).
+
+  Decisions:
+    - Sigmoid + softmax are applied here at inference time, NOT in the
+      model. Matches PRD §Implementation Decisions / Outputs ("Sigmoid
+      and softmax are applied at inference time, not in the model")
+      and the T08 module docstring.
+    - load_recommender takes a single model_path (no separate scaler
+      path, unlike load_warrant_model). The CNN consumes raw flow
+      timeseries — no scalar feature standardisation is required, so
+      no scaler is persisted. Documented implicitly by the signature
+      diff vs. WarrantMLP's loader.
+    - Metadata feature order is read from the checkpoint
+      (artifacts.metadata_features), not hard-coded to
+      DEFAULT_METADATA_FEATURES. This is the standard "checkpoint owns
+      label semantics" pattern that WarrantMLP also follows — it
+      future-proofs against reordering DEFAULT_METADATA_FEATURES
+      between training and inference.
+    - _metadata_to_vector accepts both IntersectionMeta and Mapping
+      forms by isinstance() check rather than a Protocol. Keeps the
+      type signature legible; both are explicit code paths.
+    - flow_matrix passed as np.ndarray (channels-first), not a torch
+      Tensor. Matches the shape that
+      server.ml.synthetic_traffic.generate_day_flow_matrix emits, so
+      label-pipeline tooling and the router can pass arrays straight
+      through without an explicit conversion.
+    - No batch-mode signature in this cut. The router (T16) runs one
+      intersection at a time via the existing _analyze helper; if a
+      batch path is needed later (e.g. for the evaluation harness in
+      T14) it can be added without changing the single-sample API.
+    - warrant_probs and intervention_confidence cast to plain Python
+      float via float() at the boundary. Keeps the NamedTuple JSON-
+      serialisable for the recommendations payload without an extra
+      tolist() round-trip in the router.
+
+  Manual smoke check (python3 -c, not committed):
+    Round-trip: TemporalWarrantCNN → save ckpt (architecture_config()
+      + state_dict) → load_recommender → RecommenderArtifacts with
+      warrant_names ['w1','w2','w3','w4','w_local_2','w_local_3'],
+      intervention_classes ['signalize','road_widening','timing_only'],
+      metadata_features ['major_lanes','minor_lanes',
+      'posted_speed_kph','is_signalized','n_approaches']. All three
+      lists positionally aligned with the synthetic_traffic +
+      intervention_rules constants so label tensors line up.
+    Forward on a random (5, 96) flow + IntersectionMeta:
+      RecommendationResult has 6 warrant_probs keys, each in [0, 1].
+      intervention ∈ INTERVENTION_CLASSES, confidence ∈ [0, 1].
+    Mapping-form metadata path produces a bitwise-identical result to
+      the IntersectionMeta-form path (same float values for all 6
+      warrant_probs + same intervention + same confidence).
+    Determinism: two predict_recommendations calls with the same model
+      + same input yield identical dicts (model.eval() makes BN +
+      dropout deterministic; predict_recommendations adds no state).
+
+  Existing test suites still pass (78 passed, 6 skipped) across
+  test_warrant_rules.py + test_intervention_rules.py +
+  test_synthetic_traffic.py + test_local_warrants.py. No regressions.
+  Module-specific contract tests are deferred to T11
+  (tests/test_temporal_warrant.py) per the task list ordering — T11 is
+  the PRD's chosen external-behaviour test for the inference path
+  (§Testing Decisions / Inference contract test).
+
+  Next: T11 (tests/test_temporal_warrant.py — inference contract test:
+  RecommendationResult field names, warrant_probs has all 6 expected
+  keys with values in [0, 1], intervention is one of the three valid
+  strings, confidence in [0, 1]. Use a deterministically-initialised
+  small TemporalWarrantCNN so the test does not depend on training
+  outcomes).
