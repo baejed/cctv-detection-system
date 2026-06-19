@@ -18,7 +18,7 @@ Legend: [ ] todo  [x] done  [~] in progress
 [x] T10  server/ml/temporal_inference.py — predict_recommendations + load_recommender
 [x] T11  tests/test_temporal_warrant.py — inference contract test
 [x] T12  scripts/train_multitask_cnn.py — training CLI (5-seed harness, early stop)
-[ ] T13  scripts/tune_multitask_cnn.py — Optuna HP search CLI
+[x] T13  scripts/tune_multitask_cnn.py — Optuna HP search CLI
 [ ] T14  scripts/evaluate_multitask_cnn.py — evaluation + saliency CLI
 [ ] T15  server/main.py — load recommender artifacts in lifespan
 [ ] T16  server/routers/recommendations.py — switch _analyze to predict_recommendations
@@ -1163,3 +1163,183 @@ precedent on purpose):
   intersection_stratified_split, and train_one_seed from T12 so the
   search is a thin wrapper around the training CLI rather than a
   duplicated loop).
+
+2026-06-19 — T13 done:
+
+  Added:
+    - scripts/tune_multitask_cnn.py
+        Optuna hyperparameter search CLI. Argparse-driven; runnable as
+        `python -m scripts.tune_multitask_cnn ...`. Thin wrapper around
+        T12's training building blocks per the PRD's note (reuses
+        build_synthetic_dataset, intersection_stratified_split, and
+        train_one_seed; no duplicated training loop).
+
+        Search space (PRD §Training procedure / Optimizer):
+          lr                            log-uniform [1e-4, 1e-2]
+          dropout                       uniform     [0.1, 0.5]
+          init_log_sigma_warrant        uniform     [-1.0, 1.0]
+          init_log_sigma_intervention   uniform     [-1.0, 1.0]
+
+        Objective: minimise best_val_loss from a single-seed
+          train_one_seed run (per trial). The full 5-seed harness is
+          deliberately NOT run per trial (30 × 5 = 150 training runs
+          is too expensive); the final reported model uses the tuned
+          hyperparameters with the 5-seed harness via the T12 CLI.
+
+        Per-trial budget: --trial-epochs 30 / --trial-patience 8 by
+          default (shorter than the full 100/10 schedule). The
+          --trial-seed default (0) fixes the training seed across
+          trials so model init isn't another nuisance variable in the
+          search.
+
+        Public functions (importable for evaluation / re-use):
+          build_objective(data, train_idx, val_idx, n_warrants,
+              n_intervention_classes, *, trial_seed, epochs,
+              batch_size, patience, weight_decay, device)
+              -> closure (trial -> float)
+              Suggests each search-space variable from the trial, runs
+              train_one_seed with the suggested hyperparameters and
+              the fixed trial_seed, returns best_val_loss.
+          _serialize_trial(trial) -> dict
+              Trial → JSON-safe dict (number, value, state, params,
+              duration_s). Used to write a snapshot of the study that
+              does not require Optuna to read back.
+
+        CLI arguments (defaults in parentheses; dataset/split flags
+        mirror train_multitask_cnn.py exactly so the tune + train
+        invocations can share the same data config):
+          --output-dir              runs/tune_temporal_cnn
+          --n-trials                30   (PRD's "~30 trials")
+          --trial-epochs            30
+          --trial-patience          8
+          --trial-seed              0
+          --optuna-seed             42   (TPE sampler seed)
+          --n-intersections         30
+          --n-days                  90
+          --n-train-intersections   21
+          --n-val-intersections     4
+          --batch-size              64
+          --weight-decay            1e-5
+          --data-seed               42
+          --split-seed              42
+          --device                  cpu
+
+        Outputs (under --output-dir):
+          optuna_trials.json — full study snapshot: resolved args,
+            search-space bounds, split sizes, and per-trial
+            {number, value, state, params, duration_s}.
+          best_params.json   — best_trial_number, best_value,
+            best_params dict. Formatted to drop straight into the T12
+            CLI's flags for the final 5-seed training run.
+
+    - scripts/train_multitask_cnn.py (additive change to train_one_seed)
+        Added two backward-compatible kwargs:
+          init_log_sigma_warrant: float = 0.0
+          init_log_sigma_intervention: float = 0.0
+        Passed through to UncertaintyWeightedLoss(). Defaults reproduce
+        the prior behaviour byte-for-byte so existing main() and all
+        existing call sites are unaffected; the tune CLI overrides
+        them to search over loss-weight initialisation per PRD.
+        Module docstring on train_one_seed updated to record the
+        rationale + cite T13.
+
+    - requirements-test.txt
+        Added `optuna` (used by the tune CLI; absent from
+        server/requirements.txt because the optuna dep is a research/
+        thesis-time tool, not a production server dep).
+
+  Decisions:
+    - Optuna is an optional dependency: scripts/tune_multitask_cnn.py
+      imports optuna lazily inside main() and raises SystemExit with a
+      friendly install hint if it's missing. The module-level imports
+      stay clean so the script can be imported (for testing or for
+      reuse of build_objective in a notebook) without optuna installed.
+    - In-memory study (no SQLite storage). The trials JSON is the
+      durable record; SQLite-backed storage would require an extra
+      --storage flag and a different inspection workflow without much
+      gain for a 30-trial search. Optuna-dashboard users can switch by
+      passing storage="sqlite:///..." to create_study, but that's a
+      future-me task, not T13 scope.
+    - Per-trial training uses a single fixed seed (--trial-seed 0)
+      rather than averaging over the full 5-seed harness. Per-trial
+      cost vs. signal trade-off: with 30 trials, averaging 5 seeds
+      would 5× the wall time (150 runs total). The single-seed
+      objective is the standard Optuna recipe; the final 5-seed
+      harness for the reported model still runs via T12 with the
+      tuned hyperparameters, so the multi-seed mean ± std reporting
+      in T14 is unaffected.
+    - Reduced per-trial schedule (30 epochs / patience 8) rather than
+      the full 100/10. With early stopping the training run already
+      cuts itself off; the shorter cap puts an upper bound on a
+      pathological no-improvement run and roughly matches the
+      "good runs converge well under 30 epochs" pattern observed in
+      the T12 smoke training.
+    - Search-space bounds in module-level constants
+      (LR_MIN/LR_MAX/etc.) instead of inline literals so a future
+      tweak (e.g. widening dropout to 0.6 for an ablation) is a
+      one-line change and is visible at the top of the file next to
+      the docstring.
+    - Suggests four params individually rather than packing into a
+      dict (which Optuna does support via trial.suggest_categorical
+      on tuples). Individual suggestions keep the search dimension
+      explicit in the trials JSON ("params": {"lr": ..., ...}) and
+      let Optuna's TPE sampler exploit per-dimension marginals.
+    - trial_seed default is 0 (not e.g. -1 or random). Locking
+      reproducibility is more important here than a "randomised
+      every run" survey — re-running the tune script with the same
+      --optuna-seed and --trial-seed reproduces the exact same study,
+      which matters for the methods chapter.
+    - The tune CLI does NOT save model checkpoints from intermediate
+      trials. Trial weights are discarded at the end of each
+      train_one_seed call (no save_checkpoint call). Storing 30 ckpts
+      to tune over would be wasteful (~30 × 250 KB but more
+      importantly clutters the runs/ directory); the best
+      hyperparameters are what matters, and the final model is
+      retrained with the full 5-seed harness via T12.
+    - additive train_one_seed kwargs (init_log_sigma_*): chose to
+      extend the existing function rather than fork a sibling
+      "train_one_seed_with_loss_init" because the change is mechanical
+      (two kwargs, two pass-throughs to UncertaintyWeightedLoss). Forks
+      would diverge over time; one function with optional kwargs keeps
+      the production training path and the search path on the same
+      code path.
+
+  Manual smoke check:
+    `python -m scripts.tune_multitask_cnn --output-dir /tmp/tune_smoke
+        --n-trials 2 --trial-epochs 2 --trial-patience 3
+        --n-intersections 6 --n-days 2 --n-train-intersections 4
+        --n-val-intersections 1 --batch-size 16 --optuna-seed 0`
+    runs end-to-end:
+      dataset built (24 samples, flow (24, 5, 96), metadata (24, 5)).
+      splits: train=16 val=4 test=4 (4/1/1 intersections).
+      trial=0 lr=1.25e-03 dropout=0.386 init_log_sigma_w=0.206
+        init_log_sigma_i=0.090 → best_val=1.1112 @ epoch 2.
+      trial=1 lr=7.04e-04 dropout=0.358 init_log_sigma_w=-0.125
+        init_log_sigma_i=0.784 → best_val=1.3267 @ epoch 2.
+      Different sigma inits drive different sigma_w/sigma_i in the
+      training log (sigma_w 1.227 vs. 0.883, sigma_i 1.095 vs. 2.188),
+      confirming init_log_sigma_* are actually plumbed through to the
+      learned loss-weight parameters.
+      Outputs emitted:
+        /tmp/tune_smoke/optuna_trials.json (full study snapshot).
+        /tmp/tune_smoke/best_params.json (best trial=0, best_val=1.1112,
+          best_params={lr, dropout, init_log_sigma_warrant,
+          init_log_sigma_intervention}).
+
+  Existing test suites still pass: 95 passed, 6 skipped across
+  test_warrant_rules.py + test_intervention_rules.py +
+  test_synthetic_traffic.py + test_temporal_warrant.py +
+  test_local_warrants.py. No regressions from the additive
+  train_one_seed kwargs.
+
+  Module-specific tests are not in the PRD's T13 task scope; the
+  search-loop correctness is verified by the manual smoke check
+  (above) and the hyperparameter plumbing through
+  init_log_sigma_warrant / init_log_sigma_intervention is verified
+  by observing the trained sigmas track the inits in the training log.
+
+  Next: T14 (scripts/evaluate_multitask_cnn.py — evaluation harness:
+  load each seed's checkpoint, compute per-warrant AUC/F1 with mean ±
+  std on the test split, intervention confusion matrix, ablation
+  table (uncertainty-weighted vs. equal-weighted loss), and saliency
+  / Grad-CAM figures over the input timeseries).
