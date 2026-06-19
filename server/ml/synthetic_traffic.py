@@ -56,14 +56,23 @@ N_CHANNELS = N_VEHICLE_CHANNELS + 1  # 5 = 4 approaches + pedestrians
 
 # ── Vehicle regimes (parent-plan Phase 1) ────────────────────────────────────
 
-# PCU/hr per (NB, SB, EB, WB). Peak/off-peak ratio ~9–10× tracks published
-# Philippine urban AADT distributions; directional asymmetry reflects typical
-# AM-inbound / PM-outbound commute patterns.
+# PCU/hr per (NB, SB, EB, WB). Calibrated so that — combined with
+# `sample_intersection_modifier`'s skewed scale distribution — the synthetic
+# dataset emits the PRD-required class balance: ~50–65% timing_only, ~30–40%
+# signalize, <10% road_widening (see §Implementation Decisions / Class
+# imbalance and §Risks in the PRD).
+#
+# Per-regime sums (NB+SB+EB+WB) chosen so that a "typical" intersection
+# (`intersection_modifier` ≈ 1.0) produces a Webster's critical v/c around
+# 0.5, while the modifier's long upper tail occasionally drives v/c above the
+# 0.90 road-widening threshold. Directional asymmetry reflects typical
+# AM-inbound / PM-outbound commute patterns; OFF_PEAK is kept high enough that
+# W-Local 3 ("lights off") does not fire on every modest intersection.
 GROUND_TRUTH_REGIMES: Mapping[str, tuple[int, int, int, int]] = {
-    "AM_RUSH":  (850, 250, 700, 300),
-    "MIDDAY":   (420, 380, 410, 390),
-    "PM_RUSH":  (250, 850, 300, 700),
-    "OFF_PEAK": (90,  80,  85,  75),
+    "AM_RUSH":  (280,  85, 235, 100),
+    "MIDDAY":   (150, 135, 145, 140),
+    "PM_RUSH":  ( 85, 280, 100, 235),
+    "OFF_PEAK": ( 60,  55,  58,  52),
 }
 
 
@@ -84,12 +93,17 @@ def regime_for_slot(slot_index: int) -> str:
 #   * evening commute + dinner peak ~17:00–19:00
 #   * low-but-nonzero pedestrian activity during the rest of waking hours
 #   * very low overnight
+#
+# Peak amplitudes calibrated so that W4 (MUTCD pedestrian volume) fires on a
+# realistic minority of intersections (roughly 15–30% across seeds), not on
+# almost every intersection as would happen if peak peds approached the
+# 133 peds/hr 1-hour threshold un-scaled.
 PED_PROFILES: Mapping[str, int] = {
-    "AM_PED":     140,
-    "LUNCH":       90,
-    "PM_PED":     150,
-    "DAY_LOW":     35,
-    "NIGHT_LOW":   10,
+    "AM_PED":      75,
+    "LUNCH":       50,
+    "PM_PED":      85,
+    "DAY_LOW":     22,
+    "NIGHT_LOW":    5,
 }
 
 
@@ -231,13 +245,40 @@ def sample_intersection_meta(rng: np.random.Generator) -> IntersectionMeta:
     )
 
 
-def sample_intersection_modifier(rng: np.random.Generator) -> np.ndarray:
-    """Per-approach multiplier in [0.8, 1.2] for per-intersection variation.
+# Per-intersection scale distribution. Triangular skewed toward smaller
+# intersections (mode 0.7) with a long upper tail to 2.3 — the upper tail
+# is what occasionally drives `critical_vc_for_day` above the 0.90
+# road-widening threshold, while the bulk near 0.7 keeps most intersections
+# in `timing_only` / `signalize` territory. Tuned together with
+# `GROUND_TRUTH_REGIMES` and `PED_PROFILES` to hit the PRD's class balance.
+_INTERSECTION_SCALE_LOW  = 0.25
+_INTERSECTION_SCALE_MODE = 0.70
+_INTERSECTION_SCALE_HIGH = 2.30
+# Per-approach directional variation applied on top of the per-intersection
+# scale; keeps NB/SB/EB/WB independently noisy without changing the
+# intersection's overall size.
+_DIRECTIONAL_VAR_LOW  = 0.85
+_DIRECTIONAL_VAR_HIGH = 1.15
 
-    Matches parent-plan Phase 1 Task 2 Step 2. Returned as a length-4 float
-    array so it slots directly into `generate_day_flow_matrix`.
+
+def sample_intersection_modifier(rng: np.random.Generator) -> np.ndarray:
+    """Per-approach multiplier for per-intersection variation.
+
+    Combines a single per-intersection ``scale`` drawn from a triangular
+    distribution (skewed toward smaller intersections, with a long upper tail
+    that drives the rare ``road_widening`` cases) with an independent
+    per-approach directional variation in ``[0.85, 1.15]``. Returned as a
+    length-4 float array so it slots directly into `generate_day_flow_matrix`.
     """
-    return rng.uniform(0.8, 1.2, size=N_VEHICLE_CHANNELS).astype(np.float64)
+    scale = float(rng.triangular(
+        _INTERSECTION_SCALE_LOW,
+        _INTERSECTION_SCALE_MODE,
+        _INTERSECTION_SCALE_HIGH,
+    ))
+    directional = rng.uniform(
+        _DIRECTIONAL_VAR_LOW, _DIRECTIONAL_VAR_HIGH, size=N_VEHICLE_CHANNELS,
+    )
+    return (scale * directional).astype(np.float64)
 
 
 # ── Per-day labels (PRD T06) ─────────────────────────────────────────────────
