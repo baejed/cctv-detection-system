@@ -267,8 +267,17 @@ def train_one_seed(
     dropout: float,
     patience: int,
     device: torch.device,
+    init_log_sigma_warrant: float = 0.0,
+    init_log_sigma_intervention: float = 0.0,
 ) -> tuple[TemporalWarrantCNN, UncertaintyWeightedLoss, TrainMetrics, torch.Tensor]:
-    """Train one TemporalWarrantCNN at the given seed; return best-val checkpoint pieces."""
+    """Train one TemporalWarrantCNN at the given seed; return best-val checkpoint pieces.
+
+    ``init_log_sigma_warrant`` / ``init_log_sigma_intervention`` seed the
+    uncertainty-weighted loss's learnable log-sigma parameters; defaults
+    (0.0, 0.0) reproduce the original ``UncertaintyWeightedLoss()`` init
+    used by the production training run. Optuna (T13) overrides these to
+    tune loss-weight initialisation per PRD §Training procedure.
+    """
     torch.manual_seed(seed)
     np.random.seed(seed)
 
@@ -284,7 +293,10 @@ def train_one_seed(
         n_intervention_classes=n_intervention_classes,
         dropout=dropout,
     ).to(device)
-    loss_module = UncertaintyWeightedLoss().to(device)
+    loss_module = UncertaintyWeightedLoss(
+        init_log_sigma_warrant=init_log_sigma_warrant,
+        init_log_sigma_intervention=init_log_sigma_intervention,
+    ).to(device)
 
     class_weights = inverse_frequency_class_weights(
         data.intervention[train_idx], n_intervention_classes,
