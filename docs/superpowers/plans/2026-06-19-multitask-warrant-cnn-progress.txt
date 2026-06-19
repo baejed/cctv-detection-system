@@ -10,7 +10,7 @@ Legend: [ ] todo  [x] done  [~] in progress
 [x] T02  tests/test_warrant_rules.py — unit tests for MUTCD evaluators
 [x] T03  intervention_rules.py — assign_intervention_label precedence function
 [x] T04  tests/test_intervention_rules.py — unit tests for precedence
-[ ] T05  synthetic_traffic.py extension — pedestrian channel + intersection metadata
+[x] T05  synthetic_traffic.py extension — pedestrian channel + intersection metadata
 [ ] T06  synthetic_traffic.py extension — per-sample warrant + intervention labels
 [ ] T07  tests/test_synthetic_traffic.py extension — schema + class balance
 [ ] T08  server/ml/temporal_warrant.py — multi-task 1D-CNN model definition
@@ -189,3 +189,90 @@ precedent on purpose):
 
   Next: T05 (synthetic_traffic.py extension — pedestrian channel +
   intersection metadata sampling per PRD §Synthetic data extensions).
+
+2026-06-19 — T05 done:
+
+  Added:
+    - server/ml/synthetic_traffic.py
+        Module-level constants:
+          N_SLOTS = 96, N_VEHICLE_CHANNELS = 4, PED_CHANNEL_INDEX = 4,
+          N_CHANNELS = 5.
+          GROUND_TRUTH_REGIMES — parent-plan Phase 1 four-regime base
+            (AM_RUSH, MIDDAY, PM_RUSH, OFF_PEAK) over (NB, SB, EB, WB)
+            in PCU/hr; 9–10× peak/off-peak ratio cited as Tagum-typical.
+          PED_PROFILES — new five-regime pedestrian schedule
+            (AM_PED, LUNCH, PM_PED, DAY_LOW, NIGHT_LOW) in peds/hr.
+
+        Schedule functions (pure, deterministic):
+          regime_for_slot(slot)   — vehicle regime, 06–10 / 10–15 /
+            15–19 / else.
+          ped_regime_for_slot(slot) — pedestrian regime, 07:00–08:30
+            AM, 11:30–13:30 LUNCH, 17:00–19:00 PM, then DAY_LOW for
+            other waking hours, NIGHT_LOW overnight.
+
+        Per-slot samplers:
+          sample_flow_for_slot — ±10% Gaussian per-approach noise over
+            the regime base, multiplied by a once-per-day modifier.
+          sample_ped_for_slot — ±15% Gaussian (peds noisier than veh).
+
+        Per-day flow matrix:
+          generate_day_flow_matrix(rng, is_weekend=False,
+              intersection_modifier=None) -> np.ndarray of shape
+              (5, 96) dtype float64. Channels-first; matches
+              server.warrant_rules' flow_matrix convention exactly.
+          Weekend mode collapses AM_RUSH/PM_RUSH → MIDDAY and
+            AM_PED/PM_PED → LUNCH, per parent-plan §Task 2 Step 3.
+
+        Intersection metadata sampling (Tagum-realistic priors):
+          _MAJOR_LANE_PROBS = {1: 0.40, 2: 0.60}
+          _MINOR_LANE_PROBS = {1: 0.70, 2: 0.30}
+          _SPEED_PROBS      = {30: 0.20, 40: 0.55, 50: 0.25}
+          _APPROACH_PROBS   = {3: 0.20, 4: 0.80}
+          _SIGNALIZED_PROB  = 0.25
+          sample_intersection_meta(rng) -> IntersectionMeta (reuses the
+            dataclass from server.warrant_rules so the sampled metadata
+            slots straight into MUTCD evaluators).
+          sample_intersection_modifier(rng) -> length-4 ndarray in
+            [0.8, 1.2] for per-intersection variation.
+
+  Decisions:
+    - File placed at server/ml/synthetic_traffic.py per the parent
+      plan's chosen location (Phase 1 Task 1) rather than alongside
+      server/warrant_rules.py — keeps generator / model code under
+      server/ml/ and rules under server/.
+    - The base parent-plan Phase 1 logic (regimes, schedule, per-slot
+      sampler, weekend variant, intersection modifier) is consolidated
+      into this T05 module rather than landing as a separate prior
+      module, because the parent plan's Phase 1 was not previously
+      tracked as a discrete task in this progress log.
+    - Reuses IntersectionMeta from server.warrant_rules so there is one
+      source of truth for the dataclass shape. Importing back into the
+      rules module is not done; metadata flows rules-direction only.
+    - Pedestrian channel is generated with its own per-day modifier
+      (independent from the vehicle modifier) so peds noise does not
+      mirror veh noise — empirically peds and veh covary only weakly.
+    - intersection_modifier influences vehicles only, not pedestrians;
+      pedestrian volume is more a function of land use than of the
+      vehicle scale of the intersection.
+
+  Manual smoke check (python3 -c, not committed):
+    flow shape (5, 96); deterministic w.r.t. seed.
+    AM mean N-S volume ~1100 PCU/hr; overnight ~170 PCU/hr (~6× ratio
+      after sloppy slot averaging — matches the design peak/off-peak).
+    ped min/mean/max ~ 7.6 / 44.0 / 170.5 peds/hr — peaks above
+      MUTCD W4 1-hour threshold of 133, lows comfortably below.
+    metadata sampler hits all 6 categorical values for lanes/speed/
+      approaches across 200 draws; signalized fraction 0.26 vs.
+      target 0.25.
+    intersection_modifier=2.0 across all approaches → vehicle channel
+      sums grow >1.5× vs. modifier=1.0 (with same seed).
+    is_weekend=True flattens AM total vehicle volume 33.7k → 25.7k
+      (~24% reduction) with same seed.
+
+  Existing test suites still pass (44/44 in test_warrant_rules.py +
+  test_intervention_rules.py). Module-specific tests are deferred to
+  T07 per the task list ordering (T06 first emits labels, then T07
+  tests determinism + schema + class balance together).
+
+  Next: T06 (synthetic_traffic.py extension — per-sample warrant +
+  intervention labels emitted alongside the flow matrix).
