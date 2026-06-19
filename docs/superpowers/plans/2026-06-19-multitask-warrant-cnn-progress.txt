@@ -8,7 +8,7 @@ Legend: [ ] todo  [x] done  [~] in progress
 
 [x] T01  warrant_rules.py — MUTCD W1–W4 pure-function evaluators
 [x] T02  tests/test_warrant_rules.py — unit tests for MUTCD evaluators
-[ ] T03  intervention_rules.py — assign_intervention_label precedence function
+[x] T03  intervention_rules.py — assign_intervention_label precedence function
 [ ] T04  tests/test_intervention_rules.py — unit tests for precedence
 [ ] T05  synthetic_traffic.py extension — pedestrian channel + intersection metadata
 [ ] T06  synthetic_traffic.py extension — per-sample warrant + intervention labels
@@ -71,5 +71,56 @@ with its unit test suite under "Testing decisions"):
       cite the figures and document the fit constants.
 
   Next: T03 (intervention_rules.py — assign_intervention_label).
+
+2026-06-19 — T03 done (test suite T04 deferred to its own task per the
+"one task at a time" instruction; this departs from the T01+T02 bundling
+precedent on purpose):
+
+  Added:
+    - server/intervention_rules.py
+        Module-level constants:
+          INTERVENTION_CLASSES = ("signalize", "road_widening", "timing_only")
+          DEFAULT_WIDENING_VC_THRESHOLD = 0.90  (per PRD §Synthetic data
+            extensions / Intervention label assignment).
+        Helper _any_warrant_met(warrant_results) — reads only the `met`
+        boolean from each (met, confidence) pair, so the function works
+        uniformly over MUTCD W1–W4 results from server/warrant_rules and
+        W-Local 2/3 results from server/local_warrants.
+        Public API:
+          assign_intervention_label(
+              critical_vc, is_signalized, warrant_results,
+              widening_vc_threshold=DEFAULT_WIDENING_VC_THRESHOLD,
+          ) -> str
+        Precedence (locked):
+          1. road_widening if critical_vc > widening_vc_threshold
+          2. signalize     if (not is_signalized) and any warrant met
+          3. timing_only   otherwise
+
+  Decisions:
+    - Strict `>` for the widening threshold (vc == 0.90 → timing_only or
+      signalize, not widening). PRD wording is "v/c > 0.90"; chose strict
+      to match. T04 tests will pin this boundary explicitly.
+    - `warrant_results` typed as Mapping[str, tuple[bool, float]] rather
+      than the dataclass-y custom type — matches the existing
+      evaluate_all_mutcd return shape and local_warrants helpers exactly,
+      so the same dict can flow straight from the rule modules into label
+      assignment without re-packing.
+    - Webster's is NOT run inside this module. The caller passes
+      `critical_vc` already computed. Keeps the module DB-free and
+      framework-free (it imports only `typing`); mirrors the
+      pure-function tier of server/local_warrants._compute_w_local_*.
+    - No DB, no SQLAlchemy, no Pydantic; placed in server/ next to
+      warrant_rules.py and local_warrants.py to mirror their layout.
+
+  Manual smoke check (python3 -c, not committed):
+    widen on vc=1.05 → road_widening
+    vc=0.5, unsignalized, w1 met → signalize
+    vc=0.5, already signalized, w1 met → timing_only
+    vc=0.5, unsignalized, no warrant met → timing_only
+    vc=0.90 (boundary) → timing_only (strict >)
+    vc=0.95 AND warrant met → road_widening (precedence verified)
+
+  Next: T04 (tests/test_intervention_rules.py — unit tests for the three
+  outcomes + pairwise-tie precedence checks).
 </content>
 </invoke>
