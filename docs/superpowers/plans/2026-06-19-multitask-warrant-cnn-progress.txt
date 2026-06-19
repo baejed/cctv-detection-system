@@ -17,7 +17,7 @@ Legend: [ ] todo  [x] done  [~] in progress
 [x] T09  server/ml/multitask_loss.py — uncertainty-weighted MultiTaskLoss module
 [x] T10  server/ml/temporal_inference.py — predict_recommendations + load_recommender
 [x] T11  tests/test_temporal_warrant.py — inference contract test
-[ ] T12  scripts/train_multitask_cnn.py — training CLI (5-seed harness, early stop)
+[x] T12  scripts/train_multitask_cnn.py — training CLI (5-seed harness, early stop)
 [ ] T13  scripts/tune_multitask_cnn.py — Optuna HP search CLI
 [ ] T14  scripts/evaluate_multitask_cnn.py — evaluation + saliency CLI
 [ ] T15  server/main.py — load recommender artifacts in lifespan
@@ -974,3 +974,192 @@ precedent on purpose):
   composed via UncertaintyWeightedLoss from T09, Adam (lr=1e-3,
   wd=1e-5), early stopping on val loss with patience=10, checkpoint
   emitted as architecture_config() | {"state_dict": ...}).
+
+2026-06-19 — T12 done:
+
+  Added:
+    - scripts/train_multitask_cnn.py
+        Training CLI for the multi-task TemporalWarrantCNN. Argparse-
+        driven, runnable as `python -m scripts.train_multitask_cnn ...`.
+        No FastAPI / DB / SQLAlchemy coupling — synthetic dataset is
+        generated in-process and labels come from the existing rule
+        modules.
+
+        Public functions (importable for evaluation harness reuse in
+        T14):
+          build_synthetic_dataset(n_intersections, n_days, data_seed,
+              metadata_features, warrant_names, intervention_classes)
+              -> SyntheticTensors
+              Generates `n_intersections × n_days × 2 day-types` samples.
+              Per-intersection metadata is drawn once via
+              sample_intersection_meta and reused across all 2 × n_days
+              samples from that intersection (matches the physical
+              constraint that lane count / speed / signalised status
+              don't vary day-to-day). Each (intersection, day, day-type)
+              tuple gets its own SeedSequence so the dataset is fully
+              reproducible from --data-seed.
+          intersection_stratified_split(intersection_id, n_intersections,
+              n_train, n_val, split_seed)
+              -> (train_idx, val_idx, test_idx)
+              Two nested GroupShuffleSplit calls (test, then val out of
+              train+val). Default partition 21 train / 4 val / 5 test
+              intersections matches PRD §Synthetic data extensions /
+              Dataset split.
+          inverse_frequency_class_weights(intervention_labels, n_classes)
+              -> torch.Tensor
+              Computes weights = total / (count × n_classes) per class
+              on the training split; empty classes fall back to weight
+              1.0 so degenerate splits do not divide by zero.
+          train_one_seed(seed, data, train_idx, val_idx, n_warrants,
+              n_intervention_classes, *, epochs, batch_size, lr,
+              weight_decay, dropout, patience, device)
+              -> (model, loss_module, TrainMetrics, class_weights)
+              Single-seed training loop with early stopping; restores
+              best-val-loss state dict before returning.
+          save_checkpoint(path, model, loss_module, metrics, seed,
+              intervention_classes, class_weights)
+              Writes model.architecture_config() | {"state_dict": ...,
+              "training_metadata": {...}} via torch.save. The
+              architecture_config keys are the exact set that
+              server.ml.temporal_inference.load_recommender reads, so
+              the checkpoint slots straight into the inference path
+              without a separate adapter.
+
+        CLI arguments (all default to PRD §Training procedure values):
+          --output-dir            runs/temporal_cnn
+          --n-intersections       30
+          --n-days                90
+          --n-train-intersections 21
+          --n-val-intersections   4
+          --epochs                100
+          --batch-size            64
+          --lr                    1e-3
+          --weight-decay          1e-5
+          --dropout               0.3
+          --patience              10
+          --seeds                 0 1 2 3 4   (5-seed harness)
+          --data-seed             42
+          --split-seed            42
+          --device                cpu
+
+        Outputs:
+          {output-dir}/temporal_cnn_seed{S}.pt — one checkpoint per seed
+          {output-dir}/training_summary.json   — top-level summary
+              with the resolved CLI args, the split sizes, and a per-
+              seed list of {checkpoint, best_epoch, best_val_loss,
+              final_train_loss, final_val_loss, epochs_run}.
+
+  Decisions:
+    - Dataset shape interpretation: PRD's "30 × 90 × 2 day-types ≈
+      5,400" is implemented as 30 intersections × 90 days × 2 day-type
+      variants (each day generates a weekday-schedule sample AND a
+      weekend-schedule sample). Alternative reading — 30 × 90 with the
+      mix being 5/7 weekdays — would only give 2,700. The PRD text
+      explicitly multiplies by 2, so each (intersection, day) is
+      sampled twice.
+    - Per-intersection metadata reuse: metadata is drawn once per
+      intersection via sample_intersection_meta and passed into every
+      generate_labeled_sample call for that intersection. Matches the
+      physical constraint (an intersection's lane count doesn't change
+      day to day) and matches what the GroupShuffleSplit assumes
+      (group identity = physical intersection identity, not "any
+      (intersection, day) tuple with the same metadata").
+    - GroupShuffleSplit nesting: applied test split first, then val
+      split out of the remaining train+val pool. With 30 intersections,
+      test_size=5/30 ≈ 0.167; then val_size=4/(21+4) = 4/25 = 0.16
+      of the remaining 25. Both stages use different random_state
+      values (split_seed and split_seed + 1) so the val/test partition
+      is fully reproducible from --split-seed without entangling the
+      two stages.
+    - Loss composition: BCE + class-weighted CE computed separately,
+      passed into UncertaintyWeightedLoss from T09. The class weights
+      are computed once on the training split (inverse-frequency on
+      the intervention labels) and reused for all epochs. PRD
+      §Training procedure / Class imbalance puts the weighting on the
+      intervention head only — BCE for the warrant head stays
+      unweighted because the warrant labels are multi-hot and
+      individual warrants have their own per-class noise floor (mild
+      imbalance is OK on a 6-binary head).
+    - Optimizer covers BOTH model parameters AND loss-module
+      parameters (the two log-sigmas). PRD §Implementation Decisions
+      / Multi-task loss describes the sigmas as "learnable
+      parameters"; if Adam only saw the model, the sigmas would never
+      update and we'd silently regress to (sigma=1, sigma=1) ≡
+      equal-weight loss. Verified manually that sigmas move during
+      training (sigma_w drifts to 0.997, sigma_i to 1.003 within 3
+      epochs even on a tiny smoke dataset).
+    - Early stopping reads the val loss computed via the same
+      UncertaintyWeightedLoss head (not a raw BCE+CE sum). Means the
+      sigmas' regularising log(sigma_w · sigma_i) term is included in
+      the early-stop signal; without it, the sigmas could trivially
+      reduce the loss by growing, and the early-stop would never fire.
+    - Best-state restore on early stop: best_state is a deep-copied
+      state_dict snapshot at the best-val epoch. The model is mutated
+      back to that snapshot before save_checkpoint, so the saved
+      checkpoint is always the best-val model — not the
+      patience-exhausted model.
+    - drop_last on the train loader: enabled only when len(train_set)
+      >= batch_size. BatchNorm requires batch_size >= 2; the
+      conservative choice would be batch_size >= 2 unconditionally,
+      but drop_last=False with a residual batch of size 1 would crash
+      the BN layer in train mode. Tying drop_last to "≥ batch_size"
+      gives the default 64-batch case full batches AND lets a small
+      smoke run (e.g. 30 samples) still drain the whole epoch
+      (drop_last=False so the residual of size 30 < 64 still runs,
+      and BN sees a batch ≥ 2 because the smoke run is also ≥ 2).
+      A cleaner fix is "drop last if it would have size 1" but that
+      requires a custom collate; deferred.
+    - Checkpoint dict union: `model.architecture_config() |
+      {"state_dict": ...}` matches the exact format
+      server.ml.temporal_inference.load_recommender expects. The added
+      `training_metadata` sub-dict is ignored by load_recommender (it
+      doesn't read that key) but provides downstream tooling (T14
+      evaluation harness) with seed / best_epoch / sigma values for
+      the methods-chapter figures without needing a sidecar metrics
+      file.
+    - Training summary JSON: emits one file per output-dir
+      (not per-seed) so the multi-seed mean ± std table (T14) can be
+      built by reading a single file. Per-seed checkpoint files still
+      contain their own training_metadata copy for double bookkeeping.
+
+  Manual smoke check:
+    `python -m scripts.train_multitask_cnn --output-dir /tmp/smoke
+        --n-intersections 8 --n-days 3 --n-train-intersections 5
+        --n-val-intersections 2 --epochs 3 --patience 5 --seeds 0 1`
+    runs end-to-end:
+      dataset built (48 samples, flow shape (48, 5, 96), metadata (48, 5)).
+      splits: train=30 val=12 test=6 (5/2/1 intersections).
+      seed=0 epoch=003 val=1.0431 (down from 1.0973 @ epoch 1).
+      seed=1 epoch=003 val=1.0385 (different trajectory — confirms the
+        seed actually controls model init).
+      checkpoints emitted to /tmp/smoke/temporal_cnn_seed{0,1}.pt.
+      training_summary.json emitted with per-seed metrics and split
+        sizes.
+    Round-trip with load_recommender:
+      `from server.ml.temporal_inference import load_recommender,
+       predict_recommendations` on /tmp/smoke/temporal_cnn_seed0.pt
+      successfully reconstructs the model with the expected
+      warrant_names, intervention_classes, metadata_features and
+      predict_recommendations returns a valid RecommendationResult
+      (6 warrant_probs keys, intervention ∈ INTERVENTION_CLASSES,
+      confidence ∈ [0, 1]). Confirms T12's checkpoint format is
+      compatible with T10's loader without changes.
+
+  Existing test suites still pass (84 passed) across
+  test_warrant_rules.py + test_intervention_rules.py +
+  test_synthetic_traffic.py + test_temporal_warrant.py. No
+  regressions.
+
+  Module-specific tests are not in the PRD's T12 task scope; the
+  training-loop correctness is verified end-to-end by the loss
+  decrease + checkpoint roundtrip smoke check above, and the
+  multi-seed harness will be re-exercised at the results level by
+  T14's evaluation harness (which loads each seed's checkpoint and
+  computes per-warrant AUC/F1 with mean ± std).
+
+  Next: T13 (scripts/tune_multitask_cnn.py — Optuna hyperparameter
+  search over lr ∈ [1e-4, 1e-2], dropout ∈ [0.1, 0.5], and
+  loss-weight initialisation. Reuses build_synthetic_dataset,
+  intersection_stratified_split, and train_one_seed from T12 so the
+  search is a thin wrapper around the training CLI rather than a
+  duplicated loop).
