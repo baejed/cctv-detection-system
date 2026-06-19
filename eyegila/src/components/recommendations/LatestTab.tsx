@@ -12,8 +12,9 @@ import { Progress } from '@/components/ui/progress';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
-import { Loader2, RefreshCw, Pencil, Check, X, BarChart2, Wifi, WifiOff, AlertTriangle } from 'lucide-react';
+import { Loader2, RefreshCw, Pencil, Check, X, BarChart2, Wifi, WifiOff, AlertTriangle, TrafficCone, Construction, Clock } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import type { InterventionClass } from '@/types';
 
 const W1_MAJOR_THRESHOLD = 400;
 const W4_PEDS_THRESHOLD  = 100;
@@ -215,6 +216,9 @@ export function LatestTab({ rec, onRegenerate, regenerating, onNotesSaved }: Pro
         </div>
       )}
 
+      {/* Recommended structural intervention (from multi-task CNN) */}
+      {rec.intervention && <InterventionBanner intervention={rec.intervention} />}
+
       {/* Market-day / recurring spike warning */}
       {health && health.high_volume_days.length > 0 && (
         <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-900 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
@@ -356,6 +360,49 @@ export function LatestTab({ rec, onRegenerate, regenerating, onNotesSaved }: Pro
             {rec.notes ?? 'No notes'}
           </p>
         )}
+      </div>
+    </div>
+  );
+}
+
+const INTERVENTION_META: Record<InterventionClass, {
+  label: string;
+  blurb: string;
+  Icon: typeof TrafficCone;
+  containerClass: string;
+}> = {
+  signalize: {
+    label: 'Install traffic signal',
+    blurb: 'Warrant met and intersection is currently unsignalized.',
+    Icon: TrafficCone,
+    containerClass: 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:bg-emerald-950/20 dark:border-emerald-900 dark:text-emerald-300',
+  },
+  road_widening: {
+    label: 'Widen approach lanes',
+    blurb: 'Post-Webster critical v/c exceeds 0.90 — signal timing alone cannot clear demand.',
+    Icon: Construction,
+    containerClass: 'border-amber-200 bg-amber-50 text-amber-800 dark:bg-amber-950/20 dark:border-amber-900 dark:text-amber-300',
+  },
+  timing_only: {
+    label: 'Timing adjustments only',
+    blurb: 'No structural change recommended — existing signal timing can absorb the demand.',
+    Icon: Clock,
+    containerClass: 'border-border bg-muted/30 text-foreground',
+  },
+};
+
+function InterventionBanner({ intervention }: { intervention: { class: InterventionClass; confidence: number } }) {
+  const meta = INTERVENTION_META[intervention.class];
+  const pct = Math.round(intervention.confidence * 100);
+  return (
+    <div className={cn('flex items-start gap-3 rounded-md border px-3 py-2.5', meta.containerClass)}>
+      <meta.Icon className="size-4 mt-0.5 shrink-0" />
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-xs font-semibold">{meta.label}</div>
+          <div className="text-[10px] tabular-nums opacity-80">{pct}% confidence</div>
+        </div>
+        <div className="text-[10px] mt-0.5 opacity-80">{meta.blurb}</div>
       </div>
     </div>
   );
