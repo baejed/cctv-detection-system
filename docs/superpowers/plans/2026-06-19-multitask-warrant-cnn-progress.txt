@@ -16,7 +16,7 @@ Legend: [ ] todo  [x] done  [~] in progress
 [x] T08  server/ml/temporal_warrant.py — multi-task 1D-CNN model definition
 [x] T09  server/ml/multitask_loss.py — uncertainty-weighted MultiTaskLoss module
 [x] T10  server/ml/temporal_inference.py — predict_recommendations + load_recommender
-[ ] T11  tests/test_temporal_warrant.py — inference contract test
+[x] T11  tests/test_temporal_warrant.py — inference contract test
 [ ] T12  scripts/train_multitask_cnn.py — training CLI (5-seed harness, early stop)
 [ ] T13  scripts/tune_multitask_cnn.py — Optuna HP search CLI
 [ ] T14  scripts/evaluate_multitask_cnn.py — evaluation + saliency CLI
@@ -861,3 +861,116 @@ precedent on purpose):
   strings, confidence in [0, 1]. Use a deterministically-initialised
   small TemporalWarrantCNN so the test does not depend on training
   outcomes).
+
+2026-06-19 — T11 done:
+
+  Added:
+    - tests/test_temporal_warrant.py
+        17 pure-function tests, all passing. Exercises only external
+        behaviour of `predict_recommendations` and `load_recommender`,
+        per PRD §Testing Decisions ("Test only external behavior —
+        model outputs, rule outputs, inference results — not internal
+        layer activations or optimizer step counts").
+
+        Fixtures (module-scoped where reusable):
+          model — deterministically-initialised TemporalWarrantCNN
+            (torch.manual_seed(0) before construction), eval mode.
+          artifacts — RecommenderArtifacts wrapping that model with
+            the default label/feature name lists.
+          flow_matrix — deterministic (5, 96) float64 ndarray from
+            np.random.default_rng(42).
+          meta — IntersectionMeta(2, 1, 40, False, 4).
+
+        Coverage groups:
+
+        RecommendationResult field contract (2 tests):
+          _fields == ("warrant_probs","intervention","intervention_confidence").
+          predict_recommendations return value is the NamedTuple
+            (isinstance check, so downstream router code can rely on
+            attribute access without isinstance asserts at every call site).
+
+        warrant_probs contract (8 tests; 6 parametrised over warrant names):
+          keys (as a set) equal WARRANT_NAMES_ALL from synthetic_traffic.
+          keys (in order) equal DEFAULT_WARRANT_NAMES — pins positional
+            alignment with both synthetic_traffic.WARRANT_NAMES_ALL and
+            the model's own default warrant_names list (so label tensors
+            built from generate_labeled_sample line up with model output
+            columns at training time, and the inference dict preserves
+            that order for the router payload).
+          each prob is a Python float in [0, 1] (parametrised per
+            warrant name so a failure pinpoints the broken channel).
+
+        intervention contract (4 tests):
+          intervention ∈ INTERVENTION_CLASSES (the locked 3-class
+            vocabulary from server.intervention_rules).
+          intervention ∈ DEFAULT_INTERVENTION_CLASSES (the model's
+            own list — same set, different source; pins the cross-
+            module agreement).
+          intervention_confidence is a Python float in [0, 1].
+          intervention_confidence ≥ 1/3 − 1e-6 — argmax confidence on
+            a 3-class softmax cannot fall below the uniform floor;
+            guards against a future bug where the wrong softmax index
+            is read (e.g., min instead of argmax).
+
+        Metadata input shapes (2 tests):
+          predict_recommendations accepts both IntersectionMeta and
+            Mapping[str, float] (both shapes return identical
+            warrant_probs / intervention / confidence — the router
+            will pass IntersectionMeta from the DB row, tests can
+            pass a dict).
+          Two predict_recommendations calls with the same model + input
+            agree bit-for-bit (eval mode is deterministic: dropout off,
+            BN in eval, predict_recommendations adds no state).
+
+        load_recommender checkpoint roundtrip (1 test):
+          architecture_config() | {"state_dict": ...} → torch.save →
+            load_recommender → RecommenderArtifacts with the expected
+            warrant_names, intervention_classes, metadata_features.
+          predict_recommendations on the reloaded model produces the
+            same RecommendationResult as on the in-memory model.
+
+  Decisions:
+    - Used `torch.manual_seed(0)` before constructing the model in the
+      module-scoped fixture, not `torch.nn.init.constant_` or similar.
+      A fixed seed is the lightest reproducibility mechanism that still
+      gives us the property the PRD asks for ("does not depend on
+      training outcomes"), and it keeps the test fixture readable.
+    - Used `dict | {"state_dict": ...}` rather than mutating
+      architecture_config()'s return value. PEP 584 union, no in-place
+      side effects; mirrors how the T12 training CLI will build the
+      checkpoint dict.
+    - Tests use the public `RecommenderArtifacts` NamedTuple constructor
+      directly (not a builder helper) so the test failure pinpoints any
+      field rename without needing to look at a separate fixture file.
+    - Did NOT assert specific warrant probability values — the model is
+      untrained, so values are architecture/init artefacts, not contract.
+      The deterministic-roundtrip test pins reproducibility without
+      pinning specific values.
+    - Did NOT use the `tmp_path_factory` module-scoped variant for the
+      roundtrip test. The 1 ckpt save is ~250 KB and fits in pytest's
+      per-test tmp dir; module-scoped would couple the roundtrip test
+      to the module fixture lifetime for no real win.
+    - The 1/3 floor check on intervention_confidence is intentionally
+      `>= 1/3 − 1e-6` (small epsilon for float noise) so the test
+      doesn't false-positive on borderline-uniform softmax outputs from
+      a freshly-init model; the floor is a hard mathematical bound on
+      a 3-class argmax-softmax, not a quality threshold.
+
+  Manual verification:
+    pytest tests/test_temporal_warrant.py -v →
+      17 passed in 0.68s. Each warrant-prob parametrise instance runs
+      independently so a single broken channel would surface as
+      "test_each_warrant_prob_is_in_unit_interval[w_local_3] FAILED"
+      rather than swallowing all 6 into one assertion failure.
+
+  Existing test suites still pass: 95 passed, 6 skipped across
+  test_warrant_rules.py + test_intervention_rules.py +
+  test_synthetic_traffic.py + test_local_warrants.py +
+  test_temporal_warrant.py. No regressions.
+
+  Next: T12 (scripts/train_multitask_cnn.py — training CLI: dataset
+  build via generate_labeled_sample, intersection-stratified split,
+  5-seed harness, BCEWithLogitsLoss + class-weighted CrossEntropyLoss
+  composed via UncertaintyWeightedLoss from T09, Adam (lr=1e-3,
+  wd=1e-5), early stopping on val loss with patience=10, checkpoint
+  emitted as architecture_config() | {"state_dict": ...}).
