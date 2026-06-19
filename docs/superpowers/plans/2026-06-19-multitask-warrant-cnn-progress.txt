@@ -14,7 +14,7 @@ Legend: [ ] todo  [x] done  [~] in progress
 [x] T06  synthetic_traffic.py extension — per-sample warrant + intervention labels
 [x] T07  tests/test_synthetic_traffic.py extension — schema + class balance
 [x] T08  server/ml/temporal_warrant.py — multi-task 1D-CNN model definition
-[ ] T09  server/ml/multitask_loss.py — uncertainty-weighted MultiTaskLoss module
+[x] T09  server/ml/multitask_loss.py — uncertainty-weighted MultiTaskLoss module
 [ ] T10  server/ml/temporal_inference.py — predict_recommendations + load_recommender
 [ ] T11  tests/test_temporal_warrant.py — inference contract test
 [ ] T12  scripts/train_multitask_cnn.py — training CLI (5-seed harness, early stop)
@@ -652,3 +652,101 @@ precedent on purpose):
   Next: T09 (server/ml/multitask_loss.py — uncertainty-weighted
   MultiTaskLoss module, per the PRD's prototype-derived loss snippet
   and Kendall et al. 2018 citation).
+
+2026-06-19 — T09 done:
+
+  Added:
+    - server/ml/multitask_loss.py
+        Two nn.Module loss heads sharing the same forward signature
+        ``forward(bce_warrant, ce_intervention) -> scalar`` so the T12
+        training CLI can swap between them by config:
+
+        UncertaintyWeightedLoss (PRD's chosen production loss; Kendall
+        et al. 2018):
+          Parameters: log_sigma_w, log_sigma_i (each nn.Parameter,
+            single-element tensor, log-space so sigmas stay positive
+            without an explicit clamp).
+          Init: init_log_sigma_warrant / init_log_sigma_intervention
+            kwargs (both default 0.0 = sigma=1). Exposed so Optuna can
+            tune loss-weight initialisation per PRD §Training procedure.
+          Forward: bce/(2 sigma_w^2) + ce/(2 sigma_i^2) + log(sigma_w *
+            sigma_i). Returns a 0-d scalar tensor (squeezed) so it can
+            be .backward()-ed directly and added to running averages
+            without needing a .item() conversion in the training loop.
+          sigmas() helper: returns (sigma_w, sigma_i) as Python floats
+            under torch.no_grad() for training-curve logging in the
+            methods-chapter "learned uncertainties over epochs" figure.
+
+        EqualWeightedLoss (the ablation baseline; PRD §Implementation
+        Decisions / Multi-task loss: "An equal-weighting ablation is
+        also trained"):
+          weight_warrant / weight_intervention kwargs (default 1.0
+            each, validated non-negative — raises ValueError otherwise
+            so a typo cannot silently invert a loss term).
+          No learnable parameters; forward is just the weighted sum.
+
+  Decisions:
+    - Forward takes pre-computed scalar BCE/CE tensors rather than
+      (logits, targets) pairs. Matches the PRD's prototype snippet
+      verbatim and — more importantly — keeps the class-weighted CE
+      logic for the intervention head (PRD §Training procedure / Class
+      imbalance) outside this module. The training CLI will own a
+      single torch.nn.BCEWithLogitsLoss and a single
+      torch.nn.CrossEntropyLoss(weight=inv_freq) and pass their outputs
+      in; this loss module never sees the class weights, so swapping
+      from class-weighted to unweighted CE in an ablation does not
+      touch multitask_loss.py.
+    - Parametrise sigmas in log-space (init_log_sigma_*, then exp() in
+      forward). This is the standard form in the Kendall et al. paper
+      and downstream implementations; alternatives (raw sigma with
+      softplus, or 1/sigma^2 = "precision" parametrisation) are
+      mathematically equivalent but the log-sigma form is what the PRD
+      prototype uses and what the methods-chapter pseudocode will cite.
+    - log(sigma_w * sigma_i), not log(sigma_w) + log(sigma_i), to
+      mirror the PRD prototype snippet exactly. Numerically identical;
+      visually closer to the cited Kendall et al. derivation.
+    - Equal-weight loss is in the same module rather than a separate
+      file. Both are <60-line nn.Modules with identical interfaces;
+      splitting them would force the training CLI to import from two
+      places for the ablation. Keeping them adjacent also means the
+      "uncertainty vs. equal" comparison is one diff in the model-spec
+      readme rather than a directory-trace.
+    - Negative-weight guard on EqualWeightedLoss: rejecting at
+      construction prevents a typo (weight_warrant=-1.0) from silently
+      inverting a loss term and tanking training. Zero is allowed
+      (turns a head off, valid ablation).
+    - __all__ exported so the training CLI can do
+      ``from server.ml.multitask_loss import *`` without picking up
+      torch / nn re-exports.
+
+  Manual smoke check (python3 -c, not committed):
+    UncertaintyWeightedLoss at init (sigma=1) with bce=0.5, ce=1.2:
+      expected = 0.5/2 + 1.2/2 + log(1) = 0.85 — actual: 0.8500. ✓
+    Backward through the loss populates:
+      grad on log_sigma_w =  0.5  (= 1 - bce/sigma_w^2 at sigma=1).
+      grad on log_sigma_i = -0.2  (= 1 - ce/sigma_i^2 at sigma=1).
+      grad on bce / ce inputs = 0.5 each (= 1/(2 sigma^2)).
+    Custom init log-sigmas (0.5, -0.3) yield sigmas (1.649, 0.741) —
+      Optuna can move the warrant loss to be down-weighted (large
+      sigma_w) and the intervention loss up-weighted (small sigma_i).
+    EqualWeightedLoss(1.0, 1.0)(0.5, 1.2) = 1.7. ✓
+    EqualWeightedLoss(2.0, 0.5)(0.5, 1.2) = 1.0 + 0.6 = 1.6. ✓
+    Negative weight rejected with ValueError. ✓
+    End-to-end composition with TemporalWarrantCNN (B=8, 5×96 flow,
+      5-dim metadata, random binary warrant + 3-class intervention
+      targets): loss is finite, .backward() succeeds, gradients reach
+      every parameter (model weights + both log-sigmas).
+
+  Existing test suites still pass (78 passed, 6 skipped) across
+  test_warrant_rules.py + test_intervention_rules.py +
+  test_synthetic_traffic.py + test_local_warrants.py. No regressions.
+  Module-specific tests are not in the PRD's T09 task scope; the
+  multitask-loss math is exercised at the integration level by T12's
+  training CLI (5-seed convergence smoke) and again at the results
+  level by T14's evaluation harness (uncertainty-weighted vs.
+  equal-weighted ablation table).
+
+  Next: T10 (server/ml/temporal_inference.py — predict_recommendations
+  function returning a RecommendationResult NamedTuple, plus a
+  load_recommender helper that reconstructs TemporalWarrantCNN from
+  its checkpoint dict).
