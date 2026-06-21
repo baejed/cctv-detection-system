@@ -1541,8 +1541,8 @@ export function IntersectionScene3D({
         const rawDt = Math.min((now - lastT) / 1000, 0.1);
         lastT = now;
         if (!pausedRef.current) {
-          // Match 2D canvas: speed=1 → 30 sim-seconds per real-second (sps=30 × speed)
-          let rem = Math.min(rawDt * speedRef.current * 30, 1.0);
+          // Match 2D canvas: speed=1 → 15 sim-seconds per real-second (sps=15 × speed)
+          let rem = Math.min(rawDt * speedRef.current * 15, 1.0);
           while (rem > 0) { const step = Math.min(rem, MAX_PHYS_DT); update(step); rem -= step; }
         }
         renderer.render(scene, camera);

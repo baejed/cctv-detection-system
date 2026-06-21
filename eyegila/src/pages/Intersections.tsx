@@ -18,9 +18,10 @@ import { Skeleton } from '@/components/ui/skeleton';
 import {
   Plus, Settings2, WifiOff, RefreshCw, Wifi,
   Loader2, TrendingUp, AlertTriangle,
-  Camera, Rocket, LayoutGrid, Map as MapIcon, Users, MapPin, MonitorPlay,
+  Camera, Rocket, LayoutGrid, Map as MapIcon, MapPin, MonitorPlay,
   Wrench, ArrowRight,
 } from 'lucide-react';
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 import { statusBucket, BUCKET_LABEL, BUCKET_BADGE_CLASS } from '@/components/recommendations/statusBucket';
 import { cn } from '@/lib/utils';
 
@@ -348,17 +349,77 @@ function IntersectionCard({ inter, cameras, rec, streets, liveCount, onRefresh, 
 
 // ── Hero stats ────────────────────────────────────────────────────────────────
 
-const PEDESTRIAN_TYPES = new Set(['pedestrian', 'person']);
+const PIE_COLORS = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#0ea5e9', '#a855f7', '#ec4899', '#14b8a6'];
 
-const TYPE_HEX: Record<string, string> = {
-  car:        '#16a34a',
-  motorcycle: '#0369a1',
-  tricycle:   '#d97706',
-  truck:      '#dc2626',
-  pedicab:    '#7c3aed',
-  pedestrian: '#0891b2',
-  person:     '#0891b2',
-};
+function TrafficShareByIntersection({
+  intersections,
+  liveCountByIntersection,
+}: {
+  intersections: Intersection[];
+  liveCountByIntersection: Record<number, number>;
+}) {
+  const data = useMemo(() => {
+    return intersections
+      .map(i => ({ id: i.id, name: i.name, value: liveCountByIntersection[i.id] ?? 0 }))
+      .filter(d => d.value > 0)
+      .sort((a, b) => b.value - a.value);
+  }, [intersections, liveCountByIntersection]);
+
+  const total = data.reduce((s, d) => s + d.value, 0);
+
+  if (data.length === 0) {
+    return (
+      <div className="flex h-40 flex-col items-center justify-center gap-1 text-center">
+        <p className="text-xs font-medium text-muted-foreground">Traffic share by intersection</p>
+        <p className="text-[11px] text-muted-foreground/70">awaiting live data</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-medium text-muted-foreground">Traffic share by intersection</p>
+        <p className="text-[10px] text-muted-foreground tabular-nums">total {total.toLocaleString()}</p>
+      </div>
+      <div className="h-40">
+        <ResponsiveContainer width="100%" height="100%">
+          <PieChart>
+            <Pie
+              data={data}
+              dataKey="value"
+              nameKey="name"
+              innerRadius={32}
+              outerRadius={64}
+              paddingAngle={1}
+              isAnimationActive={false}
+            >
+              {data.map((entry, i) => (
+                <Cell key={entry.id} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+              ))}
+            </Pie>
+            <Tooltip
+              formatter={(value: number, _name, item) => [
+                `${value.toLocaleString()} (${Math.round((value / total) * 100)}%)`,
+                item?.payload?.name,
+              ]}
+              contentStyle={{ fontSize: 11, padding: '4px 8px' }}
+            />
+          </PieChart>
+        </ResponsiveContainer>
+      </div>
+      <div className="flex flex-wrap gap-x-3 gap-y-1">
+        {data.slice(0, 6).map((d, i) => (
+          <span key={d.id} className="flex items-center gap-1 text-[10px] text-muted-foreground">
+            <span className="size-1.5 rounded-full shrink-0" style={{ backgroundColor: PIE_COLORS[i % PIE_COLORS.length] }} />
+            <span className="max-w-[7rem] truncate">{d.name}</span>
+            <strong className="font-semibold text-foreground tabular-nums">{d.value}</strong>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 
@@ -395,19 +456,12 @@ export function IntersectionsPage() {
   }, [intersections, recs]);
 
   const heroStats = useMemo(() => {
-    let vehicles = 0, pedestrians = 0;
-    const byType: Record<string, number> = {};
-    for (const r of sseData ?? []) {
-      if (PEDESTRIAN_TYPES.has(r.object_type)) pedestrians += r.count;
-      else { vehicles += r.count; byType[r.object_type] = (byType[r.object_type] ?? 0) + r.count; }
-    }
-    const topTypes = Object.entries(byType).sort(([, a], [, b]) => b - a).slice(0, 3);
     const camOnline       = cameras.filter(c => c.status === 'online').length;
     const camReconnecting = cameras.filter(c => c.status === 'reconnecting').length;
     const camOffline      = cameras.filter(c => c.status === 'offline').length;
     const activeIntersections = Object.keys(liveCountByIntersection).length;
-    return { vehicles, pedestrians, topTypes, camOnline, camReconnecting, camOffline, activeIntersections };
-  }, [sseData, cameras, liveCountByIntersection]);
+    return { camOnline, camReconnecting, camOffline, activeIntersections };
+  }, [cameras, liveCountByIntersection]);
 
   const [viewMode, setViewMode]               = useState<'grid' | 'map'>('grid');
   const [generatingAll, setGeneratingAll]     = useState(false);
@@ -512,54 +566,17 @@ export function IntersectionsPage() {
 
       {/* Hero stats - visible once data loads */}
       {!loading && intersections.length > 0 && (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <Card>
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+          <Card className="lg:col-span-1">
             <CardContent className="p-4">
-              <div className="flex items-start justify-between">
-                <div>
-                  <p className="text-xs font-medium text-muted-foreground">Vehicles</p>
-                  <p className="mt-1 text-3xl font-black tabular-nums leading-none">
-                    {sseData ? heroStats.vehicles.toLocaleString() : '-'}
-                  </p>
-                </div>
-                <div className="rounded-lg bg-green-100 p-2">
-                  <TrendingUp className="size-4 text-green-700" />
-                </div>
-              </div>
-              {heroStats.topTypes.length > 0 && (
-                <div className="mt-3 flex flex-wrap gap-x-2 gap-y-1">
-                  {heroStats.topTypes.map(([type, count]) => (
-                    <span key={type} className="flex items-center gap-1 text-[10px] text-muted-foreground">
-                      <span className="size-1.5 rounded-full shrink-0" style={{ backgroundColor: TYPE_HEX[type] ?? '#16a34a' }} />
-                      {type[0].toUpperCase() + type.slice(1)} <strong className="font-semibold text-foreground">{count}</strong>
-                    </span>
-                  ))}
-                </div>
-              )}
+              <TrafficShareByIntersection
+                intersections={intersections}
+                liveCountByIntersection={liveCountByIntersection}
+              />
             </CardContent>
           </Card>
 
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex items-start justify-between">
-                <div>
-                  <p className="text-xs font-medium text-muted-foreground">Pedestrians</p>
-                  <p className="mt-1 text-3xl font-black tabular-nums leading-none">
-                    {sseData ? heroStats.pedestrians.toLocaleString() : '-'}
-                  </p>
-                </div>
-                <div className="rounded-lg bg-cyan-100 p-2">
-                  <Users className="size-4 text-cyan-700" />
-                </div>
-              </div>
-              <p className="mt-3 text-[10px] text-muted-foreground">
-                {sseData && (heroStats.vehicles + heroStats.pedestrians) > 0
-                  ? `${Math.round((heroStats.pedestrians / (heroStats.vehicles + heroStats.pedestrians)) * 100)}% of total`
-                  : 'awaiting live data'}
-              </p>
-            </CardContent>
-          </Card>
-
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:col-span-2">
           <Card>
             <CardContent className="p-4">
               <div className="flex items-start justify-between">
@@ -611,6 +628,7 @@ export function IntersectionsPage() {
               </p>
             </CardContent>
           </Card>
+          </div>
         </div>
       )}
 
