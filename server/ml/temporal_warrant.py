@@ -1,4 +1,4 @@
-"""TemporalWarrantCNN — multi-task 1D-CNN model definition.
+"""TemporalWarrantCNN - multi-task 1D-CNN model definition.
 
 Implements the algorithmic centerpiece described in
 `docs/superpowers/plans/2026-06-19-multitask-warrant-cnn-prd.md`
@@ -42,7 +42,7 @@ Parameter count (default config, kernel_size=5):
     ─────────────────────────────
     total:            ~62,633
 
-Slightly above the PRD's "approximately 50K" target — the 64→128 conv layer
+Slightly above the PRD's "approximately 50K" target - the 64→128 conv layer
 dominates and shrinking it further would compromise the receptive field
 argument in the methods chapter. Documented here so the methods-chapter
 parameter table is unambiguous.
@@ -200,7 +200,7 @@ class TemporalWarrantCNN(nn.Module):
             metadata: ``(B, n_metadata_features)`` float tensor.
 
         Returns:
-            ``(warrant_logits, intervention_logits)`` — both raw logits,
+            ``(warrant_logits, intervention_logits)`` - both raw logits,
             shapes ``(B, n_warrants)`` and ``(B, n_intervention_classes)``.
         """
         x = self.conv_block_1(flow)

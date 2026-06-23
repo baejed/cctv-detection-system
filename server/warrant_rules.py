@@ -17,7 +17,7 @@ rate).
 The MUTCD low-speed multiplier of 0.70 (Section 4C.01) applies whenever the
 85th-percentile speed (here approximated by `posted_speed_kph`) is ≤ 40 km/h.
 Thresholds are applied to the *measured* hourly volume; equivalently, the
-threshold itself is multiplied by 0.70 — that is what these helpers do.
+threshold itself is multiplied by 0.70 - that is what these helpers do.
 
 References:
 - MUTCD 2009 §4C.02, Table 4C-1  (Warrant 1: Eight-Hour Vehicular Volume)
@@ -152,7 +152,7 @@ def _w1_thresholds(meta: IntersectionMeta) -> tuple[float, float, float, float]:
 # ── Warrant evaluators ───────────────────────────────────────────────────────
 
 def evaluate_w1(flow_matrix: np.ndarray, meta: IntersectionMeta) -> tuple[bool, float]:
-    """Warrant 1 — Eight-Hour Vehicular Volume (MUTCD §4C.02).
+    """Warrant 1 - Eight-Hour Vehicular Volume (MUTCD §4C.02).
 
     Met when there are at least 8 hours in the day during which either
     Condition A (Minimum Vehicular Volume) or Condition B (Interruption of
@@ -176,7 +176,7 @@ def evaluate_w1(flow_matrix: np.ndarray, meta: IntersectionMeta) -> tuple[bool, 
 
 
 def evaluate_w2(flow_matrix: np.ndarray, meta: IntersectionMeta) -> tuple[bool, float]:
-    """Warrant 2 — Four-Hour Vehicular Volume (MUTCD §4C.03, Figure 4C-1).
+    """Warrant 2 - Four-Hour Vehicular Volume (MUTCD §4C.03, Figure 4C-1).
 
     Approximation of Figure 4C-1 by a piecewise-linear threshold curve fit to
     the published 1-lane and 2+-lane minor-street boundary lines:
@@ -206,7 +206,7 @@ def evaluate_w2(flow_matrix: np.ndarray, meta: IntersectionMeta) -> tuple[bool, 
 
 
 def evaluate_w3(flow_matrix: np.ndarray, meta: IntersectionMeta) -> tuple[bool, float]:
-    """Warrant 3 — Peak Hour (MUTCD §4C.04, Figure 4C-3).
+    """Warrant 3 - Peak Hour (MUTCD §4C.04, Figure 4C-3).
 
     Met when during the single peak hour (highest major-street volume) the
     minor-street volume exceeds an approximation of the Figure 4C-3 curve.
@@ -234,7 +234,7 @@ def evaluate_w3(flow_matrix: np.ndarray, meta: IntersectionMeta) -> tuple[bool, 
 
 
 def evaluate_w4(flow_matrix: np.ndarray, meta: IntersectionMeta) -> tuple[bool, float]:
-    """Warrant 4 — Pedestrian Volume (MUTCD §4C.05).
+    """Warrant 4 - Pedestrian Volume (MUTCD §4C.05).
 
     Met when EITHER:
       - pedestrian volume ≥ 107 peds/hr for each of any 4 hours, OR

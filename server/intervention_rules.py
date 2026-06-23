@@ -10,16 +10,16 @@ The model's intervention head is a 3-class softmax over:
 
 Label assignment uses a deterministic precedence (locked by the PRD):
 
-    1. road_widening  — if critical v/c after Webster's > 0.90 the
+    1. road_widening  - if critical v/c after Webster's > 0.90 the
                         intersection is over capacity; adding a signal
                         cannot help, so a structural fix is required.
-    2. signalize      — if the intersection is unsignalized AND at least one
+    2. signalize      - if the intersection is unsignalized AND at least one
                         MUTCD or W-Local warrant is met.
-    3. timing_only    — fall-through; either already signalized at adequate
+    3. timing_only    - fall-through; either already signalized at adequate
                         capacity, or no warrant fires.
 
 This module is DB-free, framework-free, and fully unit-testable. It does not
-run Webster's itself — callers pass in `critical_vc` already computed.
+run Webster's itself - callers pass in `critical_vc` already computed.
 """
 from __future__ import annotations
 

@@ -31,8 +31,8 @@ The caller is responsible for computing ``bce_warrant`` and
 ``ce_intervention`` themselves (via ``BCEWithLogitsLoss`` /
 ``CrossEntropyLoss`` against the two heads' logits). Keeping the
 component losses out of this module lets training apply class-weighted
-CE for the intervention head — per PRD §Training procedure / Class
-imbalance — without this module having to know about class weights.
+CE for the intervention head - per PRD §Training procedure / Class
+imbalance - without this module having to know about class weights.
 """
 from __future__ import annotations
 
@@ -68,9 +68,9 @@ class UncertaintyWeightedLoss(nn.Module):
         """Combine the two task losses with learned uncertainty weights.
 
         Args:
-            bce_warrant: Scalar tensor — mean ``BCEWithLogitsLoss`` over the
+            bce_warrant: Scalar tensor - mean ``BCEWithLogitsLoss`` over the
                 six warrant logits.
-            ce_intervention: Scalar tensor — mean ``CrossEntropyLoss`` over
+            ce_intervention: Scalar tensor - mean ``CrossEntropyLoss`` over
                 the three intervention logits.
 
         Returns:

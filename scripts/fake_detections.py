@@ -47,11 +47,11 @@ from common.models import (
 )
 
 _TOD_DEFAULTS = [
-    ("Early Morning", 0,    360),
-    ("AM Peak",       360,  540),
-    ("Midday",        540,  720),
-    ("PM Peak",       720,  1080),
-    ("Night",         1080, 1440),
+    ("Overnight", 0,    360),
+    ("AM Rush",   360,  540),
+    ("Midday",    540,  720),
+    ("PM Rush",   720,  1080),
+    ("Evening",   1080, 1440),
 ]
 
 def seed_tod_chunks(db, intersection_id: int) -> None:
@@ -68,6 +68,29 @@ DEFAULT_WEIGHTS = {
     "truck":      0.05,
     "pedicab":    0.10,
     "pedestrian": 0.05,
+}
+
+# Car-dominant mix used by the RTSP single-output scenarios so that
+# motorcycle+tricycle+pedicab share stays well under W-Local 1's 0.6 threshold
+# (combined ≈ 0.30). Used by every RTSP scenario except W-Local 1 and W4.
+CAR_HEAVY_WEIGHTS = {
+    "car":        0.55,
+    "motorcycle": 0.15,
+    "tricycle":   0.10,
+    "truck":      0.10,
+    "pedicab":    0.05,
+    "pedestrian": 0.05,
+}
+
+# Mix used by the dedicated W-Local 1 scenario - combined motorcycle/tricycle/
+# pedicab share ≈ 0.80, comfortably above the 0.6 trigger.
+MOTORCYCLE_HEAVY_WEIGHTS = {
+    "motorcycle": 0.40,
+    "tricycle":   0.25,
+    "pedicab":    0.15,
+    "car":        0.15,
+    "truck":      0.02,
+    "pedestrian": 0.03,
 }
 
 # ---------------------------------------------------------------------------
@@ -140,6 +163,26 @@ MEDIAMTX_HOST   = os.environ.get("MEDIAMTX_HOST") or _detect_host_ip()
 MEDIAMTX_PORT   = int(os.environ.get("MEDIAMTX_PORT", "1935"))
 MEDIAMTX_SCHEME = os.environ.get("MEDIAMTX_SCHEME", "rtmp")
 _STREAM_PREFIX  = f"{MEDIAMTX_SCHEME}://{MEDIAMTX_HOST}:{MEDIAMTX_PORT}"
+
+
+DEFAULT_RTSP_PORT = "8554"
+
+
+def _build_rtsp_url(cam_index: int) -> str:
+    """Build rtsp://<current-LAN-IP>:8554/cam<N> for direct-camera scenarios.
+
+    Re-detects the IP on every call so re-runs always pick up the host's
+    current LAN address (e.g. when the laptop changes WiFi networks).
+    Defaults to MediaMTX's RTSP port (8554) - this stack always exposes
+    MediaMTX RTSP on 8554, never the IANA-default 554, so omitting the port
+    causes the worker to dial :554 and fail with "Connection refused".
+    Override host/port via RTSP_HOST / RTSP_PORT env vars; set RTSP_PORT=""
+    explicitly to emit a port-less URL.
+    """
+    host = os.environ.get("RTSP_HOST") or _detect_host_ip()
+    port = os.environ.get("RTSP_PORT", DEFAULT_RTSP_PORT)
+    host_part = f"{host}:{port}" if port else host
+    return f"rtsp://{host_part}/cam{cam_index}"
 
 SEED_INTERSECTIONS = [
     {
@@ -911,6 +954,704 @@ def seed_demo(db, days: int = 7):
 
 
 # ---------------------------------------------------------------------------
+# CNN scenarios - exercise every warrant + intervention path of the new
+# multi-task TemporalWarrantCNN (W1, W2, W3, W4, W-Local 2, W-Local 3 +
+# signalize / road_widening / timing_only). Each scenario calibrated to push
+# the flow_matrix into a distinctive shape so the model has something to
+# discriminate against.
+# ---------------------------------------------------------------------------
+
+# Per-hour multiplier overrides. Anything not listed falls back to the default
+# HOUR_MULTIPLIERS so we only define the parts that distinguish a scenario.
+# Profile floors are tuned so the *current-hour* MLP fallback (~500/hr major
+# trip point) triggers W1 on every scenario except _lights_off. Once the
+# multi-task CNN is trained these can be relaxed - the CNN consumes the full
+# 24-hour shape and is far less sensitive to which UTC hour the user clicks.
+
+def _w3_peak_hour_profile(hour: int) -> float:
+    if hour == 17: return 1.00
+    if hour == 18: return 0.90
+    if hour in (16, 19): return 0.80
+    return 0.70  # sustained baseline so peak × floor > MLP trip point
+
+def _w4_pedestrian_school_profile(hour: int) -> float:
+    base = HOUR_MULTIPLIERS.get(hour, 0.1)
+    return max(base * 0.8, 0.80)
+
+def _lights_off_profile(hour: int) -> float:
+    # Intentionally never warranted - validates the "no action" UI path.
+    if 22 <= hour or hour <= 4: return 0.05
+    if hour in (7, 8): return 0.30
+    return 0.12
+
+def _road_widening_profile(hour: int) -> float:
+    base = HOUR_MULTIPLIERS.get(hour, 0.1)
+    return max(min(base * 1.6, 1.0), 0.90)  # always near-saturation
+
+def _peak_concentration_profile(hour: int) -> float:
+    if hour in (7, 8, 9): return 1.00
+    return 0.75
+
+def _w1_eight_hour_profile(hour: int) -> float:
+    # 12-hour plateau (07-18) at moderate volume so W1's 8-hour minimum
+    # vehicular volume curve fires, but no hour spikes enough for W3's
+    # peak-hour curve and the daily shape stays too flat for W2's
+    # four-hour curve. Shoulders ramp gently.
+    if 7 <= hour <= 18: return 0.65
+    if hour in (6, 19, 20): return 0.35
+    return 0.10
+
+def _w2_four_hour_profile(hour: int) -> float:
+    # Concentrated 4-hour AM block (07-10) above W2's four-hour curve,
+    # with the rest of the day low enough that the eight-hour W1 minimum
+    # is not satisfied. Peaks high but stays under W3's tighter peak-hour
+    # threshold.
+    if hour in (7, 8, 9, 10): return 0.90
+    if hour in (11, 12): return 0.30
+    if hour in (16, 17): return 0.40
+    return 0.08
+
+CNN_SCENARIOS = [
+    {
+        # Triggers: W3 (peak hour), likely W1 marginal. Intervention: signalize
+        # (unsignalized + warranted).
+        "name": "Demo - CNN W3 Peak Hour Spike",
+        "latitude":  7.4565,
+        "longitude": 125.8190,
+        "signal_status": "unsignalized",
+        "expected_warrants": ["W3"],
+        "expected_intervention": "signalize",
+        "hour_profile": _w3_peak_hour_profile,
+        "ped_weight": 0.05,
+        "streets": [
+            {"name": "NB - Stadium Approach", "cam": "Cam SP-N", "peak": 900, "direction": "northbound"},
+            {"name": "SB - Stadium Approach", "cam": "Cam SP-S", "peak": 880, "direction": "southbound"},
+            {"name": "EB - Cross Street",     "cam": "Cam SP-E", "peak": 220, "direction": "eastbound"},
+            {"name": "WB - Cross Street",     "cam": "Cam SP-W", "peak": 200, "direction": "westbound"},
+        ],
+    },
+    {
+        # Triggers: W4 (pedestrian volume). Intervention: signalize.
+        # Pedestrian channel pushed to 200+ peds/hr at the school-zone peak via
+        # a heavy pedestrian weight; vehicle volume kept moderate.
+        "name": "Demo - CNN W4 Pedestrian School",
+        "latitude":  7.4470,
+        "longitude": 125.8095,
+        "signal_status": "unsignalized",
+        "expected_warrants": ["W4"],
+        "expected_intervention": "signalize",
+        "hour_profile": _w4_pedestrian_school_profile,
+        "ped_weight": 0.55,  # massively pedestrian-skewed
+        "streets": [
+            {"name": "NB - School Road",     "cam": "Cam SC-N", "peak": 700, "direction": "northbound"},
+            {"name": "SB - School Road",     "cam": "Cam SC-S", "peak": 680, "direction": "southbound"},
+            {"name": "EB - Campus Entrance", "cam": "Cam SC-E", "peak": 460, "direction": "eastbound"},
+            {"name": "WB - Campus Entrance", "cam": "Cam SC-W", "peak": 440, "direction": "westbound"},
+        ],
+    },
+    {
+        # Triggers: W-Local 3 (lights-off). Intervention: timing_only (or
+        # signal-off recommendation downstream). Volume collapses overnight.
+        "name": "Demo - CNN Lights Off Eligible",
+        "latitude":  7.4400,
+        "longitude": 125.8060,
+        "signal_status": "fixed_time",
+        "expected_warrants": ["W-Local 3"],
+        "expected_intervention": "timing_only",
+        "hour_profile": _lights_off_profile,
+        "ped_weight": 0.04,
+        "streets": [
+            {"name": "NB - Sleepy Avenue", "cam": "Cam LO-N", "peak": 80, "direction": "northbound"},
+            {"name": "SB - Sleepy Avenue", "cam": "Cam LO-S", "peak": 75, "direction": "southbound"},
+            {"name": "EB - Side Lane",     "cam": "Cam LO-E", "peak": 35, "direction": "eastbound"},
+            {"name": "WB - Side Lane",     "cam": "Cam LO-W", "peak": 30, "direction": "westbound"},
+        ],
+    },
+    {
+        # Triggers: W1+W2+W3 simultaneously. Intervention: road_widening
+        # (critical v/c > 0.90 even after Webster's reallocation).
+        "name": "Demo - CNN Road Widening Saturated",
+        "latitude":  7.4625,
+        "longitude": 125.8210,
+        "signal_status": "fixed_time",
+        "expected_warrants": ["W1", "W2", "W3"],
+        "expected_intervention": "road_widening",
+        "hour_profile": _road_widening_profile,
+        "ped_weight": 0.04,
+        "streets": [
+            {"name": "NB - Highway Spine", "cam": "Cam RW-N", "peak": 1100, "direction": "northbound"},
+            {"name": "SB - Highway Spine", "cam": "Cam RW-S", "peak": 1050, "direction": "southbound"},
+            {"name": "EB - Arterial",      "cam": "Cam RW-E", "peak":  720, "direction": "eastbound"},
+            {"name": "WB - Arterial",      "cam": "Cam RW-W", "peak":  680, "direction": "westbound"},
+        ],
+    },
+    {
+        # Triggers: W-Local 2 (peak concentration >= 70% in top chunks).
+        # AM-only spike, deserts otherwise. Intervention: timing_only.
+        "name": "Demo - CNN Peak Concentration AM",
+        "latitude":  7.4530,
+        "longitude": 125.8025,
+        "signal_status": "fixed_time",
+        "expected_warrants": ["W-Local 2"],
+        "expected_intervention": "timing_only",
+        "hour_profile": _peak_concentration_profile,
+        "ped_weight": 0.06,
+        "streets": [
+            {"name": "NB - Office Park", "cam": "Cam PC-N", "peak": 880, "direction": "northbound"},
+            {"name": "SB - Office Park", "cam": "Cam PC-S", "peak": 840, "direction": "southbound"},
+            {"name": "EB - Feeder",      "cam": "Cam PC-E", "peak": 320, "direction": "eastbound"},
+            {"name": "WB - Feeder",      "cam": "Cam PC-W", "peak": 300, "direction": "westbound"},
+        ],
+    },
+    {
+        # Triggers: W1 (eight-hour vehicular volume). Intervention: signalize.
+        # Flat 12-hour plateau, no sharp peaks - hits W1's eight-hour curve
+        # without crossing W2 (four-hour) or W3 (peak-hour) thresholds.
+        "name": "Demo - CNN W1 Sustained 8hr",
+        "latitude":  7.4380,
+        "longitude": 125.8165,
+        "signal_status": "unsignalized",
+        "expected_warrants": ["W1"],
+        "expected_intervention": "signalize",
+        "hour_profile": _w1_eight_hour_profile,
+        "ped_weight": 0.05,
+        "streets": [
+            {"name": "NB - Market Road",  "cam": "Cam W1-N", "peak": 700, "direction": "northbound"},
+            {"name": "SB - Market Road",  "cam": "Cam W1-S", "peak": 680, "direction": "southbound"},
+            {"name": "EB - Service Lane", "cam": "Cam W1-E", "peak": 260, "direction": "eastbound"},
+            {"name": "WB - Service Lane", "cam": "Cam W1-W", "peak": 240, "direction": "westbound"},
+        ],
+    },
+    {
+        # Triggers: W2 (four-hour vehicular volume). Intervention: signalize.
+        # AM 4-hour shoulder block above the W2 curve; rest of the day too
+        # low to satisfy W1's 8-hour minimum and too flat for W3's peak-hour.
+        "name": "Demo - CNN W2 Shoulder Peaks",
+        "latitude":  7.4490,
+        "longitude": 125.8265,
+        "signal_status": "unsignalized",
+        "expected_warrants": ["W2"],
+        "expected_intervention": "signalize",
+        "hour_profile": _w2_four_hour_profile,
+        "ped_weight": 0.05,
+        "streets": [
+            {"name": "NB - Commerce Ave", "cam": "Cam W2-N", "peak": 820, "direction": "northbound"},
+            {"name": "SB - Commerce Ave", "cam": "Cam W2-S", "peak": 800, "direction": "southbound"},
+            {"name": "EB - Side Road",    "cam": "Cam W2-E", "peak": 280, "direction": "eastbound"},
+            {"name": "WB - Side Road",    "cam": "Cam W2-W", "peak": 260, "direction": "westbound"},
+        ],
+    },
+    # NOTE: W-Local 1 (motorcycle/tricycle/pedicab ratio >= 60% of vehicles)
+    # already fires on every scenario above, because DEFAULT_WEIGHTS puts the
+    # combined motorcycle + tricycle + pedicab share at ~79% of all vehicles.
+    # A dedicated W-Local 1 scenario would be redundant; the warrant surfaces
+    # on the existing scenarios alongside their primary warrant.
+]
+
+
+def _scenario_weights(ped_weight: float) -> dict:
+    """Re-balance the class mix so pedestrian share matches the scenario."""
+    remaining = 1.0 - ped_weight
+    veh_keys = ["tricycle", "motorcycle", "car", "truck", "pedicab"]
+    veh_total = sum(DEFAULT_WEIGHTS[k] for k in veh_keys)
+    w = {k: DEFAULT_WEIGHTS[k] / veh_total * remaining for k in veh_keys}
+    w["pedestrian"] = ped_weight
+    return w
+
+
+def seed_cnn_scenarios(db, days: int = 7):
+    """Seed five intersections that together exercise every CNN warrant +
+    intervention path. Re-runnable: wipes detections + timing recs for each
+    scenario before refilling.
+    """
+    from sqlalchemy import text
+
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    fill_start = now - timedelta(days=days)
+
+    print(f"Seeding CNN warrant + intervention scenarios ({days} days)")
+    print(f"  Range: {fill_start.strftime('%Y-%m-%d %H:%M')} → {now.strftime('%Y-%m-%d %H:%M')} UTC")
+    print()
+
+    for spec in CNN_SCENARIOS:
+        print(f"─ {spec['name']} ({spec['signal_status']})")
+        print(f"    expected warrants: {', '.join(spec['expected_warrants'])}  "
+              f"intervention: {spec['expected_intervention']}")
+
+        intersection = db.query(Intersection).filter_by(name=spec["name"]).first()
+        if intersection is None:
+            intersection = Intersection(
+                name=spec["name"],
+                latitude=spec["latitude"],
+                longitude=spec["longitude"],
+            )
+            db.add(intersection)
+            db.flush()
+            seed_tod_chunks(db, intersection.id)
+            print(f"    [new] id={intersection.id}")
+        else:
+            print(f"    [reuse] id={intersection.id}")
+
+        cctv_ids = [c.id for c in intersection.cctvs]
+        if cctv_ids:
+            db.execute(text("DELETE FROM detections WHERE cctv_id = ANY(:ids)"), {"ids": cctv_ids})
+        db.execute(text(
+            "DELETE FROM timing_recommendations WHERE intersection_id = :iid"
+        ), {"iid": intersection.id})
+        db.flush()
+
+        weights = _scenario_weights(spec["ped_weight"])
+        hour_profile = spec["hour_profile"]
+
+        for s in spec["streets"]:
+            street = db.query(Street).filter_by(
+                intersection_id=intersection.id, name=s["name"]
+            ).first()
+            if not street:
+                street = Street(
+                    intersection_id=intersection.id,
+                    name=s["name"],
+                    arm_direction=s.get("direction", "unknown"),
+                )
+                db.add(street)
+                db.flush()
+            elif street.arm_direction != s.get("direction"):
+                street.arm_direction = s["direction"]
+
+            cctv = db.query(CCTV).filter_by(
+                intersection_id=intersection.id, name=s["cam"]
+            ).first()
+            if not cctv:
+                cctv = CCTV(
+                    intersection_id=intersection.id,
+                    name=s["cam"],
+                    rtsp_url=f"{_STREAM_PREFIX}/cam1",
+                    status="offline",
+                )
+                db.add(cctv)
+                db.flush()
+
+            region = db.query(Region).filter_by(cctv_id=cctv.id, street_id=street.id).first()
+            if not region:
+                region = Region(cctv_id=cctv.id, street_id=street.id, direction="inbound")
+                db.add(region)
+                db.flush()
+                for x, y in [(0.1, 0.1), (0.9, 0.1), (0.9, 0.9), (0.1, 0.9)]:
+                    db.add(RegionPoint(region_id=region.id, x=x, y=y))
+                db.flush()
+            elif region.direction != "inbound":
+                region.direction = "inbound"
+
+            total = 0
+            cursor = fill_start
+            while cursor < now:
+                hour_factor = hour_profile(cursor.hour)
+                dow_factor  = WEEKEND_MULTIPLIER if cursor.weekday() >= 5 else WEEKDAY_MULTIPLIER
+                jitter      = random.uniform(0.90, 1.10)
+                count       = max(0, round(s["peak"] * hour_factor * dow_factor * jitter))
+                if count > 0:
+                    _insert_exact_hour(db, cctv.id, region.id, cursor, count, weights)
+                    total += count
+                cursor += timedelta(hours=1)
+            print(f"    {s['name']:<32} peak={s['peak']:>4}/hr  total={total:>7,}")
+
+        # Existing timing for signalized scenarios: deliberately equal-split so
+        # the CNN sees a real "under-served NS" pattern in flow_matrix.
+        if spec["signal_status"] == "fixed_time":
+            streets = list(db.query(Street).filter_by(intersection_id=intersection.id).all())
+            existing_cycle = 100
+            n_phases = max(len(streets), 1)
+            g_phase = max(
+                round((existing_cycle - n_phases * (4 + 3)) / n_phases, 1),
+                17.0,
+            )
+            intersection.signal_status         = "fixed_time"
+            intersection.existing_cycle_length = existing_cycle
+            intersection.existing_green_splits = {str(st.id): g_phase for st in streets}
+        else:
+            intersection.signal_status         = "unsignalized"
+            intersection.existing_cycle_length = None
+            intersection.existing_green_splits = None
+        db.commit()
+        print()
+
+    # Refresh continuous aggregate so the CNN immediately sees the new data.
+    print("Refreshing continuous aggregate …")
+    try:
+        raw = db.connection().engine.raw_connection()
+        try:
+            raw.autocommit = True
+            cur = raw.cursor()
+            cur.execute("CALL refresh_continuous_aggregate('aggregation_summaries', NULL, NULL);")
+            cur.close()
+        finally:
+            raw.close()
+    except Exception as e:
+        print(f"  (skipped: {e}; policy will catch up within ~1 min)")
+    print()
+    print("Done. On the Dashboard, click 'Run all analyses'. Expected outputs:")
+    for spec in CNN_SCENARIOS:
+        print(f"  • {spec['name']}")
+        print(f"      warrants → {', '.join(spec['expected_warrants'])}    "
+              f"intervention → {spec['expected_intervention']}")
+
+
+# ---------------------------------------------------------------------------
+# RTSP single-output scenarios - 8 intersections, one warrant per intersection
+# (W1, W2, W3, W4, W-Local 1, W-Local 2, W-Local 3) plus a baseline "all clear"
+# control. Every camera's rtsp_url is rewritten to rtsp://<current-IP>/cam<N>
+# on each run so the URLs follow the host's LAN IP automatically.
+# ---------------------------------------------------------------------------
+
+def _w_local_1_flat_profile(hour: int) -> float:
+    # Flat moderate profile so overnight PCU/hr/approach stays above the
+    # W-Local 3 floor (30 PCU/hr) - otherwise the motorcycle-mix scenario
+    # would accidentally also fire W-Local 3.
+    return 0.60
+
+def _baseline_flat_profile(hour: int) -> float:
+    # Constant moderate profile - high enough every hour to stay above the
+    # W-Local 3 floor, low enough total volume that no MUTCD warrant fires.
+    return 0.55
+
+# Real Tagum City intersections, sourced from:
+#   - Wikipedia "Tagum" (N1 Maharlika Hwy, N74 Apokon Rd, N909 Diversion Rd)
+#   - AARoads N1/N74/N909 Philippines highway routings
+#   - Wikimapia tagum.wikimapia.org/streets/
+#   - JICA Tagum Traffic Situation Assessment (UPNCTS, 2021)
+# Each junction is paired with the warrant it would most realistically trigger
+# in the wild (e.g. the N1xN74 crossing is the city's heaviest all-day arterial
+# corner so it carries the W1 sustained-volume scenario).
+RTSP_SCENARIOS = [
+    {
+        # N74 (Apokon Rd) meets N1 (Daang Maharlika) near Magugpo East - the
+        # heaviest all-day arterial intersection in Tagum.
+        "name": "Apokon-Maharlika Junction (W1 - sustained 8hr)",
+        "latitude":  7.4502,
+        "longitude": 125.8095,
+        "signal_status": "unsignalized",
+        "expected_warrants": ["W1"],
+        "hour_profile": _w1_eight_hour_profile,
+        "class_weights": CAR_HEAVY_WEIGHTS,
+        "streets": [
+            {"name": "NB - Apokon Road (toward Davao Oriental)", "direction": "northbound", "peak": 700},
+            {"name": "SB - Apokon Road (toward city center)",    "direction": "southbound", "peak": 680},
+            {"name": "EB - Daang Maharlika (toward Mati)",       "direction": "eastbound",  "peak": 260},
+            {"name": "WB - Daang Maharlika (toward Davao City)", "direction": "westbound",  "peak": 240},
+        ],
+    },
+    {
+        # Pioneer Ave x J. Abad Santos - downtown commercial AM commute block.
+        "name": "Pioneer Avenue Junction (W2 - 4hr block)",
+        "latitude":  7.4470,
+        "longitude": 125.8085,
+        "signal_status": "unsignalized",
+        "expected_warrants": ["W2"],
+        "hour_profile": _w2_four_hour_profile,
+        "class_weights": CAR_HEAVY_WEIGHTS,
+        "streets": [
+            {"name": "NB - Pioneer Avenue",     "direction": "northbound", "peak": 820},
+            {"name": "SB - Pioneer Avenue",     "direction": "southbound", "peak": 800},
+            {"name": "EB - J. Abad Santos St",  "direction": "eastbound",  "peak": 280},
+            {"name": "WB - J. Abad Santos St",  "direction": "westbound",  "peak": 260},
+        ],
+    },
+    {
+        # Visayan Village corridor on Daang Maharlika - the peak congestion that
+        # justified the 1.6 km flyover from CAP Building to Magugpo East.
+        "name": "Visayan Village Flyover Approach (W3 - peak hour)",
+        "latitude":  7.4540,
+        "longitude": 125.8118,
+        "signal_status": "unsignalized",
+        "expected_warrants": ["W3"],
+        "hour_profile": _w3_peak_hour_profile,
+        "class_weights": CAR_HEAVY_WEIGHTS,
+        "streets": [
+            {"name": "NB - Daang Maharlika (toward CAP)",          "direction": "northbound", "peak": 900},
+            {"name": "SB - Daang Maharlika (toward Magugpo East)", "direction": "southbound", "peak": 880},
+            {"name": "EB - Visayan Village Road",                  "direction": "eastbound",  "peak": 220},
+            {"name": "WB - Visayan Village Road",                  "direction": "westbound",  "peak": 200},
+        ],
+    },
+    {
+        # Tagum Public Market - high pedestrian density on Rizal x Coryville.
+        "name": "Tagum Public Market Junction (W4 - pedestrian)",
+        "latitude":  7.4453,
+        "longitude": 125.8091,
+        "signal_status": "unsignalized",
+        "expected_warrants": ["W4"],
+        "hour_profile": _w4_pedestrian_school_profile,
+        # Pedestrian-heavy. Vehicles car-skewed so combined moto/tri/pedicab
+        # stays well below W-Local 1's 0.6 threshold.
+        "class_weights": {
+            "pedestrian": 0.50,
+            "car":        0.30,
+            "motorcycle": 0.08,
+            "tricycle":   0.05,
+            "truck":      0.04,
+            "pedicab":    0.03,
+        },
+        "streets": [
+            {"name": "NB - Rizal Street",    "direction": "northbound", "peak": 700},
+            {"name": "SB - Rizal Street",    "direction": "southbound", "peak": 680},
+            {"name": "EB - Coryville Road",  "direction": "eastbound",  "peak": 460},
+            {"name": "WB - Coryville Road",  "direction": "westbound",  "peak": 440},
+        ],
+    },
+    {
+        # Mankilam barangay loop - barangay roads with tricycle/motorcycle
+        # dominance characteristic of Tagum's inner residential network.
+        "name": "Mankilam Barangay Junction (W-Local 1 - motorcycle mix)",
+        "latitude":  7.4422,
+        "longitude": 125.8228,
+        "signal_status": "unsignalized",
+        "expected_warrants": ["W-Local 1"],
+        "hour_profile": _w_local_1_flat_profile,
+        "class_weights": MOTORCYCLE_HEAVY_WEIGHTS,
+        "streets": [
+            {"name": "NB - Mankilam Road",       "direction": "northbound", "peak": 150},
+            {"name": "SB - Mankilam Road",       "direction": "southbound", "peak": 140},
+            {"name": "EB - Apokon Side Road",    "direction": "eastbound",  "peak":  90},
+            {"name": "WB - Apokon Side Road",    "direction": "westbound",  "peak":  85},
+        ],
+    },
+    {
+        # Tagum City Hall Junction (Apokon x Lapu-Lapu) - government district
+        # with office-hours peak concentration.
+        "name": "Tagum City Hall Junction (W-Local 2 - peak concentration)",
+        "latitude":  7.4478,
+        "longitude": 125.8112,
+        "signal_status": "fixed_time",
+        "expected_warrants": ["W-Local 2"],
+        "hour_profile": _peak_concentration_profile,
+        "class_weights": CAR_HEAVY_WEIGHTS,
+        "streets": [
+            {"name": "NB - Apokon Road",     "direction": "northbound", "peak": 880},
+            {"name": "SB - Apokon Road",     "direction": "southbound", "peak": 840},
+            {"name": "EB - Lapu-Lapu Street","direction": "eastbound",  "peak": 320},
+            {"name": "WB - Lapu-Lapu Street","direction": "westbound",  "peak": 300},
+        ],
+    },
+    {
+        # La Filipina x N909 Tagum Diversion Road - outer ring road; quiet
+        # overnight enough that the lights-off recommendation is viable.
+        "name": "La Filipina-Diversion Junction (W-Local 3 - lights off)",
+        "latitude":  7.4612,
+        "longitude": 125.7960,
+        "signal_status": "fixed_time",
+        "expected_warrants": ["W-Local 3"],
+        "hour_profile": _lights_off_profile,
+        "class_weights": CAR_HEAVY_WEIGHTS,
+        "streets": [
+            {"name": "NB - Tagum Diversion Road",  "direction": "northbound", "peak": 80},
+            {"name": "SB - Tagum Diversion Road",  "direction": "southbound", "peak": 75},
+            {"name": "EB - La Filipina Road",      "direction": "eastbound",  "peak": 35},
+            {"name": "WB - La Filipina Road",      "direction": "westbound",  "peak": 30},
+        ],
+    },
+    {
+        # Cuambogan residential barangay - the "nothing-to-do" baseline.
+        "name": "Cuambogan Residential Junction (baseline - all clear)",
+        "latitude":  7.4380,
+        "longitude": 125.8268,
+        "signal_status": "unsignalized",
+        "expected_warrants": [],  # nothing fires
+        "hour_profile": _baseline_flat_profile,
+        "class_weights": CAR_HEAVY_WEIGHTS,
+        "streets": [
+            {"name": "NB - Cuambogan Road",      "direction": "northbound", "peak": 80},
+            {"name": "SB - Cuambogan Road",      "direction": "southbound", "peak": 75},
+            {"name": "EB - San Miguel Side Lane","direction": "eastbound",  "peak": 70},
+            {"name": "WB - San Miguel Side Lane","direction": "westbound",  "peak": 65},
+        ],
+    },
+    {
+        # Magugpo East at Kar Asia (the corner that triggered the 1.6 km
+        # Daang Maharlika flyover in real life). Already signalized, but
+        # demand is so high that post-Webster critical v/c stays above 0.90 -
+        # the rules engine then escalates from timing_only -> road_widening.
+        # Note: this scenario intentionally triggers W1+W2+W3 simultaneously
+        # since road_widening is an *intervention* output, not a single
+        # warrant. The unique signal here is the intervention class itself.
+        "name": "Magugpo East-Kar Asia Junction (widen - over capacity)",
+        "latitude":  7.4565,
+        "longitude": 125.8210,
+        "signal_status": "fixed_time",
+        "expected_warrants": ["W1", "W2", "W3"],
+        "hour_profile": _road_widening_profile,
+        "class_weights": CAR_HEAVY_WEIGHTS,
+        "streets": [
+            {"name": "NB - Daang Maharlika (toward CAP Building)",      "direction": "northbound", "peak": 1100},
+            {"name": "SB - Daang Maharlika (toward Magugpo East)",      "direction": "southbound", "peak": 1050},
+            {"name": "EB - Magugpo East Arterial",                      "direction": "eastbound",  "peak":  720},
+            {"name": "WB - Magugpo East Arterial",                      "direction": "westbound",  "peak":  680},
+        ],
+    },
+]
+
+
+def seed_rtsp_scenarios(db, days: int = 7):
+    """Seed 8 intersections - one per warrant output + 1 baseline - with
+    rtsp://<current-LAN-IP>/cam{1..4} URLs.
+
+    Re-runnable (option b): on every call, every scenario intersection has its
+    detections and timing recommendations wiped, then refilled with `days`
+    of TOD-patterned traffic. Every camera's rtsp_url is rewritten to the
+    freshly-detected LAN IP so URLs always follow the host.
+    """
+    from sqlalchemy import text
+
+    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    fill_start = now - timedelta(days=days)
+    # Fill 48 hours past "now" so demos remain valid for a full day even
+    # without a re-seed. The analyzer reads the "previous complete hour"
+    # window, which shifts forward as the wall clock ticks; without this
+    # buffer, _compute_features returns zeros within an hour of seeding and
+    # _analyze bails out with _empty_analysis -> recommended=False everywhere.
+    # Pair with a periodic reseed (see scripts/reseed-rtsp.sh) so the buffer
+    # never actually expires in practice.
+    fill_end = now + timedelta(hours=48)
+
+    sample_url = _build_rtsp_url(1)
+    print(f"Seeding RTSP single-output scenarios ({days} days + 48h buffer)")
+    print(f"  RTSP URL template: {sample_url[:sample_url.rfind('/')]}/cam{{1..4}}")
+    print(f"  Range: {fill_start.strftime('%Y-%m-%d %H:%M')} → {fill_end.strftime('%Y-%m-%d %H:%M')} UTC")
+    print()
+
+    for spec in RTSP_SCENARIOS:
+        warrants_label = ", ".join(spec["expected_warrants"]) if spec["expected_warrants"] else "(none - baseline)"
+        print(f"─ {spec['name']} ({spec['signal_status']})")
+        print(f"    expected warrant: {warrants_label}")
+
+        intersection = db.query(Intersection).filter_by(name=spec["name"]).first()
+        if intersection is None:
+            intersection = Intersection(
+                name=spec["name"],
+                latitude=spec["latitude"],
+                longitude=spec["longitude"],
+            )
+            db.add(intersection)
+            db.flush()
+            seed_tod_chunks(db, intersection.id)
+            print(f"    [new] id={intersection.id}")
+        else:
+            print(f"    [reuse] id={intersection.id}")
+
+        # Option-(b) idempotency: wipe detections and timing recs every run.
+        cctv_ids = [c.id for c in intersection.cctvs]
+        if cctv_ids:
+            db.execute(text("DELETE FROM detections WHERE cctv_id = ANY(:ids)"), {"ids": cctv_ids})
+        db.execute(text(
+            "DELETE FROM timing_recommendations WHERE intersection_id = :iid"
+        ), {"iid": intersection.id})
+        db.flush()
+
+        # Normalize class weights for random.choices.
+        raw_weights = spec["class_weights"]
+        weights_total = sum(raw_weights.values())
+        weights = {k: v / weights_total for k, v in raw_weights.items()}
+        hour_profile = spec["hour_profile"]
+
+        for cam_idx, s in enumerate(spec["streets"], start=1):
+            cam_name = f"{spec['name']} - cam{cam_idx}"
+            rtsp_url = _build_rtsp_url(cam_idx)
+
+            street = db.query(Street).filter_by(
+                intersection_id=intersection.id, name=s["name"]
+            ).first()
+            if not street:
+                street = Street(
+                    intersection_id=intersection.id,
+                    name=s["name"],
+                    arm_direction=s.get("direction", "unknown"),
+                )
+                db.add(street)
+                db.flush()
+            elif street.arm_direction != s.get("direction"):
+                street.arm_direction = s["direction"]
+
+            cctv = db.query(CCTV).filter_by(
+                intersection_id=intersection.id, name=cam_name
+            ).first()
+            if cctv is None:
+                cctv = CCTV(
+                    intersection_id=intersection.id,
+                    name=cam_name,
+                    rtsp_url=rtsp_url,
+                    status="offline",
+                )
+                db.add(cctv)
+                db.flush()
+            else:
+                # Always rewrite to current LAN IP so URLs follow the host.
+                cctv.rtsp_url = rtsp_url
+
+            region = db.query(Region).filter_by(cctv_id=cctv.id, street_id=street.id).first()
+            if region is None:
+                region = Region(cctv_id=cctv.id, street_id=street.id, direction="inbound")
+                db.add(region)
+                db.flush()
+                for x, y in [(0.1, 0.1), (0.9, 0.1), (0.9, 0.9), (0.1, 0.9)]:
+                    db.add(RegionPoint(region_id=region.id, x=x, y=y))
+                db.flush()
+            elif region.direction != "inbound":
+                region.direction = "inbound"
+
+            total = 0
+            cursor = fill_start
+            while cursor < fill_end:
+                hour_factor = hour_profile(cursor.hour)
+                dow_factor  = WEEKEND_MULTIPLIER if cursor.weekday() >= 5 else WEEKDAY_MULTIPLIER
+                jitter      = random.uniform(0.90, 1.10)
+                count       = max(0, round(s["peak"] * hour_factor * dow_factor * jitter))
+                if count > 0:
+                    _insert_exact_hour(db, cctv.id, region.id, cursor, count, weights)
+                    total += count
+                cursor += timedelta(hours=1)
+            print(f"    {s['name']:<28} peak={s['peak']:>4}/hr  rtsp_url={rtsp_url}  total={total:>7,}")
+
+        # Match the existing scenario timing setup so Webster has something to
+        # propose against on the fixed_time scenarios.
+        if spec["signal_status"] == "fixed_time":
+            streets = list(db.query(Street).filter_by(intersection_id=intersection.id).all())
+            existing_cycle = 100
+            n_phases = max(len(streets), 1)
+            g_phase = max(
+                round((existing_cycle - n_phases * (4 + 3)) / n_phases, 1),
+                17.0,
+            )
+            intersection.signal_status         = "fixed_time"
+            intersection.existing_cycle_length = existing_cycle
+            intersection.existing_green_splits = {str(st.id): g_phase for st in streets}
+        else:
+            intersection.signal_status         = "unsignalized"
+            intersection.existing_cycle_length = None
+            intersection.existing_green_splits = None
+        db.commit()
+        print()
+
+    # Force-refresh the TimescaleDB continuous aggregate so the new detections
+    # are immediately visible to Webster / the recommendation pipeline.
+    print("Refreshing continuous aggregate …")
+    try:
+        raw = db.connection().engine.raw_connection()
+        try:
+            raw.autocommit = True
+            cur = raw.cursor()
+            cur.execute("CALL refresh_continuous_aggregate('aggregation_summaries', NULL, NULL);")
+            cur.close()
+        finally:
+            raw.close()
+    except Exception as e:
+        print(f"  (skipped: {e}; policy will catch up within ~1 min)")
+    print()
+    print("Done. Expected outputs after 'Run all analyses':")
+    for spec in RTSP_SCENARIOS:
+        wl = ", ".join(spec["expected_warrants"]) if spec["expected_warrants"] else "no warrants - baseline"
+        print(f"  • {spec['name']}  →  {wl}")
+
+
+# ---------------------------------------------------------------------------
 # Signalize one existing intersection (apply scenario treatment in-place)
 # ---------------------------------------------------------------------------
 
@@ -1081,6 +1822,16 @@ def main():
                              "with clear Webster improvement, one not-warranted+unsignalized "
                              "that exercises the gating logic. All six detection classes "
                              "present, 7 days of TOD-patterned traffic. Re-runnable.")
+    parser.add_argument("--cnn", action="store_true",
+                        help="Seed five CNN-targeted scenarios that together exercise every "
+                             "warrant (W1-W4, W-Local 2, W-Local 3) and intervention class "
+                             "(signalize, road_widening, timing_only). Re-runnable.")
+    parser.add_argument("--rtsp", action="store_true",
+                        help="Seed 8 single-output intersections (one per warrant W1/W2/W3/W4/"
+                             "W-Local 1/W-Local 2/W-Local 3 + 1 baseline) with rtsp_url set to "
+                             "rtsp://<current-LAN-IP>/cam{1..4}. Re-runnable: detections wiped + "
+                             "refilled and every rtsp_url rewritten to current IP each run. "
+                             "Override host/port via RTSP_HOST / RTSP_PORT env vars.")
     parser.add_argument("--peak", type=int, default=280,
                         help="Peak detections/hour at busiest hour for --signalize (default: 280)")
     parser.add_argument("--list",      action="store_true",
@@ -1124,6 +1875,14 @@ def main():
 
         if args.demo:
             seed_demo(db)
+            return
+
+        if args.cnn:
+            seed_cnn_scenarios(db, days=args.days if args.days != 14 else 7)
+            return
+
+        if args.rtsp:
+            seed_rtsp_scenarios(db, days=args.days if args.days != 14 else 7)
             return
 
         if args.fill:

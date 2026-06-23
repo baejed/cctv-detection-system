@@ -92,7 +92,7 @@ def _metadata_to_vector(
 
     Accepts either an ``IntersectionMeta`` dataclass (read by attribute) or a
     plain mapping (read by key) so callers can pass whichever shape is
-    convenient — the router (T16) builds an ``IntersectionMeta`` from the
+    convenient - the router (T16) builds an ``IntersectionMeta`` from the
     Intersection row, while tests can pass a dict.
     """
     if isinstance(metadata, IntersectionMeta):
@@ -119,10 +119,10 @@ def predict_recommendations(
 
     Returns:
         ``RecommendationResult`` with:
-            * ``warrant_probs`` — ``{warrant_name: probability ∈ [0, 1]}``
+            * ``warrant_probs`` - ``{warrant_name: probability ∈ [0, 1]}``
               over the six warrants the model was trained on.
-            * ``intervention`` — the argmax intervention class string.
-            * ``intervention_confidence`` — the softmax probability of the
+            * ``intervention`` - the argmax intervention class string.
+            * ``intervention_confidence`` - the softmax probability of the
               argmax class, in ``[0, 1]``.
     """
     flow_array = np.asarray(flow_matrix, dtype=np.float32)

@@ -24,8 +24,8 @@ Implements the hyperparameter tuning step from
     search budget allows the full 100/10 schedule.
 
 Outputs (under ``--output-dir``):
-  ``optuna_trials.json``  — every trial's params, value, state, and timing.
-  ``best_params.json``    — the best trial's params + value + trial number,
+  ``optuna_trials.json``  - every trial's params, value, state, and timing.
+  ``best_params.json``    - the best trial's params + value + trial number,
     formatted to drop straight into ``scripts/train_multitask_cnn.py``'s
     CLI flags for the final 5-seed run.
 
@@ -181,7 +181,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="Fixed training seed used for every trial.")
     parser.add_argument("--optuna-seed", type=int, default=DEFAULT_OPTUNA_SEED,
                         help="Seed for the TPE sampler (study reproducibility).")
-    # Dataset / split — mirrored from train_multitask_cnn for consistency.
+    # Dataset / split - mirrored from train_multitask_cnn for consistency.
     parser.add_argument("--n-intersections", type=int, default=DEFAULT_N_INTERSECTIONS)
     parser.add_argument("--n-days", type=int, default=DEFAULT_N_DAYS)
     parser.add_argument("--n-train-intersections", type=int,
@@ -200,7 +200,7 @@ def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+        format="%(asctime)s %(levelname)s %(name)s - %(message)s",
     )
 
     try:
@@ -240,7 +240,7 @@ def main(argv: list[str] | None = None) -> None:
         split_seed=args.split_seed,
     )
     logger.info(
-        "splits — train=%d val=%d test=%d (intersections: %d/%d/%d)",
+        "splits - train=%d val=%d test=%d (intersections: %d/%d/%d)",
         len(train_idx), len(val_idx), len(test_idx),
         len(np.unique(data.intersection_id[train_idx])),
         len(np.unique(data.intersection_id[val_idx])),
@@ -263,7 +263,7 @@ def main(argv: list[str] | None = None) -> None:
 
     sampler = optuna.samplers.TPESampler(seed=args.optuna_seed)
     study = optuna.create_study(direction="minimize", sampler=sampler)
-    logger.info("starting Optuna study — n_trials=%d", args.n_trials)
+    logger.info("starting Optuna study - n_trials=%d", args.n_trials)
     study.optimize(objective, n_trials=args.n_trials, show_progress_bar=False)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)

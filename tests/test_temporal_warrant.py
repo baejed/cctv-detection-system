@@ -1,6 +1,6 @@
 """Inference contract tests for the multi-task TemporalWarrantCNN recommender.
 
-Pure-function tests — no DB, no FastAPI app. Mirrors the style of
+Pure-function tests - no DB, no FastAPI app. Mirrors the style of
 `tests/test_warrant_rules.py` and `tests/test_intervention_rules.py`.
 
 Per `docs/superpowers/plans/2026-06-19-multitask-warrant-cnn-prd.md`
@@ -13,8 +13,8 @@ Per `docs/superpowers/plans/2026-06-19-multitask-warrant-cnn-prd.md`
     small model (not the trained one) so the test does not depend on
     training outcomes.
 
-The test exercises external behaviour only — output shapes, value ranges,
-field names, and the metadata-input/checkpoint-roundtrip contract — not
+The test exercises external behaviour only - output shapes, value ranges,
+field names, and the metadata-input/checkpoint-roundtrip contract - not
 internal layer activations, so a future architecture tweak that preserves
 the same I/O contract does not break these tests.
 """

@@ -1,21 +1,21 @@
-# Multi-Task 1D-CNN Warrant + Intervention Recommender — PRD
+# Multi-Task 1D-CNN Warrant + Intervention Recommender - PRD
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this PRD task-by-task.
 
 **Status:** Ready for agent
-**Supersedes (centerpiece scope only):** `docs/superpowers/plans/2026-06-18-tod-clustering-thesis.md` — Phase 5 "WarrantMLP framing" is replaced; Phases 1–4 (synthetic data + K-means) remain in force and feed this PRD.
+**Supersedes (centerpiece scope only):** `docs/superpowers/plans/2026-06-18-tod-clustering-thesis.md` - Phase 5 "WarrantMLP framing" is replaced; Phases 1–4 (synthetic data + K-means) remain in force and feed this PRD.
 
 ---
 
 ## Problem Statement
 
-The CS thesis panel evaluates the system on the strength of its core algorithm. The current algorithmic spine — `sklearn.KMeans` + a 5-input scalar-feature MLP — is undergraduate-coursework ML, not a thesis-grade contribution. The existing `WarrantMLP` predicts only 3 MUTCD warrants (W1, W2, W4) plus a meta `recommended` flag from 5 hand-engineered scalars (`major_volume`, `minor_volume`, `peds`, `vpm`, `phf`), discarding the temporal structure that the CCTV → YOLOv8 → flow-timeseries pipeline produces. A panelist asking *"what is the core algorithm of this system?"* has no compelling answer.
+The CS thesis panel evaluates the system on the strength of its core algorithm. The current algorithmic spine - `sklearn.KMeans` + a 5-input scalar-feature MLP - is undergraduate-coursework ML, not a thesis-grade contribution. The existing `WarrantMLP` predicts only 3 MUTCD warrants (W1, W2, W4) plus a meta `recommended` flag from 5 hand-engineered scalars (`major_volume`, `minor_volume`, `peds`, `vpm`, `phf`), discarding the temporal structure that the CCTV → YOLOv8 → flow-timeseries pipeline produces. A panelist asking *"what is the core algorithm of this system?"* has no compelling answer.
 
-Additionally, the current warrant output answers only *"should this intersection be signalized?"* — it does not recommend richer infrastructure interventions (e.g., road widening) that the Tagum City CTMO needs for capital planning.
+Additionally, the current warrant output answers only *"should this intersection be signalized?"* - it does not recommend richer infrastructure interventions (e.g., road widening) that the Tagum City CTMO needs for capital planning.
 
 ## Solution
 
-Replace the existing scalar `WarrantMLP` as the thesis centerpiece with a **multi-task 1D convolutional neural network** that consumes the full per-approach flow timeseries `(96 slots × 5 channels)` plus intersection metadata, and jointly predicts:
+Replace the existing scalar `WarrantMLP` as the thesis centerpiece with a **multi-task 1D convolutional neural network** that consumes the full per-approach flow timeseries `(`96 slots × 5 channels)` plus intersection metadata, and jointly predicts:
 
 1. **Six warrant probabilities** (multi-label sigmoid head): MUTCD W1, W2, W3, W4 + Tagum-local W-Local 2 (peak concentration) and W-Local 3 (lights off).
 2. **A 3-class infrastructure intervention recommendation** (softmax head): `signalize`, `road_widening`, or `timing_only` (= no structural change needed).
@@ -90,9 +90,9 @@ The model is trained on a parameter-realistic synthetic dataset (~5,400 intersec
 - **Pedestrian channel:** Add a 5th input channel to the synthetic flow matrix using realistic Philippine urban patterns (morning, lunch, evening peaks).
 - **Intersection metadata generation:** Each synthetic intersection gets `IntersectionMeta(major_lanes ∈ {1,2}, minor_lanes ∈ {1,2}, posted_speed_kph ∈ {30,40,50}, is_signalized ∈ {True,False}, n_approaches ∈ {3,4})` sampled with Tagum-realistic probabilities.
 - **Warrant label generation:** Pure-function evaluators apply MUTCD 4C.01–4C.04 thresholds (with low-speed 0.70 multiplier for `posted_speed_kph ≤ 40`) and reuse W-Local 2 and W-Local 3 logic from the existing `server/local_warrants.py` rules.
-- **Intervention label assignment:** Deterministic precedence — `road_widening` if post-Webster's critical v/c > 0.90; else `signalize` if `not is_signalized` and any warrant met; else `timing_only`. Webster's is run against K-means-derived TOD chunks (the existing Phase 2 pipeline) on every synthetic day to compute the critical v/c.
+- **Intervention label assignment:** Deterministic precedence - `road_widening` if post-Webster's critical v/c > 0.90; else `signalize` if `not is_signalized` and any warrant met; else `timing_only`. Webster's is run against K-means-derived TOD chunks (the existing Phase 2 pipeline) on every synthetic day to compute the critical v/c.
 - **Dataset shape:** 30 synthetic intersections × 90 days × 2 day-types ≈ 5,400 samples.
-- **Dataset split:** Intersection-stratified — ~21 train / 4 val / 5 test intersections. Stratify within each split across metadata profiles using `sklearn.model_selection.GroupShuffleSplit` with `groups=intersection_id`.
+- **Dataset split:** Intersection-stratified - ~21 train / 4 val / 5 test intersections. Stratify within each split across metadata profiles using `sklearn.model_selection.GroupShuffleSplit` with `groups=intersection_id`.
 
 ### Module changes
 
@@ -117,7 +117,7 @@ The model is trained on a parameter-realistic synthetic dataset (~5,400 intersec
 
 ## Testing Decisions
 
-- **Test only external behavior** — model outputs, rule outputs, inference results — not internal layer activations or optimizer step counts. Tests should remain valid if a layer width changes.
+- **Test only external behavior** - model outputs, rule outputs, inference results - not internal layer activations or optimizer step counts. Tests should remain valid if a layer width changes.
 - **Warrant rule unit tests** (`tests/test_warrant_rules.py`): Each MUTCD warrant evaluator is tested with hand-crafted `(flow_matrix, metadata)` fixtures known to trigger or not trigger the warrant. Mirrors the existing pure-function tests for W-Local rules in `tests/test_local_warrants.py`.
 - **Intervention rule unit tests** (`tests/test_intervention_rules.py`): The precedence function is tested for each of the 3 outcomes and for the three pairwise ties (both widening+signalize-eligible, etc.). Verifies the locked precedence `widening > signalize > timing_only`.
 - **Synthetic generator extension tests** (`tests/test_synthetic_traffic.py`): Determinism (same seed → same data), schema completeness (every sample has metadata + warrant + intervention labels), class-balance sanity check (intervention class distribution within ±10% of expected proportions).
@@ -127,7 +127,7 @@ The model is trained on a parameter-realistic synthetic dataset (~5,400 intersec
 
 ## Out of Scope
 
-- **Per-vehicle-type synthesis** (motorcycle, pedicab, tricycle splits). Required to predict W-Local 1 from the ML head — explicitly deferred. W-Local 1 remains a runtime rule in production code.
+- **Per-vehicle-type synthesis** (motorcycle, pedicab, tricycle splits). Required to predict W-Local 1 from the ML head - explicitly deferred. W-Local 1 remains a runtime rule in production code.
 - **Replacing Webster's with a neural timing optimizer.** Considered (Option #6 / "neural Webster's") and explicitly rejected for this cut due to risk and effort. Future-work candidate.
 - **Online forecasting** (LSTM/Transformer for next-15-min flow prediction). Already deferred in the parent plan; remains out of scope.
 - **Corridor coordination across multiple intersections.** Already scoped out at the project level.
@@ -141,11 +141,11 @@ The model is trained on a parameter-realistic synthetic dataset (~5,400 intersec
 - **Thesis one-liner the panel can recite:** "The proposed system provides automated decision support for traffic signal management in Tagum City. A multi-task 1D convolutional neural network jointly predicts six MUTCD/local signal-warrant probabilities and a 3-class infrastructure intervention recommendation from intersection flow timeseries, trained with uncertainty-based loss weighting on a parameter-realistic synthetic dataset with intersection-stratified splits. An unsupervised K-means TOD-regime discovery module drives a Webster's signal timing engine downstream."
 - **Effort estimate:** ~4–5 weeks for implementation. Roughly equivalent to the original parent plan, with the algorithmic contribution upgraded from "K-means + scalar MLP" to "multi-task 1D-CNN with K-means as supporting infrastructure."
 - **Risks tracked:**
-  1. The CNN may underperform the scalar MLP baseline on warrant AUC; if so, report honestly — the interpretability story (Grad-CAM over the timeseries) still differentiates the contribution.
+  1. The CNN may underperform the scalar MLP baseline on warrant AUC; if so, report honestly - the interpretability story (Grad-CAM over the timeseries) still differentiates the contribution.
   2. `road_widening` class may be sparse (<10% of samples); class-weighted CE + per-class metrics mitigate.
-  3. Panel may ask why W-Local 1 is excluded from the ML head; the answer is per-vehicle-type synthesis cost — keep W-Local 1 as a runtime rule in production.
-  4. The original parent plan's wording around "two ML paradigms" needs updating in the methods chapter — K-means is now framed as supporting, not co-equal.
-- **Relationship to parent plan:** Phases 1 (synthetic data), 2 (K-means), 3 (pipeline integration), and 4 (evaluation harness for K-means) from `2026-06-18-tod-clustering-thesis.md` remain in force. Phase 5 ("WarrantMLP framing — mostly writing") is superseded by this PRD. Phase 6 (thesis writing) is updated: the methods chapter now centers the multi-task CNN; K-means becomes a supporting subsection rather than a co-equal pillar.
+  3. Panel may ask why W-Local 1 is excluded from the ML head; the answer is per-vehicle-type synthesis cost - keep W-Local 1 as a runtime rule in production.
+  4. The original parent plan's wording around "two ML paradigms" needs updating in the methods chapter - K-means is now framed as supporting, not co-equal.
+- **Relationship to parent plan:** Phases 1 (synthetic data), 2 (K-means), 3 (pipeline integration), and 4 (evaluation harness for K-means) from `2026-06-18-tod-clustering-thesis.md` remain in force. Phase 5 ("WarrantMLP framing - mostly writing") is superseded by this PRD. Phase 6 (thesis writing) is updated: the methods chapter now centers the multi-task CNN; K-means becomes a supporting subsection rather than a co-equal pillar.
 - **MUTCD threshold tables** for warrant rules should be cited explicitly in the methods chapter (Tables 4C-1, 4C-2, 4C-3; Figures 4C-1, 4C-3). The 0.70 low-speed multiplier (Section 4C.01) applies to Tagum on both counts (≤40 kph speed limit, <10,000 population qualifying for the urban-rural reduction).
 - **Multi-task learning citation** for the loss formulation: Kendall, A., Gal, Y., & Cipolla, R. (2018). *Multi-Task Learning Using Uncertainty to Weigh Losses for Scene Geometry and Semantics*. CVPR 2018.
-- **No issue tracker configured for this repo** — this PRD is published as a markdown plan document in `docs/superpowers/plans/`. If an issue tracker is added later, this document should be filed as a tracked ticket with the `ready-for-agent` triage label.
+- **No issue tracker configured for this repo** - this PRD is published as a markdown plan document in `docs/superpowers/plans/`. If an issue tracker is added later, this document should be filed as a tracked ticket with the `ready-for-agent` triage label.

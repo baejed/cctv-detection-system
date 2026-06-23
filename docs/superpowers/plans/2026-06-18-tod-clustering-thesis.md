@@ -27,25 +27,25 @@
 ## File Map
 
 **Create:**
-- `server/ml/tod_features.py` — build `(96, 4)` flow matrix per intersection per day-type
-- `server/ml/tod_clustering.py` — K-means clustering, semantic naming, contiguous-chunk collapse, top-level pipeline
-- `server/ml/synthetic_traffic.py` — synthetic data generator with ground-truth regimes
-- `server/routers/tod_discovery.py` — `POST /intersections/{id}/discover-tod-chunks` route
-- `scripts/generate_synthetic_dataset.py` — one-shot CLI to materialize the thesis dataset
-- `scripts/evaluate_tod_clustering.py` — thesis evaluation harness (intrinsic + downstream metrics)
-- `tests/test_tod_clustering.py` — unit tests
-- `tests/test_synthetic_traffic.py` — unit tests
-- `docs/superpowers/specs/2026-06-18-tod-clustering-design.md` — companion spec (architecture/decisions)
+- `server/ml/tod_features.py` - build `(96, 4)` flow matrix per intersection per day-type
+- `server/ml/tod_clustering.py` - K-means clustering, semantic naming, contiguous-chunk collapse, top-level pipeline
+- `server/ml/synthetic_traffic.py` - synthetic data generator with ground-truth regimes
+- `server/routers/tod_discovery.py` - `POST /intersections/{id}/discover-tod-chunks` route
+- `scripts/generate_synthetic_dataset.py` - one-shot CLI to materialize the thesis dataset
+- `scripts/evaluate_tod_clustering.py` - thesis evaluation harness (intrinsic + downstream metrics)
+- `tests/test_tod_clustering.py` - unit tests
+- `tests/test_synthetic_traffic.py` - unit tests
+- `docs/superpowers/specs/2026-06-18-tod-clustering-design.md` - companion spec (architecture/decisions)
 
 **Modify:**
-- `server/requirements.txt` — add `scikit-learn` (if not already pulled in by torch)
-- `server/scheduler.py` — register weekly TOD-discovery job per intersection
-- `server/main.py` — register the new router
-- `common/models.py` — only if a `tod_discovery_mode` column is added (deferred — synthetic thesis doesn't need it)
+- `server/requirements.txt` - add `scikit-learn` (if not already pulled in by torch)
+- `server/scheduler.py` - register weekly TOD-discovery job per intersection
+- `server/main.py` - register the new router
+- `common/models.py` - only if a `tod_discovery_mode` column is added (deferred - synthetic thesis doesn't need it)
 
 ---
 
-## Phase 1 — Synthetic data generator
+## Phase 1 - Synthetic data generator
 
 ### Task 1: Define the synthetic data model
 
@@ -114,13 +114,13 @@ Writes the generated rows into a Parquet file at `data/synthetic_traffic.parquet
 
 ### Task 4: Tests for the generator
 
-- [ ] **Step 1: Determinism test** — same seed produces same data
-- [ ] **Step 2: Schedule integrity** — every slot has exactly one regime label
-- [ ] **Step 3: Statistical sanity** — across weeks, the empirical means per slot are within 15% of the ground-truth regime profile
+- [ ] **Step 1: Determinism test** - same seed produces same data
+- [ ] **Step 2: Schedule integrity** - every slot has exactly one regime label
+- [ ] **Step 3: Statistical sanity** - across weeks, the empirical means per slot are within 15% of the ground-truth regime profile
 
 ---
 
-## Phase 2 — K-means clustering module
+## Phase 2 - K-means clustering module
 
 ### Task 5: Flow matrix builder
 
@@ -130,7 +130,7 @@ Writes the generated rows into a Parquet file at `data/synthetic_traffic.parquet
 
 Returns shape `(96, 4)`. Reads from `aggregation_summaries` (populated either by real CCTV or the synthetic generator). Uses existing `server/pce.py:resolve_pce`. Filters by `day_type ∈ {'weekday', 'weekend'}` via `EXTRACT(DOW)`.
 
-- [ ] **Step 2: Edge cases** — missing slots filled with intersection's per-approach mean; raise if >50% of slots are missing.
+- [ ] **Step 2: Edge cases** - missing slots filled with intersection's per-approach mean; raise if >50% of slots are missing.
 
 ### Task 6: K-means + semantic naming
 
@@ -166,17 +166,17 @@ Pipeline: for each `day_type ∈ {weekday, weekend}` → build matrix → cluste
 
 - [ ] **Step 1:** `assign_semantic_names` returns the 4 expected labels given known centroids
 - [ ] **Step 2:** `collapse_to_chunks` produces contiguous ranges covering `[0, 1440)` minutes
-- [ ] **Step 3:** End-to-end test on synthetic data — discovered chunk boundaries within ±30 min of injected ground-truth boundaries
+- [ ] **Step 3:** End-to-end test on synthetic data - discovered chunk boundaries within ±30 min of injected ground-truth boundaries
 
 ---
 
-## Phase 3 — Pipeline integration
+## Phase 3 - Pipeline integration
 
 ### Task 9: API route
 
 **Files:** Create `server/routers/tod_discovery.py`. Modify `server/main.py`.
 
-- [ ] **Step 1:** `POST /intersections/{id}/discover-tod-chunks` — runs `discover_tod_chunks` and returns the discovered `TodChunk` rows + cluster metadata (silhouette score, K-means inertia).
+- [ ] **Step 1:** `POST /intersections/{id}/discover-tod-chunks` - runs `discover_tod_chunks` and returns the discovered `TodChunk` rows + cluster metadata (silhouette score, K-means inertia).
 - [ ] **Step 2:** Register the router in `server/main.py`.
 
 ### Task 10: Scheduler hook
@@ -188,7 +188,7 @@ Pipeline: for each `day_type ∈ {weekday, weekend}` → build matrix → cluste
 
 ---
 
-## Phase 4 — Evaluation harness
+## Phase 4 - Evaluation harness
 
 ### Task 11: Evaluation script
 
@@ -217,7 +217,7 @@ Pipeline: for each `day_type ∈ {weekday, weekend}` → build matrix → cluste
 
 ---
 
-## Phase 5 — WarrantMLP framing (mostly writing)
+## Phase 5 - WarrantMLP framing (mostly writing)
 
 ### Task 13: Verify wiring
 
@@ -233,15 +233,15 @@ Pipeline: for each `day_type ∈ {weekday, weekend}` → build matrix → cluste
 
 ---
 
-## Phase 6 — Thesis writing
+## Phase 6 - Thesis writing
 
 ### Task 15: Methods chapter
 
-- [ ] **Section 1: Data acquisition** — CCTV pipeline as the input layer; note the use of synthetic data for evaluation
-- [ ] **Section 2: Synthetic data generator** — ground-truth regimes, parameter sourcing, noise model
-- [ ] **Section 3: K-means TOD discovery** — feature matrix, scaling, clustering, semantic naming, chunk collapse
-- [ ] **Section 4: WarrantMLP classification** — architecture, features, training procedure
-- [ ] **Section 5: Webster's engine + HCM simulator** — closed-form baselines used downstream
+- [ ] **Section 1: Data acquisition** - CCTV pipeline as the input layer; note the use of synthetic data for evaluation
+- [ ] **Section 2: Synthetic data generator** - ground-truth regimes, parameter sourcing, noise model
+- [ ] **Section 3: K-means TOD discovery** - feature matrix, scaling, clustering, semantic naming, chunk collapse
+- [ ] **Section 4: WarrantMLP classification** - architecture, features, training procedure
+- [ ] **Section 5: Webster's engine + HCM simulator** - closed-form baselines used downstream
 
 ### Task 16: Results chapter
 
@@ -276,6 +276,6 @@ Pipeline: for each `day_type ∈ {weekday, weekend}` → build matrix → cluste
 
 ## Open decisions deferred
 
-- `tod_discovery_mode` column for operator approval workflow — **deferred**, not needed for synthetic thesis.
-- LSTM forecasting module — **deferred to future work**, scope-creep risk.
-- Corridor coordination — **explicitly out of scope** per scope decision.
+- `tod_discovery_mode` column for operator approval workflow - **deferred**, not needed for synthetic thesis.
+- LSTM forecasting module - **deferred to future work**, scope-creep risk.
+- Corridor coordination - **explicitly out of scope** per scope decision.

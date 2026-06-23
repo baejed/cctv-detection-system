@@ -5,12 +5,12 @@ Implements the parent-plan Phase 1 generator
 the PRD §Synthetic data extensions deltas required by
 `docs/superpowers/plans/2026-06-19-multitask-warrant-cnn-prd.md`:
 
-  * **Pedestrian channel** — a 5th input channel using a Philippine urban
+  * **Pedestrian channel** - a 5th input channel using a Philippine urban
     weekday pattern (morning, lunch, evening peaks).
-  * **Intersection metadata sampling** — `IntersectionMeta(major_lanes,
+  * **Intersection metadata sampling** - `IntersectionMeta(major_lanes,
     minor_lanes, posted_speed_kph, is_signalized, n_approaches)` drawn from
     Tagum-realistic priors.
-  * **Per-sample labels (T06)** — emit MUTCD W1–W4 + W-Local 2/3 warrant
+  * **Per-sample labels (T06)** - emit MUTCD W1–W4 + W-Local 2/3 warrant
     results, Webster's critical v/c, and the precedence-derived intervention
     class alongside every (flow_matrix, metadata) draw.
 
@@ -27,7 +27,7 @@ The output flow matrix is shape ``(5, 96)`` (channels-first, matching
   4            pedestrian crossing volume (peds/hr)
   ===========  ============================================
 
-Each value is the average hourly rate during a 15-min slot — the same
+Each value is the average hourly rate during a 15-min slot - the same
 convention `server.warrant_rules._hourly_volumes` expects when reducing slots
 to hourly volumes for MUTCD threshold evaluation.
 """
@@ -56,8 +56,8 @@ N_CHANNELS = N_VEHICLE_CHANNELS + 1  # 5 = 4 approaches + pedestrians
 
 # ── Vehicle regimes (parent-plan Phase 1) ────────────────────────────────────
 
-# PCU/hr per (NB, SB, EB, WB). Calibrated so that — combined with
-# `sample_intersection_modifier`'s skewed scale distribution — the synthetic
+# PCU/hr per (NB, SB, EB, WB). Calibrated so that - combined with
+# `sample_intersection_modifier`'s skewed scale distribution - the synthetic
 # dataset emits the PRD-required class balance: ~50–65% timing_only, ~30–40%
 # signalize, <10% road_widening (see §Implementation Decisions / Class
 # imbalance and §Risks in the PRD).
@@ -246,7 +246,7 @@ def sample_intersection_meta(rng: np.random.Generator) -> IntersectionMeta:
 
 
 # Per-intersection scale distribution. Triangular skewed toward smaller
-# intersections (mode 0.7) with a long upper tail to 2.3 — the upper tail
+# intersections (mode 0.7) with a long upper tail to 2.3 - the upper tail
 # is what occasionally drives `critical_vc_for_day` above the 0.90
 # road-widening threshold, while the bulk near 0.7 keeps most intersections
 # in `timing_only` / `signalize` territory. Tuned together with

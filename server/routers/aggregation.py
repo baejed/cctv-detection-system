@@ -24,11 +24,40 @@ _TZ = os.getenv("TZ", "Asia/Manila")
 connected_clients: list[asyncio.Queue] = []
 
 async def aggregation_pusher():
-    """Background task - queries live detection_street_view every 5s and fans out to all clients."""
+    """Background task - queries live detection_street_view every 5s and fans out to all clients.
+
+    Hardened against the death-spiral mode we hit during the demo:
+      * Skips entirely when no SSE clients are connected - the aggregation
+        is a fan-out, so there's no reason to run the heavy GROUP BY for
+        nobody. An idle dashboard now does zero work here.
+      * Re-entry guard - the loop won't start a new iteration while the
+        previous one is still running. Without this, every 5 s tick stacks
+        another concurrent query when the DB is slow, eventually exhausting
+        the pgbouncer pool and wedging the entire API.
+      * 30 s statement_timeout caps any pathological hang (autovacuum, lock
+        contention) without being so tight it cancels every healthy
+        execution. Combined with the re-entry guard, attempts cannot pile up.
+    """
+    in_flight = False
     while True:
         await asyncio.sleep(5)
+        if not connected_clients or in_flight:
+            continue
+        in_flight = True
         db = SessionLocal()
         try:
+            db.execute(text("SET LOCAL statement_timeout = '30s'"))
+            # Per the consumer contract in eyegila/src/pages/Manual.tsx:
+            #   "the latest 1-minute bucket counts per intersection and street"
+            # Two bounds intentional:
+            #   * time >= start-of-current-minute  – matches the bucket the
+            #     SELECT is stamping; without this we'd scan today's ~600k rows
+            #     every tick and time out.
+            #   * time <=  NOW()                   – the seeder injects ~7 days
+            #     of synthetic FUTURE-dated detections so warrant analyses can
+            #     still run on intersections whose live cameras don't have an
+            #     RTSP feed. Those rows must be excluded from the live view or
+            #     they pollute the row count (475k+ matches) and time out.
             rows = db.execute(text("""
                 SELECT
                     intersection_id,
@@ -39,7 +68,8 @@ async def aggregation_pusher():
                     DATE_TRUNC('minute', NOW() AT TIME ZONE :tz) AS window_start,
                     COUNT(*)::int                                 AS count
                 FROM detection_street_view
-                WHERE time >= DATE_TRUNC('day', NOW() AT TIME ZONE :tz) AT TIME ZONE :tz
+                WHERE time >= DATE_TRUNC('minute', NOW() AT TIME ZONE :tz) AT TIME ZONE :tz
+                  AND time <= NOW()
                 GROUP BY intersection_id, intersection_name, street_id, direction, object_type
                 ORDER BY intersection_id, street_id, direction, object_type
             """), {"tz": _TZ}).fetchall()
@@ -64,6 +94,7 @@ async def aggregation_pusher():
             logger.error("SSE aggregation query failed: %s", e)
         finally:
             db.close()
+            in_flight = False
 
 
 async def _stream_token(

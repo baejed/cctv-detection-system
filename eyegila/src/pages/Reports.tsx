@@ -281,6 +281,20 @@ export function ReportsPage() {
         </div>
       </div>
 
+      {/* Live now strip - operators want current state above the historical view */}
+      {sseData && (
+        <div className="rounded-lg border border-green-100 bg-green-50 px-4 py-2.5 flex items-center justify-between">
+          <span className="text-xs text-green-700 font-medium flex items-center gap-1.5">
+            <span className="size-1.5 rounded-full bg-green-500 animate-pulse" />
+            Live window
+          </span>
+          <span className="text-xs text-green-600/70">
+            {sseData.filter(r => !PEDESTRIAN_TYPES.has(r.object_type)).reduce((a, r) => a + r.count, 0)} vehicles ·{' '}
+            {sseData.filter(r =>  PEDESTRIAN_TYPES.has(r.object_type)).reduce((a, r) => a + r.count, 0)} pedestrians
+          </span>
+        </div>
+      )}
+
       {/* KPI strip */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Card className="border-green-100 bg-green-50/60">
@@ -503,17 +517,6 @@ export function ReportsPage() {
           )}
         </CardContent>
       </Card>
-
-      {/* Live now strip */}
-      {sseData && (
-        <div className="rounded-lg border border-green-100 bg-green-50 px-4 py-2.5 flex items-center justify-between">
-          <span className="text-xs text-green-700 font-medium">Live window</span>
-          <span className="text-xs text-green-600/70">
-            {sseData.filter(r => !PEDESTRIAN_TYPES.has(r.object_type)).reduce((a, r) => a + r.count, 0)} vehicles ·{' '}
-            {sseData.filter(r =>  PEDESTRIAN_TYPES.has(r.object_type)).reduce((a, r) => a + r.count, 0)} pedestrians
-          </span>
-        </div>
-      )}
 
     </div>
   );

@@ -10,7 +10,7 @@ trained model"):
   * **Intervention confusion matrix** with per-class precision / recall / F1
     averaged across seeds, plus the summed confusion matrix for the methods
     chapter (PRD §Results-chapter requirement #2).
-  * **Ablation table** — uncertainty-weighted vs. equal-weighted multi-task
+  * **Ablation table** - uncertainty-weighted vs. equal-weighted multi-task
     loss. Driven by ``--ablation-dir``; computes per-warrant paired t-tests
     over the seed-axis AUC values (PRD §Results-chapter requirement #3).
   * **Grad-CAM saliency** maps over the input timeseries for a handful of
@@ -129,7 +129,7 @@ def list_seed_checkpoints(model_dir: Path) -> list[Path]:
     """Return all ``temporal_cnn_seed*.pt`` checkpoints under ``model_dir``.
 
     Sorted by seed integer (not lexicographically) so ``seed=10`` doesn't sort
-    before ``seed=2`` — matters when the methods-chapter author runs more than
+    before ``seed=2`` - matters when the methods-chapter author runs more than
     ten seeds.
     """
     if not model_dir.is_dir():
@@ -661,7 +661,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "(skips the deterministic test-split reconstruction)."
         ),
     )
-    # Dataset / split fallback args — mirror train_multitask_cnn.py defaults.
+    # Dataset / split fallback args - mirror train_multitask_cnn.py defaults.
     parser.add_argument("--n-intersections", type=int, default=DEFAULT_N_INTERSECTIONS)
     parser.add_argument("--n-days", type=int, default=DEFAULT_N_DAYS)
     parser.add_argument("--n-train-intersections", type=int,
@@ -679,7 +679,7 @@ def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+        format="%(asctime)s %(levelname)s %(name)s - %(message)s",
     )
     device = torch.device(args.device)
 
@@ -709,7 +709,7 @@ def main(argv: list[str] | None = None) -> None:
         split_seed=dataset_args["split_seed"],
     )
     logger.info(
-        "splits — train=%d val=%d test=%d (intersections: %d/%d/%d)",
+        "splits - train=%d val=%d test=%d (intersections: %d/%d/%d)",
         len(train_idx), len(val_idx), len(test_idx),
         len(np.unique(data.intersection_id[train_idx])),
         len(np.unique(data.intersection_id[val_idx])),

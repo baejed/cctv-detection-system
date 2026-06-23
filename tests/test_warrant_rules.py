@@ -1,6 +1,6 @@
 """Unit tests for MUTCD warrant rule evaluators (W1–W4).
 
-These are pure-function tests — no DB, no FastAPI app. Mirrors the style of
+These are pure-function tests - no DB, no FastAPI app. Mirrors the style of
 `tests/test_local_warrants.py` for the existing W-Local rules.
 """
 from __future__ import annotations
@@ -154,7 +154,7 @@ def test_w1_not_triggered_with_only_seven_qualifying_hours():
 
 def test_w1_low_speed_multiplier_relaxes_threshold():
     # Volumes that would NOT qualify at 50 kph (major both-dirs = 700, below 500
-    # threshold? actually 700 ≥ 500 — pick volumes below the std threshold and
+    # threshold? actually 700 ≥ 500 - pick volumes below the std threshold and
     # above the 0.70-scaled threshold to isolate the effect):
     # 0.70 * 500 = 350 ; 0.70 * 150 = 105
     mat = _flow_with_peak_hours(
@@ -179,7 +179,7 @@ def test_w1_silent_intersection_not_triggered():
 def test_w1_lane_count_affects_threshold():
     # 2+ lane minor street raises the Cond-A minor threshold from 150 → 200.
     # Pick major both-dirs in (500, 750) so Cond-B (major ≥ 750) is also out
-    # of reach — isolating Cond-A's minor threshold as the differentiator.
+    # of reach - isolating Cond-A's minor threshold as the differentiator.
     mat = _flow_with_peak_hours(
         base_per_dir=30,
         peak_per_dir=300,    # both-dirs = 600: above Cond-A (500) but below Cond-B (750)

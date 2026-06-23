@@ -1,17 +1,17 @@
 """Synthetic traffic generator tests (PRD T07).
 
-Pure-function tests — no DB, no FastAPI app. Mirrors the style of
+Pure-function tests - no DB, no FastAPI app. Mirrors the style of
 `tests/test_warrant_rules.py` and `tests/test_intervention_rules.py`.
 
 Per `docs/superpowers/plans/2026-06-19-multitask-warrant-cnn-prd.md`
 §Testing Decisions, this file covers three areas:
 
-  * **Determinism** — same seed → identical sample (flow_matrix, metadata,
+  * **Determinism** - same seed → identical sample (flow_matrix, metadata,
     warrants, critical_vc, intervention all reproduce bit-for-bit).
-  * **Schema completeness** — every sample exposes the full label set
+  * **Schema completeness** - every sample exposes the full label set
     (5×96 flow_matrix, all 6 warrant names with confidences in [0, 1],
     intervention in the locked 3-class vocabulary, valid IntersectionMeta).
-  * **Class-balance sanity** — the intervention class distribution sits
+  * **Class-balance sanity** - the intervention class distribution sits
     inside the PRD's documented ranges (~50–65% timing_only, road_widening
     sparse). Acts as the regression guard for any future change to the
     generator's regime / pedestrian / modifier calibration.

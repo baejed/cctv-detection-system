@@ -134,4 +134,8 @@ export interface Recommendation {
   w_local_3_met: boolean | null;
   w_local_3_confidence: number | null;
   intervention: Intervention | null;
+  // Webster's proposal didn't beat the existing timing on any TOD chunk. Timing
+  // and simulation rows still exist for transparency, but the SignalTiming page
+  // renders them in a muted comparison mode rather than as a recommended plan.
+  proposal_is_no_op: boolean;
 }

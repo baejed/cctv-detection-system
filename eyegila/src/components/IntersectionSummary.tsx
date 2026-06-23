@@ -41,7 +41,7 @@ function buildNarrative(
   // Signalized case - compare before/after
   const summary = evaluateImprovement(sim);
   if (!summary) {
-    return `${name} is already signalized but no simulation data is available yet to compare current timing against an optimized plan. Run analysis to see whether re-timing would help.`;
+    return `${name} is already signalized but no simulation data is available yet to compare current timing against an optimized plan. Run analysis to see whether a timing adjustment would help.`;
   }
 
   const saved  = Math.round(summary.vehicleHoursSavedPerDay);
@@ -49,13 +49,13 @@ function buildNarrative(
   const after  = Math.round(summary.delayAfterS);
 
   if (!summary.worthHighlighting) {
-    return `${name} is already running close to an optimal timing plan. Average wait per car is about ${before}s (level of service ${summary.losBefore}), and re-timing would save fewer than ${IMPROVEMENT_PROMINENT_VH} vehicle-hours of delay per day - not worth changing.`;
+    return `${name} is already running close to an optimal signal timing plan. Average wait per car is about ${before}s (level of service ${summary.losBefore}), and adjusting the timing would save fewer than ${IMPROVEMENT_PROMINENT_VH} vehicle-hours of delay per day - not worth changing.`;
   }
 
   const losPart = summary.levelOfServiceChanged
     ? ` Level of service would improve from ${summary.losBefore} to ${summary.losAfter}.`
     : '';
-  return `${name} is signalized but the current timing is not optimal. A recalculated plan would cut average wait from ${before}s to ${after}s per car and save about ${saved} vehicle-hours of delay per day.${losPart} Re-timing is recommended; a new signal is not needed.`;
+  return `${name} is signalized but the current timing is not optimal. A recalculated signal timing plan would cut average wait from ${before}s to ${after}s per car and save about ${saved} vehicle-hours of delay per day.${losPart} A timing adjustment is recommended; a new signal is not needed.`;
 }
 
 export interface IntersectionSummaryProps {

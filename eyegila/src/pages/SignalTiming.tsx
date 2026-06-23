@@ -24,15 +24,37 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
+  Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger, DialogFooter,
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { ArrowLeft, TrendingDown, Printer, Play, Pause, Columns2, MonitorPlay, X, Pencil, History, Loader2, FlaskConical, RefreshCw } from 'lucide-react';
+import { ArrowLeft, TrendingDown, Printer, Play, Pause, Columns2, MonitorPlay, X, Pencil, History, Loader2, FlaskConical, RefreshCw, Info } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 
 const APPROACH_COLORS = ['#6366f1', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6', '#06b6d4'];
+
+// Mirrors TOD_DEFAULTS in Intersections.tsx and server/tod.py so clicking a
+// period pill can populate the "Analyse a specific window" inputs with the
+// chunk's wall-clock bounds. Keep in sync with the other two definitions.
+const TOD_CHUNK_BOUNDS: Record<string, { startMin: number; endMin: number }> = {
+  Overnight:  { startMin:    0, endMin:  360 },
+  'AM Rush':  { startMin:  360, endMin:  540 },
+  Midday:     { startMin:  540, endMin:  720 },
+  'PM Rush':  { startMin:  720, endMin: 1080 },
+  Evening:    { startMin: 1080, endMin: 1440 },
+};
+
+/** Build a datetime-local input value (YYYY-MM-DDTHH:MM, naive local time) for
+ *  today at the given minute-of-day. Returns '' for end of day (1440), which
+ *  becomes "tomorrow 00:00" so the window covers Evening's 18:00–24:00. */
+function todayAtMinute(min: number): string {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setMinutes(min);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
 
 const OBJECT_TO_VEHICLE: Record<string, VehicleType> = {
   motorcycle: 'MC', pedicab: 'MC', tricycle: 'MC', bicycle: 'MC',
@@ -268,7 +290,7 @@ function TrafficTimeline({ intersectionId, onRange }: TrafficTimelineProps) {
             className="h-6 px-2 text-[10px] rounded border border-amber-400/50 text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/30 transition-colors font-medium">
             ▲ Peak
           </button>
-          {([['AM', 6, 12], ['PM', 12, 19], ['Full day', 6, 20]] as const).map(([label, h1, h2]) => (
+          {([['AM', 6, 12], ['PM', 12, 19], ['Full day', 0, 24]] as const).map(([label, h1, h2]) => (
             <button key={label} type="button" onClick={() => selectPreset(h1, h2)}
               className="h-6 px-2 text-[10px] rounded border border-border text-muted-foreground hover:bg-muted transition-colors">
               {label}
@@ -416,11 +438,26 @@ export function SignalTimingPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedChunk, setSelectedChunk] = useState<string | null>(null);
+  // Wrapping setter: selecting a TOD period also pre-fills the analyse-window
+  // datetime inputs with that period's wall-clock bounds, so the operator can
+  // click "Analyse" without retyping. "All periods" (null) leaves the inputs
+  // alone so a previously typed range survives.
+  function selectChunk(chunkName: string | null) {
+    setSelectedChunk(chunkName);
+    if (chunkName == null) return;
+    const bounds = TOD_CHUNK_BOUNDS[chunkName];
+    if (!bounds) return;
+    setHistStart(todayAtMinute(bounds.startMin));
+    setHistEnd(todayAtMinute(bounds.endMin));
+  }
   const [view3D, setView3D] = useState(false);
   const [show3DBefore, setShow3DBefore] = useState(false);
   const [sbs3D, setSbs3D] = useState(false);
   const [paused3D, setPaused3D] = useState(false);
-  const [speed3D, setSpeed3D] = useState<1 | 2 | 4>(1);
+  // 1× = real-time (sim seconds advance at wall clock). Previously 1× meant
+  // 15× wall clock, which played a full 60 s cycle in ~4 real seconds — too
+  // fast to watch during demos. 8× is kept as the "skip ahead" option.
+  const [speed3D, setSpeed3D] = useState<1 | 4 | 8>(1);
   const [presentMode, setPresentMode] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
@@ -571,6 +608,28 @@ export function SignalTimingPage() {
     setEditOpen(true);
   }
 
+  // Copy Webster's proposed timing for the active chunk into the form so the
+  // operator's last step is "review + Save" rather than re-typing values they
+  // can already see on the chart.
+  function fillFromRecommendation() {
+    if (!activeChunk) return;
+    const cycle = activeChunk.proposed_cycle_s;
+    const proposedSplits = activeChunk.proposed_splits;
+    if (cycle == null || !proposedSplits) {
+      toast.error('No recommendation available for this period');
+      return;
+    }
+    setEditStatus(intersection?.signal_status === 'unsignalized' ? 'fixed_time' : (intersection?.signal_status ?? 'fixed_time'));
+    setEditCycle(String(Math.round(cycle)));
+    const next: Record<number, string> = {};
+    for (const s of streets) {
+      const v = proposedSplits[String(s.id)];
+      next[s.id] = v != null ? String(Math.round(v)) : (editSplits[s.id] ?? '0');
+    }
+    setEditSplits(next);
+    toast.success(`Loaded recommendation for ${activeChunk.chunk_name}`);
+  }
+
   async function saveEdit() {
     if (!intersectionId) return;
     setEditSaving(true);
@@ -715,7 +774,7 @@ export function SignalTimingPage() {
             <div className="rounded-lg border border-rose-200 bg-rose-50 dark:bg-rose-950/20 dark:border-rose-900 px-4 py-3 text-xs text-rose-800 dark:text-rose-300">
               <span className="font-semibold">Before-state is an assumption, not measured data.</span>{' '}
               This intersection is marked as {data.signal_status.replace('_', '-')} but no existing cycle length
-              or green splits have been entered. The "before" delay is computed using an equal-split default
+              or green time per approach has been entered. The "before" delay is computed using an equal-split default
               and will understate or overstate the real improvement.{' '}
               <button
                 type="button"
@@ -724,6 +783,17 @@ export function SignalTimingPage() {
               >
                 Click "Edit timing" above to enter the current cycle length and per-approach splits.
               </button>
+            </div>
+          )}
+
+          {/* No-op proposal: Webster didn't beat existing on any chunk. Sim is
+              kept for transparency but rendered as informational, not a plan. */}
+          {!histMode && rec?.proposal_is_no_op && (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 dark:bg-emerald-950/20 dark:border-emerald-900 px-4 py-3 text-xs text-emerald-800 dark:text-emerald-300">
+              <span className="font-semibold">No retune recommended.</span>{' '}
+              Existing signal timing already meets or beats Webster's proposal at every TOD chunk.
+              The simulation below is shown for comparison only — applying the proposed splits would
+              not improve average delay on any chunk by the {'≥'} 0.5 s/veh threshold.
             </div>
           )}
 
@@ -776,9 +846,19 @@ export function SignalTimingPage() {
             const totalVhSaved = displayData.daily_summary.total_vehicle_hours_saved;
             const isUnsignalized = displayData.signal_status === 'unsignalized';
             const positive = totalVhSaved > 0;
+            // This verdict is Webster's-based: "would changing the timing save
+            // vehicle-hours?". It is independent of the MUTCD warrant check on
+            // the Dashboard - an intersection can be MUTCD-warranted (volumes
+            // above threshold) yet still produce no measurable timing benefit
+            // if traffic is flat across all TOD chunks. Wording reflects that
+            // so the two views don't appear to contradict each other.
             const verdict = isUnsignalized
-              ? (positive ? 'Signal installation recommended' : 'No signal warranted')
-              : (positive ? 'Re-timing recommended' : 'Current timing near-optimal');
+              ? (positive
+                  ? 'Signal installation reduces delay'
+                  : 'Adding a signal would not reduce delay')
+              : (positive
+                  ? 'Re-timing reduces delay'
+                  : 'Current timing already near-optimal');
             return (
               <div className={cn(
                 'rounded-xl border p-5 flex flex-col gap-1 print:hidden',
@@ -796,7 +876,7 @@ export function SignalTimingPage() {
                 <p className="text-xs text-muted-foreground mt-0.5">
                   {positive
                     ? `Webster's optimised timing saves ${totalVhSaved.toFixed(1)} vehicle-hours per day across all periods.`
-                    : 'Modelled timing change produces no measurable time saving under current traffic volumes.'}
+                    : 'Webster’s model finds no measurable delay reduction at current flows. The MUTCD warrant check on the Dashboard answers a different question (does volume exceed the threshold) and may still flag this intersection.'}
                 </p>
               </div>
             );
@@ -806,7 +886,7 @@ export function SignalTimingPage() {
           <div className="flex flex-wrap items-center gap-1.5 print:hidden">
             <button
               data-testid="btn-chunk-all"
-              onClick={() => setSelectedChunk(null)}
+              onClick={() => selectChunk(null)}
               className={cn(
                 'px-3 py-1 text-xs rounded-md border transition-colors',
                 selectedChunk === null
@@ -820,7 +900,7 @@ export function SignalTimingPage() {
               <button
                 key={c.chunk_name}
                 data-testid={`btn-chunk-${c.chunk_name.toLowerCase().replace(/\s+/g, '-')}`}
-                onClick={() => setSelectedChunk(c.chunk_name)}
+                onClick={() => selectChunk(c.chunk_name)}
                 className={cn(
                   'px-3 py-1 text-xs rounded-md border transition-colors',
                   selectedChunk === c.chunk_name
@@ -831,6 +911,7 @@ export function SignalTimingPage() {
                 {c.chunk_name}
               </button>
             ))}
+            <TodChunkInfoDialog />
           </div>
 
           {/* Summary strip - shows selected chunk when one is active, daily totals for "All" */}
@@ -915,7 +996,7 @@ export function SignalTimingPage() {
                     <TableRow
                       key={chunk.chunk_name}
                       className={cn('cursor-pointer', selectedChunk === chunk.chunk_name && 'bg-muted/50')}
-                      onClick={() => setSelectedChunk(chunk.chunk_name)}
+                      onClick={() => selectChunk(chunk.chunk_name)}
                     >
                       <TableCell className="font-medium">{chunk.chunk_name}</TableCell>
                       <TableCell className="text-right tabular-nums">
@@ -1086,7 +1167,7 @@ export function SignalTimingPage() {
 
                   {/* Speed - shared for both 2D and 3D */}
                   <div className="flex rounded-md border border-border overflow-hidden">
-                    {([1, 2, 4] as const).map(s => (
+                    {([1, 4, 8] as const).map(s => (
                       <button
                         key={s}
                         onClick={() => setSpeed3D(s)}
@@ -1334,7 +1415,7 @@ export function SignalTimingPage() {
                   {paused3D ? 'Play' : 'Pause'}
                 </button>
                 <div className="flex rounded-md border border-white/20 overflow-hidden">
-                  {([1, 2, 4] as const).map(s => (
+                  {([1, 4, 8] as const).map(s => (
                     <button
                       key={s}
                       onClick={() => setSpeed3D(s)}
@@ -1458,6 +1539,26 @@ export function SignalTimingPage() {
 
             {editStatus !== 'unsignalized' && (
               <>
+                {activeChunk?.proposed_cycle_s != null && activeChunk?.proposed_splits && (
+                  <button
+                    type="button"
+                    data-testid="btn-use-recommendation"
+                    onClick={fillFromRecommendation}
+                    className="flex items-start gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-left text-xs hover:bg-emerald-100 transition-colors dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:hover:bg-emerald-950/50"
+                    title="Copy Webster's proposal for this period into the form"
+                  >
+                    <RefreshCw className="size-3.5 mt-0.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-emerald-900 dark:text-emerald-200">
+                        Use recommendation · {activeChunk.chunk_name}
+                      </p>
+                      <p className="mt-0.5 text-[11px] text-emerald-700/80 dark:text-emerald-400/80">
+                        {Math.round(activeChunk.proposed_cycle_s)}s cycle, Webster splits
+                      </p>
+                    </div>
+                  </button>
+                )}
+
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor="edit-cycle">Cycle length (seconds)</Label>
                   <Input
@@ -1505,5 +1606,56 @@ export function SignalTimingPage() {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+function TodChunkInfoDialog() {
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <button
+          type="button"
+          aria-label="About time-of-day chunks"
+          className="ml-1 text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <Info className="size-3.5" />
+        </button>
+      </DialogTrigger>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>About these time-of-day periods</DialogTitle>
+          <DialogDescription>
+            Each intersection's day is split into traffic regimes. Webster's equation
+            computes optimal signal timing per regime, and the highest-demand regime
+            ("peak") drives the headline recommendation.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="text-xs leading-relaxed text-muted-foreground space-y-2.5 mt-1">
+          <div className="grid grid-cols-[110px_1fr] gap-x-3 gap-y-1.5">
+            <div className="font-semibold text-foreground">Overnight</div>
+            <div>00:00–06:00 · low demand, often flashing-mode eligible</div>
+            <div className="font-semibold text-foreground">AM Rush</div>
+            <div>06:00–09:00 · morning commute peak</div>
+            <div className="font-semibold text-foreground">Midday</div>
+            <div>09:00–12:00 · commercial/school activity</div>
+            <div className="font-semibold text-foreground">PM Rush</div>
+            <div>12:00–18:00 · the dominant period in most Tagum intersections</div>
+            <div className="font-semibold text-foreground">Evening</div>
+            <div>18:00–24:00 · tapering demand</div>
+          </div>
+          <div className="pt-2 border-t border-border">
+            Defaults match an unsupervised K-means clustering of Tagum-realistic
+            24-hour flow profiles. You can edit the boundaries per intersection - the
+            CNN's warrant predictions and Webster's per-chunk timing both follow the
+            edited boundaries.
+          </div>
+          <div className="text-[10px] italic">
+            On the recommendations card the multi-task CNN already reasons over the
+            full 96-slot 15-minute timeseries; the chunks here are the operator-facing
+            buckets Webster's solves in closed form.
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }

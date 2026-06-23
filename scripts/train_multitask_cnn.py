@@ -5,11 +5,11 @@ Implements the training procedure from
 (§Training procedure):
 
   * **Dataset.** Built in-process via
-    ``server.ml.synthetic_traffic.generate_labeled_sample`` — 30 synthetic
+    ``server.ml.synthetic_traffic.generate_labeled_sample`` - 30 synthetic
     intersections × 90 days × 2 day-types (weekday + weekend) ≈ 5,400 samples.
     Every sample is independently seeded so the dataset is fully reproducible.
   * **Splits.** Intersection-stratified using ``GroupShuffleSplit`` with
-    ``groups=intersection_id`` — ~21 train / 4 val / 5 test intersections.
+    ``groups=intersection_id`` - ~21 train / 4 val / 5 test intersections.
     Test intersections never appear in any training-related data.
   * **Loss.** ``BCEWithLogitsLoss`` (mean over 6 warrants) and class-weighted
     ``CrossEntropyLoss`` (inverse-frequency weights computed on the training
@@ -93,9 +93,9 @@ class SyntheticTensors:
 
     flow: torch.Tensor                # (N, 5, 96) float32
     metadata: torch.Tensor            # (N, 5) float32
-    warrants: torch.Tensor            # (N, 6) float32 — 0/1 met flags
-    intervention: torch.Tensor        # (N,) int64 — class index
-    intersection_id: np.ndarray       # (N,) int64 — group key for splits
+    warrants: torch.Tensor            # (N, 6) float32 - 0/1 met flags
+    intervention: torch.Tensor        # (N,) int64 - class index
+    intersection_id: np.ndarray       # (N,) int64 - group key for splits
 
 
 def _meta_to_vector(meta, feature_order: list[str]) -> np.ndarray:
@@ -112,8 +112,8 @@ def build_synthetic_dataset(
 ) -> SyntheticTensors:
     """Generate ``n_intersections × n_days × 2`` labeled samples.
 
-    Each ``(intersection, day)`` pair contributes two samples — one weekday-
-    schedule and one weekend-schedule — per the PRD's "× 2 day-types" target.
+    Each ``(intersection, day)`` pair contributes two samples - one weekday-
+    schedule and one weekend-schedule - per the PRD's "× 2 day-types" target.
     Intersection metadata is sampled once per intersection (so all 2 × n_days
     samples from one intersection share the same metadata, which is realistic).
     """
@@ -168,7 +168,7 @@ def intersection_stratified_split(
     n_val: int,
     split_seed: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Group split — returns (train_idx, val_idx, test_idx) row indices.
+    """Group split - returns (train_idx, val_idx, test_idx) row indices.
 
     Two nested ``GroupShuffleSplit`` calls (test split, then val split out of
     the train+val pool) keep every intersection in exactly one partition.
@@ -523,7 +523,7 @@ def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+        format="%(asctime)s %(levelname)s %(name)s - %(message)s",
     )
     device = torch.device(args.device)
 
@@ -554,7 +554,7 @@ def main(argv: list[str] | None = None) -> None:
         split_seed=args.split_seed,
     )
     logger.info(
-        "splits — train=%d val=%d test=%d (intersections: %d/%d/%d)",
+        "splits - train=%d val=%d test=%d (intersections: %d/%d/%d)",
         len(train_idx), len(val_idx), len(test_idx),
         len(np.unique(data.intersection_id[train_idx])),
         len(np.unique(data.intersection_id[val_idx])),

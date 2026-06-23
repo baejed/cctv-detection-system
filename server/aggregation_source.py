@@ -24,9 +24,17 @@ _LIVE_VIEW_MAX_RANGE = timedelta(days=2)
 
 
 def select_source(*, start: datetime, end: datetime, bucket: Bucket) -> Source:
-    """Pick the cheaper source for this query window."""
-    if bucket == "hour" and (end - start) <= _LIVE_VIEW_MAX_RANGE:
-        return "live_view"
+    """Pick the cheaper source for this query window.
+
+    Forced to ``continuous_aggregate`` unconditionally: when detection_street_view
+    has accumulated 100k+ rows (e.g., after a seed run) the live-view path
+    times out and every call from the frontend stacks another concurrent
+    query, exhausting the pgbouncer pool and wedging the API. The aggregate
+    is up to ~1 min stale - acceptable for every consumer that currently
+    calls /aggregation/history. Args kept in the signature for callers that
+    still pass them.
+    """
+    del start, end, bucket  # parameters retained for API compatibility
     return "continuous_aggregate"
 
 

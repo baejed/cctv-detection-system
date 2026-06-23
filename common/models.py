@@ -231,6 +231,10 @@ class Recommendation(Base):
     w_local_2_confidence   = Column(Float,   nullable=True)
     w_local_3_met          = Column(Boolean, nullable=True)
     w_local_3_confidence   = Column(Float,   nullable=True)
+    # True when Webster's proposal did not beat the existing timing on any TOD
+    # chunk. The timing + simulation rows are kept so the UI can render them as
+    # an informational "current vs proposed" comparison instead of as a plan.
+    proposal_is_no_op      = Column(Boolean, nullable=False, server_default="false", default=False)
 
     intersection           = relationship("Intersection",         back_populates="recommendations")
     timing_recommendations = relationship("TimingRecommendation", back_populates="recommendation", cascade="all, delete", passive_deletes=True)

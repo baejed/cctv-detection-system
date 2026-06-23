@@ -44,7 +44,7 @@ export interface ImprovementSummary {
   levelOfServiceChanged: boolean;
   losBefore: string;
   losAfter: string;
-  /** True when the saving is large enough to call out — drives the verdict copy. */
+  /** True when the saving is large enough to call out - drives the verdict copy. */
   worthHighlighting: boolean;
 }
 

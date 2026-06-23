@@ -10,6 +10,7 @@ from server.improvement import evaluate as evaluate_improvement
 from server.utils import get_current_user
 from server.rate_limit import limiter
 from server.warrant_rules import IntersectionMeta
+from server.intervention_rules import assign_intervention_label
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from datetime import datetime, timedelta, timezone
@@ -68,6 +69,7 @@ class RecommendationResponse(BaseModel):
     w_local_3_met: Optional[bool] = None
     w_local_3_confidence: Optional[float] = None
     intervention: Optional[InterventionInfo] = None
+    proposal_is_no_op: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -446,6 +448,7 @@ def _rec_to_response(
         "w_local_3_met": rec.w_local_3_met,
         "w_local_3_confidence": rec.w_local_3_confidence,
         "intervention": intervention,
+        "proposal_is_no_op": bool(rec.proposal_is_no_op),
     }
 
 
@@ -454,10 +457,19 @@ def list_recommendations(
     db: Annotated[Session, Depends(get_db)],
     user: Annotated[models.User, Depends(get_current_user)],
 ):
-    """Return the latest recommendation per intersection, with timing summary."""
+    """Return the latest recommendation per intersection, with timing summary.
+
+    The `intervention` field is computed here using `assign_intervention_label`
+    so the dashboard and the detail page agree on Widen-vs-Signalize. The CNN's
+    own intervention prediction is not persisted, so we fall back to the
+    deterministic rules engine using the stored warrant flags + the post-Webster
+    critical v/c from the latest simulation. This keeps both UIs consistent
+    without requiring a schema migration.
+    """
     rows = db.execute(text("""
         SELECT DISTINCT ON (r.intersection_id)
             r.id, r.intersection_id, i.name AS intersection_name,
+            i.signal_status,
             r.warrant_1_met, r.warrant_1_confidence,
             r.warrant_2_met, r.warrant_2_confidence,
             r.warrant_4_met, r.warrant_4_confidence,
@@ -468,7 +480,11 @@ def list_recommendations(
             tr.chunk_name   AS timing_chunk,
             r.w_local_1_met, r.w_local_1_confidence,
             r.w_local_2_met, r.w_local_2_confidence,
-            r.w_local_3_met, r.w_local_3_confidence
+            r.w_local_3_met, r.w_local_3_confidence,
+            r.proposal_is_no_op,
+            (SELECT MAX(vc_ratio_after)
+               FROM simulation_results
+              WHERE recommendation_id = r.id) AS max_vc_after
         FROM recommendations r
         JOIN intersections i ON i.id = r.intersection_id
         LEFT JOIN timing_recommendations tr
@@ -476,6 +492,29 @@ def list_recommendations(
               AND tr.chunk_name = 'overall'
         ORDER BY r.intersection_id, r.generated_at DESC
     """)).fetchall()
+
+    def _intervention_for(r) -> Optional[dict]:
+        is_signalized = (r.signal_status or "").lower() in ("fixed_time", "actuated")
+        # Defensive: if Webster never ran for this intersection, critical_vc is
+        # unknown - treat as 0 so the widening branch can't fire on missing data.
+        critical_vc = float(r.max_vc_after) if r.max_vc_after is not None else 0.0
+        warrant_results = {
+            "w1":        (bool(r.warrant_1_met),  float(r.warrant_1_confidence  or 0)),
+            "w2":        (bool(r.warrant_2_met),  float(r.warrant_2_confidence  or 0)),
+            "w4":        (bool(r.warrant_4_met),  float(r.warrant_4_confidence  or 0)),
+            "w_local_1": (bool(r.w_local_1_met),  float(r.w_local_1_confidence  or 0)),
+            "w_local_2": (bool(r.w_local_2_met),  float(r.w_local_2_confidence  or 0)),
+            "w_local_3": (bool(r.w_local_3_met),  float(r.w_local_3_confidence  or 0)),
+        }
+        cls = assign_intervention_label(
+            critical_vc=critical_vc,
+            is_signalized=is_signalized,
+            warrant_results=warrant_results,
+        )
+        # Confidence: use the recommendation's overall confidence as a stand-in -
+        # the rules engine doesn't emit one and the UI just needs a number for
+        # the percentage badge.
+        return {"class": cls, "confidence": float(r.recommended_confidence or 0)}
 
     return [
         {
@@ -507,6 +546,8 @@ def list_recommendations(
             "w_local_2_confidence": r.w_local_2_confidence,
             "w_local_3_met": r.w_local_3_met,
             "w_local_3_confidence": r.w_local_3_confidence,
+            "proposal_is_no_op": bool(r.proposal_is_no_op),
+            "intervention": _intervention_for(r),
         }
         for r in rows
     ]
@@ -534,9 +575,11 @@ def _maybe_generate_timing_and_sim(
     - emitting a plan for an intersection that shouldn't have a signal misleads
     operators into thinking the system endorses signalization.
 
-    For already-signalized intersections, runs Webster + simulation, then drops
-    the proposed plan when it doesn't beat the existing timing on any chunk -
-    a "no-op retune" is worse than no recommendation because it implies action.
+    For already-signalized intersections, runs Webster + simulation. When the
+    proposal doesn't beat the existing timing on any chunk, the rows are kept
+    (so the UI can render a "current vs proposed" comparison for transparency)
+    but the recommendation is flagged with ``proposal_is_no_op=True`` and a note
+    is written so the frontend can muted-render it instead of pitching action.
     Notes are written to rec.notes only when empty so we never clobber operator
     annotations.
     """
@@ -564,19 +607,17 @@ def _maybe_generate_timing_and_sim(
         db.add(sr)
     db.flush()
 
-    # Case 2: already signalized + Webster never beats existing → drop the rows
-    # so the UI doesn't render a "recommended" plan that's actually a regression.
+    # Case 2: already signalized + Webster never beats existing → keep the rows
+    # but flag the recommendation as a no-op so the UI can render them in a
+    # muted/comparison mode rather than as a "recommended" plan. Dropping the
+    # rows entirely (the prior behaviour) made the SignalTiming page useless
+    # for operators who wanted to see *why* the system said "no change".
     if is_signalized and sim_rows:
         improvement = evaluate_improvement(sim_rows)
         if not improvement.meets_threshold:
-            for tr in timing_rows:
-                db.delete(tr)
-            for sr in sim_rows:
-                db.delete(sr)
-            db.flush()
+            rec.proposal_is_no_op = True
             if not rec.notes:
                 rec.notes = _NO_IMPROVEMENT_NOTE
-            return [], None
 
     return timing_rows, peak_chunk
 

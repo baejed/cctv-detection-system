@@ -1,6 +1,6 @@
 """Unit tests for `server.intervention_rules.assign_intervention_label`.
 
-Pure-function tests — no DB, no FastAPI app. Mirrors the style of
+Pure-function tests - no DB, no FastAPI app. Mirrors the style of
 `tests/test_warrant_rules.py` and `tests/test_local_warrants.py`.
 
 The PRD locks the intervention precedence as:
@@ -92,7 +92,7 @@ def test_signalize_when_unsignalized_and_warrant_met_and_vc_low():
 
 
 def test_signalize_for_any_single_warrant_met():
-    """Any warrant being met is sufficient — the rule reads `any`, not `w1`."""
+    """Any warrant being met is sufficient - the rule reads `any`, not `w1`."""
     for warrant in ("w1", "w2", "w3", "w4", "w_local_2", "w_local_3"):
         flags = {warrant: True}
         label = assign_intervention_label(

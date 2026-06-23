@@ -141,3 +141,36 @@ export function nextPoissonInterval(ratePerSecond: number, rand: () => number = 
   if (ratePerSecond <= 0) return Infinity;
   return -Math.log(rand() + 0.001) / ratePerSecond;
 }
+
+// ── Turn movement distribution ────────────────────────────────────────────
+//
+// Beneficiary feedback (Tagum-style intersections): a meaningful share of
+// vehicles turn rather than going straight. Past mixes (70/15/15) made the
+// intersection box look empty, which misled stakeholders into thinking the
+// simulation only modelled through-movements. 50/25/25 keeps the centre of
+// the box active without over-saturating any single conflict.
+
+export type Turn = 'through' | 'left' | 'right';
+
+export interface TurnDistribution {
+  through: number;
+  left:    number;
+  right:   number;
+}
+
+export const DEFAULT_TURN_DISTRIBUTION: TurnDistribution = {
+  through: 0.50, left: 0.25, right: 0.25,
+};
+
+/** Sample a turn movement from a distribution. Falls back to 'through' if the
+ *  distribution sums to less than the random draw - same defensive pattern as
+ *  sampleType. */
+export function sampleTurn(
+  dist: TurnDistribution = DEFAULT_TURN_DISTRIBUTION,
+  rand: () => number = Math.random,
+): Turn {
+  const r = rand();
+  if (r < dist.through) return 'through';
+  if (r < dist.through + dist.left) return 'left';
+  return 'right';
+}

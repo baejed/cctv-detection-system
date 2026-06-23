@@ -32,6 +32,7 @@ import {
   approachPhase, approachRemaining, pedCanWalk,
   VPARAMS, VEH_TYPES, DEFAULT_MIX, sampleType,
   idmAcceleration, nextPoissonInterval,
+  sampleTurn,
 } from '@/lib/traffic-sim';
 
 // ─── Layout constants ─────────────────────────────────────────────────────────
@@ -561,10 +562,14 @@ function placeVehicle(v: Veh): void {
   const p = VPARAMS[v.type];
   const d = v.dist + p.len / 2;
   const y = v.yOffset;
+  // Lane choice per right-hand-traffic (PH/US): driver's right-hand side of
+  // the road relative to direction of travel. SB(+Z)→west(-X); NB(-Z)→east(+X);
+  // WB(-X)→north(-Z); EB(+X)→south(+Z). Previously SB and NB were on the
+  // wrong (head-on) side of the NS road.
   switch (v.app) {
-    case 0: v.obj.position.set( LANE, y, -(BOX + d)); break;
+    case 0: v.obj.position.set(-LANE, y, -(BOX + d)); break;
     case 1: v.obj.position.set( BOX + d, y, -LANE);   break;
-    case 2: v.obj.position.set(-LANE, y,  BOX + d);   break;
+    case 2: v.obj.position.set( LANE, y,  BOX + d);   break;
     case 3: v.obj.position.set(-(BOX + d), y,  LANE); break;
   }
 }
@@ -590,38 +595,52 @@ function placePed(p: Ped): void {
 //   Southbound / Northbound: x = ±LANE
 //   Westbound / Eastbound:   z = ±LANE
 
+// Right-hand traffic: each approach enters on the driver's right-hand
+// lane of its road, so NS lanes mirror EW lanes around the centerline.
 const APP_ENTRY_XZ: [number, number][] = [
-  [ LANE, -BOX],   // 0 southbound
-  [ BOX,  -LANE],  // 1 westbound
-  [-LANE,  BOX],   // 2 northbound
-  [-BOX,   LANE],  // 3 eastbound
+  [-LANE, -BOX],   // 0 southbound (west lane of NS road)
+  [ BOX,  -LANE],  // 1 westbound  (north lane of EW road)
+  [ LANE,  BOX],   // 2 northbound (east lane of NS road)
+  [-BOX,   LANE],  // 3 eastbound  (south lane of EW road)
 ];
 
 // Per-approach turn arc data: [cpX, cpZ, p2X, p2Z, farX, farZ]
 //   cp  = Bezier control point (corner anchor)
 //   p2  = Bezier end = box edge where vehicle enters the exit arm
 //   far = far end of exit arm (removal boundary)
+//
+// Right turns: control point at the NEAR outside BOX corner — tight inside
+// arc matches real geometry.
+//
+// Left turns: control point at the entry-aligned LANE intersection:
+//   cp.x = entry.x   (so the initial bezier tangent is the pure entry dir)
+//   cp.z = exit.z    (so the final tangent is the pure exit dir)
+// This makes the vehicle drive forward first and then arc smoothly through
+// the inside corner of the turn. Earlier attempts at the far BOX corner or
+// the far-diagonal LANE intersection put the midpoint in roughly the right
+// place but gave the wrong tangents, so vehicles visibly veered sideways
+// the instant they cleared the stop line ("looks weird coming from north").
 type ArcRow = [number, number, number, number, number, number];
 const ARC_DATA: Record<number, { left: ArcRow; right: ArcRow; throughFar: [number, number] }> = {
-  0: { // southbound: stop at (LANE, -BOX), traveling +Z
-    throughFar: [LANE,       BOX + ARM],
-    left:       [ BOX, -BOX,  BOX,  LANE,  BOX + ARM,     LANE],   // → east
-    right:      [-BOX, -BOX, -BOX, -LANE, -(BOX + ARM),  -LANE],   // → west
+  0: { // southbound: stop at (-LANE, -BOX), traveling +Z (SB lane = west)
+    throughFar: [-LANE,       BOX + ARM],
+    left:       [-LANE,  LANE,  BOX,  LANE,  BOX + ARM,     LANE],   // → east (EB lane = south)
+    right:      [-LANE, -LANE, -BOX, -LANE, -(BOX + ARM),  -LANE],   // → west (WB lane = north)
   },
-  1: { // westbound: stop at (BOX, -LANE), traveling -X
+  1: { // westbound: stop at (BOX, -LANE), traveling -X (WB lane = north)
     throughFar: [-(BOX + ARM), -LANE],
-    left:       [ BOX,  BOX,  LANE,  BOX,   LANE,      BOX + ARM],  // → south
-    right:      [ BOX, -BOX, -LANE, -BOX,  -LANE,    -(BOX + ARM)], // → north
+    left:       [-LANE, -LANE, -LANE,  BOX,  -LANE,      BOX + ARM],  // → south (SB lane = west)
+    right:      [ LANE, -LANE,  LANE, -BOX,   LANE,    -(BOX + ARM)], // → north (NB lane = east)
   },
-  2: { // northbound: stop at (-LANE, BOX), traveling -Z
-    throughFar: [-LANE, -(BOX + ARM)],
-    left:       [-BOX,  BOX, -BOX, -LANE, -(BOX + ARM),  -LANE],   // → west
-    right:      [ BOX,  BOX,  BOX,  LANE,   BOX + ARM,    LANE],   // → east
+  2: { // northbound: stop at (LANE, BOX), traveling -Z (NB lane = east)
+    throughFar: [ LANE, -(BOX + ARM)],
+    left:       [ LANE, -LANE, -BOX, -LANE, -(BOX + ARM),  -LANE],   // → west (WB lane = north)
+    right:      [ LANE,  LANE,  BOX,  LANE,   BOX + ARM,    LANE],   // → east (EB lane = south)
   },
-  3: { // eastbound: stop at (-BOX, LANE), traveling +X
+  3: { // eastbound: stop at (-BOX, LANE), traveling +X (EB lane = south)
     throughFar: [BOX + ARM, LANE],
-    left:       [-BOX, -BOX, -LANE, -BOX,  -LANE,    -(BOX + ARM)], // → north
-    right:      [-BOX,  BOX,  LANE,  BOX,   LANE,      BOX + ARM],  // → south
+    left:       [ LANE,  LANE,  LANE, -BOX,   LANE,    -(BOX + ARM)], // → north (NB lane = east)
+    right:      [-LANE,  LANE, -LANE,  BOX,  -LANE,      BOX + ARM],  // → south (SB lane = west)
   },
 };
 
@@ -1464,8 +1483,22 @@ export function IntersectionScene3D({
             );
             if (boxFull) { v.dist = 0; v.speed = 0; placeVehicle(v); continue; }
 
-            const r = Math.random();
-            v.turn = r < 0.70 ? 'through' : r < 0.85 ? 'left' : 'right';
+            // Pedestrian gate: peds start crossing only when the conflicting
+            // vehicle phase is red (pedCanWalkAt), but they don't disappear
+            // the instant the phase flips back to green — slow walkers can
+            // still be mid-crossing. Without this check the first vehicles
+            // of a new green plough straight through them. The mapping
+            // mirrors CW_DEFS.blockedApp: NS approaches (SB/NB = app 0,2)
+            // conflict with the N/S crosswalks (cwId 0,1); EW approaches
+            // (WB/EB = app 1,3) conflict with the E/W crosswalks (cwId 2,3).
+            const conflictingCws: readonly number[] =
+              v.app % 2 === 0 ? [0, 1] : [2, 3];
+            const pedInConflict = peds.some(
+              p => conflictingCws.includes(p.cwId) && p.progress < 1,
+            );
+            if (pedInConflict) { v.dist = 0; v.speed = 0; placeVehicle(v); continue; }
+
+            v.turn = sampleTurn();
             v.waypoints = buildPath3D(v.app, v.turn);
             v.wpIdx = 0;
             v.obj.position.set(epx, v.yOffset, epz);
@@ -1541,8 +1574,11 @@ export function IntersectionScene3D({
         const rawDt = Math.min((now - lastT) / 1000, 0.1);
         lastT = now;
         if (!pausedRef.current) {
-          // Match 2D canvas: speed=1 → 15 sim-seconds per real-second (sps=15 × speed)
-          let rem = Math.min(rawDt * speedRef.current * 15, 1.0);
+          // speed=1 → real time (1 sim-second per real-second). Previously
+          // the base was 15, which made even 1× feel like a time-lapse and
+          // was too fast to follow during demos. Cap remains 1.0 s per frame
+          // so a tab-switch pause never integrates a giant step.
+          let rem = Math.min(rawDt * speedRef.current, 1.0);
           while (rem > 0) { const step = Math.min(rem, MAX_PHYS_DT); update(step); rem -= step; }
         }
         renderer.render(scene, camera);

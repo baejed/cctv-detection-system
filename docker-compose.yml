@@ -3,6 +3,11 @@ services:
     image: timescale/timescaledb:latest-pg16
     container_name: timescaledb
     restart: unless-stopped
+    # /dev/shm size for parallel queries / hash aggregates. Docker's 64 MB
+    # default is too small for the SSE aggregation rollup; without this the
+    # query fails with `could not resize shared memory segment ... No space
+    # left on device`.
+    shm_size: '1gb'
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres

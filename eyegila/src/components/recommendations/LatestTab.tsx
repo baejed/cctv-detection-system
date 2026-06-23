@@ -12,9 +12,17 @@ import { Progress } from '@/components/ui/progress';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
-import { Loader2, RefreshCw, Pencil, Check, X, BarChart2, Wifi, WifiOff, AlertTriangle, TrafficCone, Construction, Clock } from 'lucide-react';
+import { Loader2, RefreshCw, Pencil, Check, X, BarChart2, Wifi, WifiOff, AlertTriangle, TrafficCone, Construction, Clock, Info } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { InterventionClass } from '@/types';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@/components/ui/dialog';
 
 const W1_MAJOR_THRESHOLD = 400;
 const W4_PEDS_THRESHOLD  = 100;
@@ -124,12 +132,36 @@ interface Props {
   onNotesSaved: (rec: RecommendationResponse) => void;
 }
 
-const BARS: { key: 'warrant_1' | 'warrant_2' | 'warrant_4' | 'recommended'; label: string }[] = [
-  { key: 'warrant_1',  label: 'W1 - Eight-Hour Vehicular Volume' },
-  { key: 'warrant_2',  label: 'W2 - Four-Hour Vehicular Volume' },
-  { key: 'warrant_4',  label: 'W4 - Pedestrian Volume' },
-  { key: 'recommended',label: 'Overall recommended' },
+export type BarKey = 'warrant_1' | 'warrant_2' | 'warrant_4' | 'w_local_2' | 'w_local_3' | 'recommended';
+
+export const BARS: { key: BarKey; label: string }[] = [
+  { key: 'warrant_1',   label: 'W1 - Eight-Hour Vehicular Volume' },
+  { key: 'warrant_2',   label: 'W2 - Four-Hour Vehicular Volume' },
+  { key: 'warrant_4',   label: 'W4 - Pedestrian Volume' },
+  { key: 'w_local_2',   label: 'W-Local 2 - Peak Concentration (Tagum)' },
+  { key: 'w_local_3',   label: 'W-Local 3 - Lights Off (Tagum)' },
+  { key: 'recommended', label: 'Overall recommended' },
 ];
+
+interface BarSource {
+  warrant_1_met: boolean; warrant_1_confidence: number;
+  warrant_2_met: boolean; warrant_2_confidence: number;
+  warrant_4_met: boolean; warrant_4_confidence: number;
+  w_local_2_met: boolean | null; w_local_2_confidence: number | null;
+  w_local_3_met: boolean | null; w_local_3_confidence: number | null;
+  recommended: boolean; recommended_confidence: number | null;
+}
+
+export function resolveBar(rec: BarSource, key: BarKey): { value: number; met: boolean } | null {
+  if (key === 'recommended') {
+    if (rec.recommended_confidence == null) return null;
+    return { value: rec.recommended_confidence, met: rec.recommended };
+  }
+  const value = rec[`${key}_confidence` as 'warrant_1_confidence'];
+  if (value === null || value === undefined) return null;
+  const met = rec[`${key}_met` as 'warrant_1_met'] ?? false;
+  return { value, met };
+}
 
 export function LatestTab({ rec, onRegenerate, regenerating, onNotesSaved }: Props) {
   const [editing, setEditing] = useState(false);
@@ -229,12 +261,9 @@ export function LatestTab({ rec, onRegenerate, regenerating, onNotesSaved }: Pro
 
       <div className="flex flex-col gap-3">
         {BARS.map(b => {
-          const value = b.key === 'recommended'
-            ? (rec.recommended_confidence ?? 0)
-            : rec[`${b.key}_confidence` as `warrant_1_confidence`];
-          const met = b.key === 'recommended'
-            ? rec.recommended
-            : rec[`${b.key}_met` as `warrant_1_met`];
+          const resolved = resolveBar(rec, b.key);
+          if (!resolved) return null;
+          const { value, met } = resolved;
           return (
             <div key={b.key} className="flex flex-col gap-1">
               <div className="flex items-center justify-between text-xs">
@@ -253,7 +282,10 @@ export function LatestTab({ rec, onRegenerate, regenerating, onNotesSaved }: Pro
       <Separator />
 
       <div>
-        <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-2">Feature inputs (last hour)</div>
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Last-hour scalar summary</div>
+          <div className="text-[10px] text-muted-foreground/70 italic">CNN reads the full 24h timeseries</div>
+        </div>
         <div className="grid grid-cols-5 gap-3 text-center">
           <Stat label="Major" value={rec.major_volume} suffix="veh/hr" />
           <Stat label="Minor" value={rec.minor_volume} suffix="veh/hr" />
@@ -266,7 +298,10 @@ export function LatestTab({ rec, onRegenerate, regenerating, onNotesSaved }: Pro
       <Separator />
 
       <div className="flex flex-col gap-3">
-        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Warrant evidence (DPWH thresholds)</div>
+        <div className="flex items-center gap-1.5">
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Warrant evidence (DPWH thresholds)</div>
+          <WarrantInfoDialog />
+        </div>
 
         {hourlyBuckets !== null && (
           <div className="flex flex-col gap-3">
@@ -379,13 +414,13 @@ const INTERVENTION_META: Record<InterventionClass, {
   },
   road_widening: {
     label: 'Widen approach lanes',
-    blurb: 'Post-Webster critical v/c exceeds 0.90 — signal timing alone cannot clear demand.',
+    blurb: 'Post-Webster critical v/c exceeds 0.90 - signal timing alone cannot clear demand.',
     Icon: Construction,
     containerClass: 'border-amber-200 bg-amber-50 text-amber-800 dark:bg-amber-950/20 dark:border-amber-900 dark:text-amber-300',
   },
   timing_only: {
     label: 'Timing adjustments only',
-    blurb: 'No structural change recommended — existing signal timing can absorb the demand.',
+    blurb: 'No structural change recommended - existing signal timing can absorb the demand.',
     Icon: Clock,
     containerClass: 'border-border bg-muted/30 text-foreground',
   },
@@ -399,12 +434,76 @@ function InterventionBanner({ intervention }: { intervention: { class: Intervent
       <meta.Icon className="size-4 mt-0.5 shrink-0" />
       <div className="flex-1 min-w-0">
         <div className="flex items-center justify-between gap-2">
-          <div className="text-xs font-semibold">{meta.label}</div>
+          <div className="flex items-center gap-1.5">
+            <div className="text-xs font-semibold">{meta.label}</div>
+            <InterventionInfoDialog />
+          </div>
           <div className="text-[10px] tabular-nums opacity-80">{pct}% confidence</div>
         </div>
         <div className="text-[10px] mt-0.5 opacity-80">{meta.blurb}</div>
       </div>
     </div>
+  );
+}
+
+function InterventionInfoDialog() {
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <button
+          type="button"
+          aria-label="How is this recommended?"
+          className="opacity-60 hover:opacity-100 transition-opacity"
+        >
+          <Info className="size-3" />
+        </button>
+      </DialogTrigger>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>How this recommendation is computed</DialogTitle>
+          <DialogDescription>
+            A multi-task 1D convolutional neural network reads the last 24 hours of
+            per-approach flow (vehicle and pedestrian counts in 15-minute slots) plus
+            intersection metadata, and outputs a single structural recommendation.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="text-xs leading-relaxed text-muted-foreground space-y-3 mt-1">
+          <div>
+            <div className="font-semibold text-foreground mb-1 flex items-center gap-1.5">
+              <TrafficCone className="size-3.5 text-emerald-600" /> Install traffic signal
+            </div>
+            Chosen when a MUTCD or Tagum-local warrant is met and the intersection is
+            currently unsignalized. Existing signal timing cannot apply because there is no signal.
+          </div>
+          <div>
+            <div className="font-semibold text-foreground mb-1 flex items-center gap-1.5">
+              <Construction className="size-3.5 text-amber-600" /> Widen approach lanes
+            </div>
+            Chosen when the post-Webster critical v/c ratio exceeds 0.90 - even an
+            optimally-timed signal cannot clear demand, so a structural lane addition is
+            needed.
+          </div>
+          <div>
+            <div className="font-semibold text-foreground mb-1 flex items-center gap-1.5">
+              <Clock className="size-3.5 text-muted-foreground" /> Timing adjustments only
+            </div>
+            Default outcome: the intersection's demand can be absorbed by re-tuning the
+            existing signal phases. No capex required.
+          </div>
+          <div className="pt-2 border-t border-border">
+            <span className="font-semibold text-foreground">Confidence</span> is the
+            softmax probability for the predicted class. Six warrant probabilities
+            (W1, W2, W3, W4, W-Local 2, W-Local 3) are produced in parallel from the
+            same network and surface in the bars below.
+          </div>
+          <div className="text-[10px] italic">
+            Loss formulation: Kendall, Gal &amp; Cipolla (2018) homoscedastic
+            uncertainty weighting. Trained on a ~5,400-sample parameter-realistic
+            synthetic dataset with intersection-stratified splits.
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -417,6 +516,71 @@ function Stat({ label, value, suffix, digits = 0 }: { label: string; value: numb
       </div>
       {suffix && <div className="text-[9px] text-muted-foreground">{suffix}</div>}
     </div>
+  );
+}
+
+function WarrantInfoDialog() {
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <button
+          type="button"
+          aria-label="About these warrants"
+          className="text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <Info className="size-3" />
+        </button>
+      </DialogTrigger>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>What the warrants mean</DialogTitle>
+          <DialogDescription>
+            The MUTCD (Manual on Uniform Traffic Control Devices) defines numerical
+            tests for when a signal is justified. Tagum adds two local warrants for
+            patterns the MUTCD does not cover.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="text-xs leading-relaxed text-muted-foreground space-y-2.5 mt-1">
+          <div>
+            <span className="font-semibold text-foreground">W1 - Eight-Hour Vehicular Volume.</span>{' '}
+            Major road ≥ 400 veh/hr and minor road ≥ 150 veh/hr for any 8 hours of the
+            day. The most common American basis for signalization.
+          </div>
+          <div>
+            <span className="font-semibold text-foreground">W2 - Four-Hour Vehicular Volume.</span>{' '}
+            A lower-volume version of W1 over 4 hours. Captures intersections that
+            barely miss W1 but still hit sustained peaks.
+          </div>
+          <div>
+            <span className="font-semibold text-foreground">W3 - Peak Hour.</span>{' '}
+            A single hour of very high delay or volume. Predicted by the CNN but not
+            surfaced in the bars above because Tagum's 24/7 demand makes single-peak
+            warrants rarely decisive.
+          </div>
+          <div>
+            <span className="font-semibold text-foreground">W4 - Pedestrian Volume.</span>{' '}
+            Pedestrian crossings ≥ 100/hr (≥ 75/hr if posted speed ≤ 40 km/h). Why we
+            surface peds as a separate metric.
+          </div>
+          <div>
+            <span className="font-semibold text-foreground">W-Local 2 - Peak Concentration.</span>{' '}
+            Tagum-specific: the top two TOD chunks carry &gt; 60% of a day's vehicle
+            volume. Catches "rush-only" intersections that benefit from peak-tuned
+            timing rather than full signalization.
+          </div>
+          <div>
+            <span className="font-semibold text-foreground">W-Local 3 - Lights Off.</span>{' '}
+            Tagum-specific: avg PCU/hr per approach falls below 30 in any chunk -
+            grounds for flashing-mode operation during that period rather than full
+            cycles.
+          </div>
+          <div className="pt-2 border-t border-border">
+            The 0.70 low-speed multiplier (MUTCD §4C.01) applies in Tagum on both
+            counts: posted speed ≤ 40 km/h and population &lt; 10,000.
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
