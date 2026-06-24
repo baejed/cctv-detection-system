@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import type { SimulationChunk } from '@/services/simulation';
 import type { TimingChunk } from '@/services/timing';
 import type { Street } from '@/types';
+import { DEFAULT_TURN_DISTRIBUTION } from '@/lib/traffic-sim';
 
 // Physical arm position → which direction of traffic queues there (right-hand traffic).
 // Approach 0 = North arm → SB vehicles; 1 = East arm → WB; 2 = South arm → NB; 3 = West arm → EB.
@@ -18,11 +19,11 @@ const PHASE_GROUPS: number[][] = [[0], [1], [2], [3]];
 const COLORS = ['#6366f1', '#f59e0b', '#10b981', '#ef4444'];
 const DIR_LABELS = ['N', 'E', 'S', 'W'];
 const SPEEDS = [
-  { label: '⅒×', sps: 3 },
-  { label: '¼×', sps: 8 },
-  { label: '1×',  sps: 30 },
-  { label: '5×',  sps: 150 },
-  { label: '10×', sps: 300 },
+  { label: '⅒×', sps: 1.5 },
+  { label: '¼×', sps: 4 },
+  { label: '1×',  sps: 15 },
+  { label: '5×',  sps: 75 },
+  { label: '10×', sps: 150 },
 ];
 const SIM_DURATION = 3600;
 const ARM_UNITS = 118;
@@ -35,23 +36,36 @@ const GAP_PHASE_S = 10; // each axis (N-S or E-W) gets this many sim-seconds of 
 const CONFLICTS: number[][] = [[1, 3], [0, 2], [1, 3], [0, 2]];
 
 // Lane offset in canvas units (= aw/4 / sc = 72/4). Half-lane from road center.
-// PH right-hand traffic: SB/WB vehicles are in the west/south lane (negative offset);
-// NB/EB vehicles are in the east/north lane (positive offset).
+// PH right-hand traffic. Canvas y grows DOWNWARD (south = +y), so:
+//   SB → west lane (x = -LANE_OFF), NB → east (+LANE_OFF)
+//   WB → north lane (y = -LANE_OFF), EB → south (+LANE_OFF)
+// Prior to this fix the EW lanes were swapped (WB on south, EB on north),
+// producing a head-on collision layout for east-west traffic.
 const LANE_OFF   = 18;
 const AMBER_S    = 3;    // amber transition seconds at end of green
 const PED2D_SPD  = 0.035; // fractional crosswalk distance per sim-second
 
-// Box-edge points where each approach's inbound lane meets the intersection box
+// Box-edge points where each approach's inbound lane meets the intersection box.
+// Index = approach: 0 SB, 1 WB, 2 NB, 3 EB.
 const ARM_ENTRY_IN: [number, number][] = [
-  [-LANE_OFF, -BOX_UNITS], [BOX_UNITS,  LANE_OFF], [ LANE_OFF,  BOX_UNITS], [-BOX_UNITS, -LANE_OFF],
+  [-LANE_OFF, -BOX_UNITS],   // SB (west lane, entering from north)
+  [ BOX_UNITS, -LANE_OFF],   // WB (north lane, entering from east)
+  [ LANE_OFF,  BOX_UNITS],   // NB (east lane, entering from south)
+  [-BOX_UNITS,  LANE_OFF],   // EB (south lane, entering from west)
 ];
-// Box-edge points where vehicles exit the intersection into each arm's outbound lane
+// Box-edge points where vehicles exit the intersection into each arm's outbound lane.
+// Index = arm: 0 north (NB exit), 1 east (EB exit), 2 south (SB exit), 3 west (WB exit).
 const ARM_ENTRY_OUT: [number, number][] = [
-  [ LANE_OFF, -BOX_UNITS], [BOX_UNITS, -LANE_OFF], [-LANE_OFF,  BOX_UNITS], [-BOX_UNITS,  LANE_OFF],
+  [ LANE_OFF, -BOX_UNITS],   // arm 0 → NB exit (east lane)
+  [ BOX_UNITS, LANE_OFF],    // arm 1 → EB exit (south lane)
+  [-LANE_OFF,  BOX_UNITS],   // arm 2 → SB exit (west lane)
+  [-BOX_UNITS,-LANE_OFF],    // arm 3 → WB exit (north lane)
 ];
 const ARM_EXIT_PT: [number, number][] = [
-  [ LANE_OFF, -(BOX_UNITS + ARM_UNITS)], [BOX_UNITS + ARM_UNITS, -LANE_OFF],
-  [-LANE_OFF,   BOX_UNITS + ARM_UNITS],  [-(BOX_UNITS + ARM_UNITS), LANE_OFF],
+  [ LANE_OFF, -(BOX_UNITS + ARM_UNITS)],   // arm 0 far end (NB lane)
+  [ BOX_UNITS + ARM_UNITS,  LANE_OFF],     // arm 1 far end (EB lane)
+  [-LANE_OFF,   BOX_UNITS + ARM_UNITS],    // arm 2 far end (SB lane)
+  [-(BOX_UNITS + ARM_UNITS), -LANE_OFF],   // arm 3 far end (WB lane)
 ];
 // Exit arm index per approach: [through, left, right]
 const TURN_EXIT: [number, number, number][] = [
@@ -113,9 +127,33 @@ const ARC_SAMPLES = 10;
 
 // Bezier control point (corner anchor) per approach × turn direction.
 // Each entry is [cpX, cpY] in canvas units relative to intersection center.
+//
+// Both left AND right turns use the entry-aligned LANE intersection:
+//   cp.x = entry.x   (initial bezier tangent = pure entry direction)
+//   cp.z = exit.z    (final tangent = pure exit direction)
+// This makes the vehicle drive forward first and then arc smoothly through
+// the inside corner of the turn. The old right-turn BOX-corner anchor had
+// the wrong initial tangent — e.g. SB→W started with a pure −X velocity
+// even though the entry direction is +Z, producing a visible sideways
+// swerve the instant the vehicle cleared the stop line.
+// cp.x = entry-invariant x (SB/NB pin x to entry.x; WB/EB pin x to exit.x)
+// cp.y = entry-invariant y (WB/EB pin y to entry.y; SB/NB pin y to exit.y)
+// Result: initial bezier tangent = entry direction, final = exit direction,
+// so vehicles drive straight first and then arc smoothly through the inside
+// corner of the turn — no sideways veer on either left or right turns.
 const TURN_CP: Record<'left' | 'right', [number, number][]> = {
-  left:  [[BOX_UNITS,-BOX_UNITS],[BOX_UNITS,BOX_UNITS],[-BOX_UNITS,BOX_UNITS],[-BOX_UNITS,-BOX_UNITS]],
-  right: [[-BOX_UNITS,-BOX_UNITS],[BOX_UNITS,-BOX_UNITS],[BOX_UNITS,BOX_UNITS],[-BOX_UNITS,BOX_UNITS]],
+  left:  [
+    [-LANE_OFF, LANE_OFF],   // 0 SB → E (entry x=-LANE, exit y=+LANE)
+    [-LANE_OFF,-LANE_OFF],   // 1 WB → S (exit x=-LANE, entry y=-LANE)
+    [ LANE_OFF,-LANE_OFF],   // 2 NB → W (entry x=+LANE, exit y=-LANE)
+    [ LANE_OFF, LANE_OFF],   // 3 EB → N (exit x=+LANE, entry y=+LANE)
+  ],
+  right: [
+    [-LANE_OFF,-LANE_OFF],   // 0 SB → W (entry x=-LANE, exit y=-LANE)
+    [ LANE_OFF,-LANE_OFF],   // 1 WB → N (exit x=+LANE, entry y=-LANE)
+    [ LANE_OFF, LANE_OFF],   // 2 NB → E (entry x=+LANE, exit y=+LANE)
+    [-LANE_OFF, LANE_OFF],   // 3 EB → S (exit x=-LANE, entry y=+LANE)
+  ],
 };
 
 function buildWaypoints(approach: number, turn: 'through' | 'left' | 'right'): { x: number; y: number }[] {
@@ -139,8 +177,14 @@ function buildWaypoints(approach: number, turn: 'through' | 'left' | 'right'): {
 }
 
 function initClearing(v: Vehicle): void {
+  // Deterministic-per-vehicle turn pick (id-derived) so a paused/scrubbed
+  // canvas always shows the same path. Tracks the central
+  // DEFAULT_TURN_DISTRIBUTION (50/25/25) used by the 3D scene so the two
+  // views agree on movement mix.
   const r = (v.id * 1337 + 42) % 100;
-  v.turn = r < 70 ? 'through' : r < 85 ? 'left' : 'right';
+  const thru = DEFAULT_TURN_DISTRIBUTION.through * 100;
+  const left = (DEFAULT_TURN_DISTRIBUTION.through + DEFAULT_TURN_DISTRIBUTION.left) * 100;
+  v.turn = r < thru ? 'through' : r < left ? 'left' : 'right';
   [v.px, v.py] = ARM_ENTRY_IN[v.approach];
   v.waypoints = buildWaypoints(v.approach, v.turn);
 }
@@ -596,9 +640,9 @@ function paint(
     const loff = aw / 4; // half-lane offset in pixels (right-hand traffic lane discipline)
     switch (v.approach) {
       case 0: x = cx - loff - (p.width*sc)/2; y = cy - box - (d + p.length)*sc; w = p.width*sc; h = p.length*sc; break; // SB → west lane
-      case 1: x = cx + box + d*sc;            y = cy + loff - (p.width*sc)/2;   w = p.length*sc; h = p.width*sc; break; // WB → south lane
+      case 1: x = cx + box + d*sc;            y = cy - loff - (p.width*sc)/2;   w = p.length*sc; h = p.width*sc; break; // WB → north lane
       case 2: x = cx + loff - (p.width*sc)/2; y = cy + box + d*sc;              w = p.width*sc; h = p.length*sc; break; // NB → east lane
-      case 3: x = cx - box - (d + p.length)*sc; y = cy - loff - (p.width*sc)/2; w = p.length*sc; h = p.width*sc; break; // EB → north lane
+      case 3: x = cx - box - (d + p.length)*sc; y = cy + loff - (p.width*sc)/2; w = p.length*sc; h = p.width*sc; break; // EB → south lane
       default: continue;
     }
     ctx.globalAlpha = 0.9;
@@ -822,7 +866,7 @@ export function IntersectionCanvas({
   const lastRtRef    = useRef<number>(0);
 
   const playingRef      = useRef(false);
-  const spsRef          = useRef(3);
+  const spsRef          = useRef(1.5);
   const modeRef         = useRef<'before' | 'after'>('after');
   const simTRef         = useRef(0);
   const pausePaintedRef = useRef(false);
@@ -870,7 +914,7 @@ export function IntersectionCanvas({
   idsRef.current = ids;
 
   const [playing, setPlaying] = useState(false);
-  const [sps, setSps] = useState(3);
+  const [sps, setSps] = useState(1.5);
   const [mode, setMode] = useState<'before' | 'after'>('after');
   const [isFullscreen, setIsFullscreen] = useState(false);
 
@@ -1181,7 +1225,7 @@ export function DualIntersectionCanvas({
   signalStatus: string;
   typeMix?: Record<string, TypeFractions>;
   paused?: boolean;
-  speed?: 1 | 2 | 4;
+  speed?: 1 | 4 | 8;
   streets?: Street[];
   existingCycleS?: number | null;
   existingGreenSplits?: Record<string, number> | null;
@@ -1253,7 +1297,9 @@ export function DualIntersectionCanvas({
 
   // Sync external paused / speed props into refs used by the RAF loop
   useEffect(() => { playingRef.current = !paused; }, [paused]);
-  useEffect(() => { spsRef.current = 30 * speed; }, [speed]);
+  // speed=1 → real time (1 sim-second per real-second). Anchored to match
+  // the 3D scene; see IntersectionScene3D animate() for the same change.
+  useEffect(() => { spsRef.current = speed; }, [speed]);
 
   useEffect(() => {
     const series = (chunk.queue_series_after ?? chunk.queue_series_before) ?? {};

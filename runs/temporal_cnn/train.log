@@ -1,0 +1,36 @@
+2026-06-22 13:25:45,188 INFO train_multitask_cnn - building dataset: 30 intersections × 90 days × 2 day-types
+2026-06-22 13:25:47,056 INFO train_multitask_cnn - dataset shape: flow=(5400, 5, 96) metadata=(5400, 5)
+2026-06-22 13:25:47,058 INFO train_multitask_cnn - splits - train=3780 val=720 test=900 (intersections: 21/4/5)
+2026-06-22 13:25:47,058 INFO train_multitask_cnn - === training seed=0 ===
+2026-06-22 13:25:49,109 INFO train_multitask_cnn - seed=0 epoch=001 train=0.5259 val=0.2751 best=0.2751@1 sigma_w=0.934 sigma_i=0.955
+2026-06-22 13:25:50,256 INFO train_multitask_cnn - seed=0 epoch=002 train=0.2213 val=0.1382 best=0.1382@2 sigma_w=0.872 sigma_i=0.894
+2026-06-22 13:25:51,422 INFO train_multitask_cnn - seed=0 epoch=003 train=0.1100 val=0.0421 best=0.0421@3 sigma_w=0.817 sigma_i=0.846
+2026-06-22 13:25:52,537 INFO train_multitask_cnn - seed=0 epoch=004 train=0.0193 val=-0.0462 best=-0.0462@4 sigma_w=0.768 sigma_i=0.803
+2026-06-22 13:25:53,784 INFO train_multitask_cnn - seed=0 epoch=005 train=-0.0227 val=-0.0249 best=-0.0462@4 sigma_w=0.723 sigma_i=0.770
+2026-06-22 13:25:55,371 INFO train_multitask_cnn - seed=0 epoch=006 train=-0.0918 val=-0.1177 best=-0.1177@6 sigma_w=0.683 sigma_i=0.744
+2026-06-22 13:25:56,831 INFO train_multitask_cnn - seed=0 epoch=007 train=-0.2110 val=-0.2557 best=-0.2557@7 sigma_w=0.646 sigma_i=0.710
+2026-06-22 13:25:57,955 INFO train_multitask_cnn - seed=0 epoch=008 train=-0.2341 val=-0.2338 best=-0.2557@7 sigma_w=0.612 sigma_i=0.689
+2026-06-22 13:25:59,141 INFO train_multitask_cnn - seed=0 epoch=009 train=-0.2778 val=-0.2880 best=-0.2880@9 sigma_w=0.581 sigma_i=0.670
+2026-06-22 13:26:00,233 INFO train_multitask_cnn - seed=0 epoch=010 train=-0.3385 val=-0.3997 best=-0.3997@10 sigma_w=0.552 sigma_i=0.655
+2026-06-22 13:26:01,280 INFO train_multitask_cnn - seed=0 epoch=011 train=-0.3329 val=-0.4480 best=-0.4480@11 sigma_w=0.527 sigma_i=0.648
+2026-06-22 13:26:02,439 INFO train_multitask_cnn - seed=0 epoch=012 train=-0.4050 val=-0.4716 best=-0.4716@12 sigma_w=0.504 sigma_i=0.635
+2026-06-22 13:26:03,497 INFO train_multitask_cnn - seed=0 epoch=013 train=-0.4219 val=-0.5312 best=-0.5312@13 sigma_w=0.484 sigma_i=0.623
+2026-06-22 13:26:04,706 INFO train_multitask_cnn - seed=0 epoch=014 train=-0.4394 val=-0.5243 best=-0.5312@13 sigma_w=0.466 sigma_i=0.619
+2026-06-22 13:26:06,353 INFO train_multitask_cnn - seed=0 epoch=015 train=-0.4813 val=-0.5669 best=-0.5669@15 sigma_w=0.450 sigma_i=0.612
+2026-06-22 13:26:07,508 INFO train_multitask_cnn - seed=0 epoch=016 train=-0.4648 val=-0.5476 best=-0.5669@15 sigma_w=0.436 sigma_i=0.607
+2026-06-22 13:26:08,599 INFO train_multitask_cnn - seed=0 epoch=017 train=-0.5110 val=-0.4664 best=-0.5669@15 sigma_w=0.424 sigma_i=0.602
+2026-06-22 13:26:09,898 INFO train_multitask_cnn - seed=0 epoch=018 train=-0.5266 val=-0.6516 best=-0.6516@18 sigma_w=0.412 sigma_i=0.596
+2026-06-22 13:26:11,052 INFO train_multitask_cnn - seed=0 epoch=019 train=-0.5059 val=-0.6502 best=-0.6516@18 sigma_w=0.403 sigma_i=0.597
+2026-06-22 13:26:12,182 INFO train_multitask_cnn - seed=0 epoch=020 train=-0.5260 val=-0.6578 best=-0.6578@20 sigma_w=0.395 sigma_i=0.596
+2026-06-22 13:26:13,296 INFO train_multitask_cnn - seed=0 epoch=021 train=-0.5816 val=-0.7141 best=-0.7141@21 sigma_w=0.388 sigma_i=0.588
+2026-06-22 13:26:14,633 INFO train_multitask_cnn - seed=0 epoch=022 train=-0.5449 val=-0.7414 best=-0.7414@22 sigma_w=0.382 sigma_i=0.584
+2026-06-22 13:26:15,742 INFO train_multitask_cnn - seed=0 epoch=023 train=-0.6181 val=-0.7435 best=-0.7435@23 sigma_w=0.377 sigma_i=0.577
+2026-06-22 13:26:16,862 INFO train_multitask_cnn - seed=0 epoch=024 train=-0.5798 val=-0.7842 best=-0.7842@24 sigma_w=0.374 sigma_i=0.573
+2026-06-22 13:26:17,936 INFO train_multitask_cnn - seed=0 epoch=025 train=-0.5958 val=-0.8100 best=-0.8100@25 sigma_w=0.370 sigma_i=0.568
+2026-06-22 13:26:19,042 INFO train_multitask_cnn - seed=0 epoch=026 train=-0.6479 val=-0.7848 best=-0.8100@25 sigma_w=0.367 sigma_i=0.560
+2026-06-22 13:26:20,289 INFO train_multitask_cnn - seed=0 epoch=027 train=-0.6553 val=-0.7079 best=-0.8100@25 sigma_w=0.364 sigma_i=0.552
+2026-06-22 13:26:21,378 INFO train_multitask_cnn - seed=0 epoch=028 train=-0.5651 val=-0.8355 best=-0.8355@28 sigma_w=0.363 sigma_i=0.557
+2026-06-22 13:26:22,716 INFO train_multitask_cnn - seed=0 epoch=029 train=-0.6708 val=-0.8486 best=-0.8486@29 sigma_w=0.361 sigma_i=0.553
+2026-06-22 13:26:23,991 INFO train_multitask_cnn - seed=0 epoch=030 train=-0.6925 val=-0.8466 best=-0.8486@29 sigma_w=0.357 sigma_i=0.543
+2026-06-22 13:26:23,998 INFO train_multitask_cnn - saved seed=0 checkpoint → runs/temporal_cnn/temporal_cnn_seed0.pt (best_val=-0.8486 @ epoch 29)
+2026-06-22 13:26:23,998 INFO train_multitask_cnn - training summary → runs/temporal_cnn/training_summary.json

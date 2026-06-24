@@ -8,6 +8,7 @@ import { ReportsPage } from './pages/Reports';
 import { UsersPage } from './pages/Users';
 import { SignalTimingPage } from './pages/SignalTiming';
 import { CameraDetailPage } from './pages/CameraDetail';
+import { CamerasPage } from './pages/Cameras';
 import { VideosPage } from './pages/Videos';
 import { IntersectionDetailPage } from './pages/IntersectionDetail';
 import { IntersectionReportPage } from './pages/IntersectionReport';
@@ -29,6 +30,7 @@ export default function App() {
             <Route index element={<IntersectionsPage />} />
             <Route path="reports" element={<ReportsPage />} />
             <Route path="users" element={<UsersPage />} />
+            <Route path="cameras" element={<CamerasPage />} />
             <Route path="intersections/:id" element={<IntersectionDetailPage />} />
             <Route path="intersections/:id/timing" element={<SignalTimingPage />} />
             <Route path="intersections/:id/report" element={<IntersectionReportPage />} />
@@ -38,7 +40,6 @@ export default function App() {
 
             {/* Legacy routes - keep working but redirect to home */}
             <Route path="intersections"   element={<Navigate to="/" replace />} />
-            <Route path="cameras"         element={<Navigate to="/" replace />} />
             <Route path="recommendations" element={<Navigate to="/" replace />} />
             <Route path="dashboard"       element={<Navigate to="/" replace />} />
           </Route>

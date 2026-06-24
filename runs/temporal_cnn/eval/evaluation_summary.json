@@ -1,0 +1,143 @@
+{
+  "args": {
+    "model_dir": "runs/temporal_cnn",
+    "output_dir": "runs/temporal_cnn/eval",
+    "ablation_dir": null,
+    "saliency_samples": 6,
+    "saliency_from_seed": null,
+    "ignore_training_summary": false,
+    "n_intersections": 30,
+    "n_days": 90,
+    "n_train_intersections": 21,
+    "n_val_intersections": 4,
+    "data_seed": 42,
+    "split_seed": 42,
+    "batch_size": 64,
+    "device": "cpu"
+  },
+  "dataset_args": {
+    "n_intersections": 30,
+    "n_days": 90,
+    "n_train_intersections": 21,
+    "n_val_intersections": 4,
+    "data_seed": 42,
+    "split_seed": 42
+  },
+  "split_sizes": {
+    "train": 3780,
+    "val": 720,
+    "test": 900
+  },
+  "n_seeds_main": 1,
+  "warrant_aggregated": {
+    "w1": {
+      "auc_mean": 0.9842795158712034,
+      "auc_std": 0.0,
+      "auc_n_seeds": 1,
+      "f1_mean": 0.8091168091168092,
+      "f1_std": 0.0,
+      "positive_rate_mean": 0.16111111111111112
+    },
+    "w2": {
+      "auc_mean": 0.9766635419286493,
+      "auc_std": 0.0,
+      "auc_n_seeds": 1,
+      "f1_mean": 0.8257372654155496,
+      "f1_std": 0.0,
+      "positive_rate_mean": 0.20333333333333334
+    },
+    "w3": {
+      "auc_mean": 0.9892984542211652,
+      "auc_std": 0.0,
+      "auc_n_seeds": 1,
+      "f1_mean": 0.7967479674796748,
+      "f1_std": 0.0,
+      "positive_rate_mean": 0.06555555555555556
+    },
+    "w4": {
+      "auc_mean": 0.9561915887850467,
+      "auc_std": 0.0,
+      "auc_n_seeds": 1,
+      "f1_mean": 0.044444444444444446,
+      "f1_std": 0.0,
+      "positive_rate_mean": 0.04888888888888889
+    },
+    "w_local_2": {
+      "auc_mean": null,
+      "auc_std": 0.0,
+      "auc_n_seeds": 0,
+      "f1_mean": 0.0,
+      "f1_std": 0.0,
+      "positive_rate_mean": 0.0
+    },
+    "w_local_3": {
+      "auc_mean": 0.9993359797906892,
+      "auc_std": 0.0,
+      "auc_n_seeds": 1,
+      "f1_mean": 0.935672514619883,
+      "f1_std": 0.0,
+      "positive_rate_mean": 0.09444444444444444
+    }
+  },
+  "intervention_aggregated": {
+    "classes": [
+      "signalize",
+      "road_widening",
+      "timing_only"
+    ],
+    "accuracy_mean": 0.9022222222222223,
+    "accuracy_std": 0.0,
+    "macro_f1_mean": 0.8383974654426581,
+    "macro_f1_std": 0.0,
+    "per_class_precision_mean": {
+      "signalize": 0.7414634146341463,
+      "road_widening": 0.6379310344827587,
+      "timing_only": 0.978021978021978
+    },
+    "per_class_precision_std": {
+      "signalize": 0.0,
+      "road_widening": 0.0,
+      "timing_only": 0.0
+    },
+    "per_class_recall_mean": {
+      "signalize": 0.8539325842696629,
+      "road_widening": 1.0,
+      "timing_only": 0.9094890510948905
+    },
+    "per_class_recall_std": {
+      "signalize": 0.0,
+      "road_widening": 0.0,
+      "timing_only": 0.0
+    },
+    "per_class_f1_mean": {
+      "signalize": 0.793733681462141,
+      "road_widening": 0.7789473684210526,
+      "timing_only": 0.9425113464447806
+    },
+    "per_class_f1_std": {
+      "signalize": 0.0,
+      "road_widening": 0.0,
+      "timing_only": 0.0
+    },
+    "summed_confusion_matrix": [
+      [
+        152,
+        12,
+        14
+      ],
+      [
+        0,
+        37,
+        0
+      ],
+      [
+        53,
+        9,
+        623
+      ]
+    ]
+  },
+  "ablation_comparison": null,
+  "saliency_seed": 0,
+  "saliency_path": "runs/temporal_cnn/eval/saliency/gradcam_seed0.npz"
+}

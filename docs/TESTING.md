@@ -146,18 +146,18 @@ cd eyegila && npx playwright test --config e2e/playwright.config.ts --ui
 
 | Spec | Tests |
 |------|-------|
-| `app.spec.ts` — Login | Fields render, wrong password stays on /login, valid creds redirect, unauthenticated nav redirects |
-| `app.spec.ts` — Intersections list | At least one intersection after seed, page title correct |
-| `app.spec.ts` — Recommendations | No JS errors, W1/W2/W4 badges visible |
-| `app.spec.ts` — Signal Timing | No JS errors, LOS badges visible, 3D canvas rendered, timing controls visible, cycle lengths in 40–120 s range |
-| `app.spec.ts` — Camera Detail | Camera list loads without errors |
-| `app.spec.ts` — Navigation | Nav links lead to correct routes, 404 shows fallback (not blank) |
-| `app.spec.ts` — Responsive | Recommendations page no horizontal overflow on 375×667 mobile |
+| `app.spec.ts` - Login | Fields render, wrong password stays on /login, valid creds redirect, unauthenticated nav redirects |
+| `app.spec.ts` - Intersections list | At least one intersection after seed, page title correct |
+| `app.spec.ts` - Recommendations | No JS errors, W1/W2/W4 badges visible |
+| `app.spec.ts` - Signal Timing | No JS errors, LOS badges visible, 3D canvas rendered, timing controls visible, cycle lengths in 40–120 s range |
+| `app.spec.ts` - Camera Detail | Camera list loads without errors |
+| `app.spec.ts` - Navigation | Nav links lead to correct routes, 404 shows fallback (not blank) |
+| `app.spec.ts` - Responsive | Recommendations page no horizontal overflow on 375×667 mobile |
 | `auth-expiry.spec.ts` | Server-revoked token collapses 401 storm to ≤1 toast + one redirect; login after expiry restores access without bouncing back to /login |
 | `wizard-happy-path.spec.ts` | Full onboarding wizard: Discover → Name → Assign → Create → Done |
 | `intersection-delete.spec.ts` | Delete intersection from the settings sheet removes the card |
 | `timing-no-data.spec.ts` | Every approach gets non-zero green time even with no detections |
-| `probe.spec.ts` | Diagnostic probe — confirms login storage state is healthy |
+| `probe.spec.ts` | Diagnostic probe - confirms login storage state is healthy |
 
 ### Tips
 

@@ -26,6 +26,14 @@ import type { TimingChunk } from '@/services/timing';
 import type { SimulationChunk } from '@/services/simulation';
 import type { Street } from '@/types';
 import type { VehicleType, TypeFractions } from './IntersectionCanvas';
+import {
+  ALL_RED,
+  type SignalPhase, type GreenTimes,
+  approachPhase, approachRemaining, pedCanWalk,
+  VPARAMS, VEH_TYPES, DEFAULT_MIX, sampleType,
+  idmAcceleration, nextPoissonInterval,
+  sampleTurn,
+} from '@/lib/traffic-sim';
 
 // ─── Layout constants ─────────────────────────────────────────────────────────
 
@@ -33,8 +41,6 @@ const BOX          = 7.5;   // half-width of intersection box (m)
 const ARM          = 48;    // arm length from box edge (m)
 const ROAD_W       = 20;    // total road width (two lanes bi-directional)
 const LANE         = ROAD_W / 4;
-const AMBER_S      = 3;
-const ALL_RED      = 3;
 const XWALK_OFFSET = 5.0;   // m past stop line where crosswalk is centred
 const PED_SPEED    = 1.2;   // m/s (DPWH pedestrian walking speed)
 const PED_SCALE       = 1.0;   // Quaternius models export at ~1:1 m scale
@@ -45,27 +51,6 @@ const PED_SCALE       = 1.0;   // Quaternius models export at ~1:1 m scale
 const DIR_TO_APP: Record<string, number> = {
   southbound: 0, westbound: 1, northbound: 2, eastbound: 3,
 };
-
-// ─── Vehicle params ───────────────────────────────────────────────────────────
-
-interface VParams { len: number; spd: number; accel: number; dec: number; gap: number }
-
-const VPARAMS: Record<VehicleType, VParams> = {
-  MC:    { len: 2.0,  spd: 22, accel: 3.0, dec: 7.5, gap: 1.5 },
-  CAR:   { len: 4.4,  spd: 18, accel: 2.2, dec: 6.0, gap: 2.0 },
-  JEP:   { len: 6.5,  spd: 14, accel: 1.5, dec: 5.0, gap: 2.5 },
-  BUS:   { len: 11.0, spd: 11, accel: 1.0, dec: 3.5, gap: 3.5 },
-  TRUCK: { len: 8.5,  spd: 11, accel: 1.2, dec: 3.5, gap: 3.0 },
-};
-
-const VEH_TYPES: VehicleType[] = ['MC', 'CAR', 'JEP', 'BUS', 'TRUCK'];
-const DEFAULT_MIX: TypeFractions = { MC: 0.50, CAR: 0.30, JEP: 0.15, BUS: 0.03, TRUCK: 0.02 };
-
-function sampleType(mix: TypeFractions): VehicleType {
-  let r = Math.random(), cum = 0;
-  for (const t of VEH_TYPES) { cum += mix[t]; if (r < cum) return t; }
-  return 'CAR';
-}
 
 // ─── Crosswalk definitions ────────────────────────────────────────────────────
 
@@ -380,8 +365,6 @@ function makeTrafficLight(): TLRefs {
   return { group: g, matR, matA, matG, ptR, ptA, ptG, countdownCtx: cdCtx, countdownTex };
 }
 
-type SignalPhase = 'red' | 'amber' | 'green';
-
 function setTLPhase(tl: TLRefs, phase: SignalPhase, blink = false, remaining = 0): void {
   const showAmber = phase === 'amber' || (phase === 'red' && blink);
   const isRed   = phase === 'red' && !blink;
@@ -421,53 +404,13 @@ function setTLPhase(tl: TLRefs, phase: SignalPhase, blink = false, remaining = 0
   tl.countdownTex.needsUpdate = true;
 }
 
-// ─── Phase logic (4-phase: SB → WB → NB → EB, one direction at a time) ───────
+// ─── Phase / crosswalk binding (resolves cwId → conflicting approach pair) ───
 
-type GreenTimes = [number, number, number, number];
-
-function phaseStart(appIdx: number, gTimes: GreenTimes): number {
-  let t = 0;
-  for (let i = 0; i < appIdx; i++) t += gTimes[i] + ALL_RED;
-  return t;
-}
-
-function phaseCycle(gTimes: GreenTimes): number {
-  return gTimes.reduce((s, g) => s + g + ALL_RED, 0);
-}
-
-function approachPhase(
-  appIdx: number, t: number,
-  gTimes: GreenTimes,
-  signalOff: boolean, blinkOn: boolean,
-): SignalPhase {
-  if (signalOff) return blinkOn ? 'amber' : 'red';
-  const cycle = phaseCycle(gTimes);
-  if (cycle <= 0 || !isFinite(cycle)) return 'red';
-  const tMod  = ((t % cycle) + cycle) % cycle;
-  const start = phaseStart(appIdx, gTimes);
-  const end   = start + gTimes[appIdx];
-  if (tMod < start || tMod >= end) return 'red';
-  if (gTimes[appIdx] > AMBER_S && tMod >= end - AMBER_S) return 'amber';
-  return 'green';
-}
-
-function approachRemaining(appIdx: number, t: number, gTimes: GreenTimes): number {
-  const cycle = phaseCycle(gTimes);
-  if (cycle <= 0 || !isFinite(cycle)) return 0;
-  const tMod  = ((t % cycle) + cycle) % cycle;
-  const start = phaseStart(appIdx, gTimes);
-  const end   = start + gTimes[appIdx];
-  if (tMod >= start && tMod < end) return end - tMod;
-  if (tMod < start) return start - tMod;
-  return cycle - tMod + start;
-}
-
-function pedCanWalk(cwId: number, t: number, gTimes: GreenTimes, signalOff: boolean): boolean {
-  if (signalOff) return false;
-  // NS crosswalks (blockedApp=0): safe only when both SB(0) and NB(2) are fully red
-  // EW crosswalks (blockedApp=1): safe only when both WB(1) and EB(3) are fully red
+/** Map a crosswalk index to its conflicting approach pair. NS crosswalks
+ *  (blockedApp=0) → [SB, NB]; EW crosswalks (blockedApp=1) → [WB, EB]. */
+function pedCanWalkAt(cwId: number, t: number, gTimes: GreenTimes, signalOff: boolean): boolean {
   const conflicting = CW_DEFS[cwId].blockedApp === 0 ? [0, 2] : [1, 3];
-  return conflicting.every(ai => approachPhase(ai, t, gTimes, false, false) === 'red');
+  return pedCanWalk(conflicting, t, gTimes, signalOff);
 }
 
 // ─── Road scene ───────────────────────────────────────────────────────────────
@@ -619,10 +562,14 @@ function placeVehicle(v: Veh): void {
   const p = VPARAMS[v.type];
   const d = v.dist + p.len / 2;
   const y = v.yOffset;
+  // Lane choice per right-hand-traffic (PH/US): driver's right-hand side of
+  // the road relative to direction of travel. SB(+Z)→west(-X); NB(-Z)→east(+X);
+  // WB(-X)→north(-Z); EB(+X)→south(+Z). Previously SB and NB were on the
+  // wrong (head-on) side of the NS road.
   switch (v.app) {
-    case 0: v.obj.position.set( LANE, y, -(BOX + d)); break;
+    case 0: v.obj.position.set(-LANE, y, -(BOX + d)); break;
     case 1: v.obj.position.set( BOX + d, y, -LANE);   break;
-    case 2: v.obj.position.set(-LANE, y,  BOX + d);   break;
+    case 2: v.obj.position.set( LANE, y,  BOX + d);   break;
     case 3: v.obj.position.set(-(BOX + d), y,  LANE); break;
   }
 }
@@ -648,38 +595,52 @@ function placePed(p: Ped): void {
 //   Southbound / Northbound: x = ±LANE
 //   Westbound / Eastbound:   z = ±LANE
 
+// Right-hand traffic: each approach enters on the driver's right-hand
+// lane of its road, so NS lanes mirror EW lanes around the centerline.
 const APP_ENTRY_XZ: [number, number][] = [
-  [ LANE, -BOX],   // 0 southbound
-  [ BOX,  -LANE],  // 1 westbound
-  [-LANE,  BOX],   // 2 northbound
-  [-BOX,   LANE],  // 3 eastbound
+  [-LANE, -BOX],   // 0 southbound (west lane of NS road)
+  [ BOX,  -LANE],  // 1 westbound  (north lane of EW road)
+  [ LANE,  BOX],   // 2 northbound (east lane of NS road)
+  [-BOX,   LANE],  // 3 eastbound  (south lane of EW road)
 ];
 
 // Per-approach turn arc data: [cpX, cpZ, p2X, p2Z, farX, farZ]
 //   cp  = Bezier control point (corner anchor)
 //   p2  = Bezier end = box edge where vehicle enters the exit arm
 //   far = far end of exit arm (removal boundary)
+//
+// Right turns: control point at the NEAR outside BOX corner — tight inside
+// arc matches real geometry.
+//
+// Left turns: control point at the entry-aligned LANE intersection:
+//   cp.x = entry.x   (so the initial bezier tangent is the pure entry dir)
+//   cp.z = exit.z    (so the final tangent is the pure exit dir)
+// This makes the vehicle drive forward first and then arc smoothly through
+// the inside corner of the turn. Earlier attempts at the far BOX corner or
+// the far-diagonal LANE intersection put the midpoint in roughly the right
+// place but gave the wrong tangents, so vehicles visibly veered sideways
+// the instant they cleared the stop line ("looks weird coming from north").
 type ArcRow = [number, number, number, number, number, number];
 const ARC_DATA: Record<number, { left: ArcRow; right: ArcRow; throughFar: [number, number] }> = {
-  0: { // southbound: stop at (LANE, -BOX), traveling +Z
-    throughFar: [LANE,       BOX + ARM],
-    left:       [ BOX, -BOX,  BOX,  LANE,  BOX + ARM,     LANE],   // → east
-    right:      [-BOX, -BOX, -BOX, -LANE, -(BOX + ARM),  -LANE],   // → west
+  0: { // southbound: stop at (-LANE, -BOX), traveling +Z (SB lane = west)
+    throughFar: [-LANE,       BOX + ARM],
+    left:       [-LANE,  LANE,  BOX,  LANE,  BOX + ARM,     LANE],   // → east (EB lane = south)
+    right:      [-LANE, -LANE, -BOX, -LANE, -(BOX + ARM),  -LANE],   // → west (WB lane = north)
   },
-  1: { // westbound: stop at (BOX, -LANE), traveling -X
+  1: { // westbound: stop at (BOX, -LANE), traveling -X (WB lane = north)
     throughFar: [-(BOX + ARM), -LANE],
-    left:       [ BOX,  BOX,  LANE,  BOX,   LANE,      BOX + ARM],  // → south
-    right:      [ BOX, -BOX, -LANE, -BOX,  -LANE,    -(BOX + ARM)], // → north
+    left:       [-LANE, -LANE, -LANE,  BOX,  -LANE,      BOX + ARM],  // → south (SB lane = west)
+    right:      [ LANE, -LANE,  LANE, -BOX,   LANE,    -(BOX + ARM)], // → north (NB lane = east)
   },
-  2: { // northbound: stop at (-LANE, BOX), traveling -Z
-    throughFar: [-LANE, -(BOX + ARM)],
-    left:       [-BOX,  BOX, -BOX, -LANE, -(BOX + ARM),  -LANE],   // → west
-    right:      [ BOX,  BOX,  BOX,  LANE,   BOX + ARM,    LANE],   // → east
+  2: { // northbound: stop at (LANE, BOX), traveling -Z (NB lane = east)
+    throughFar: [ LANE, -(BOX + ARM)],
+    left:       [ LANE, -LANE, -BOX, -LANE, -(BOX + ARM),  -LANE],   // → west (WB lane = north)
+    right:      [ LANE,  LANE,  BOX,  LANE,   BOX + ARM,    LANE],   // → east (EB lane = south)
   },
-  3: { // eastbound: stop at (-BOX, LANE), traveling +X
+  3: { // eastbound: stop at (-BOX, LANE), traveling +X (EB lane = south)
     throughFar: [BOX + ARM, LANE],
-    left:       [-BOX, -BOX, -LANE, -BOX,  -LANE,    -(BOX + ARM)], // → north
-    right:      [-BOX,  BOX,  LANE,  BOX,   LANE,      BOX + ARM],  // → south
+    left:       [ LANE,  LANE,  LANE, -BOX,   LANE,    -(BOX + ARM)], // → north (NB lane = east)
+    right:      [-LANE,  LANE, -LANE,  BOX,  -LANE,      BOX + ARM],  // → south (SB lane = west)
   },
 };
 
@@ -1382,8 +1343,7 @@ export function IntersectionScene3D({
           nextSpawn[app] -= dt;
           if (nextSpawn[app] <= 0) {
             if (vehicles.filter(v => v.app === app).length < 25) spawnVehicle(app);
-            const rate = perApproachVolume / 3600;
-            nextSpawn[app] = -Math.log(Math.random() + 0.001) / rate;
+            nextSpawn[app] = nextPoissonInterval(perApproachVolume / 3600);
           }
         }
 
@@ -1464,10 +1424,9 @@ export function IntersectionScene3D({
             if (toStop < sGap) { sGap = Math.max(toStop, 0.01); vLead = 0; }
           }
 
-          // IDM acceleration
-          const dv    = v.speed - (isFinite(vLead) ? vLead : 0);
-          const sStar = p.gap + Math.max(0, v.speed * 1.2 + v.speed * dv / (2 * Math.sqrt(p.accel * p.dec)));
-          const acc   = p.accel * (1 - Math.pow(Math.max(v.speed, 0) / p.spd, 4) - Math.pow(sStar / Math.max(sGap, 0.01), 2));
+          // IDM acceleration - rule lives in lib/traffic-sim; this loop owns the
+          // mesh + queueing context, the lib owns the car-following maths.
+          const acc = idmAcceleration(p, v.speed, vLead, sGap);
           // Audio: trigger brake squeal on hard deceleration while still moving fast enough to skid.
           if (acc < -3 && v.speed > 1) triggersRef.current.brake();
           v.speed = Math.max(0, v.speed + acc * dt);
@@ -1524,8 +1483,22 @@ export function IntersectionScene3D({
             );
             if (boxFull) { v.dist = 0; v.speed = 0; placeVehicle(v); continue; }
 
-            const r = Math.random();
-            v.turn = r < 0.70 ? 'through' : r < 0.85 ? 'left' : 'right';
+            // Pedestrian gate: peds start crossing only when the conflicting
+            // vehicle phase is red (pedCanWalkAt), but they don't disappear
+            // the instant the phase flips back to green — slow walkers can
+            // still be mid-crossing. Without this check the first vehicles
+            // of a new green plough straight through them. The mapping
+            // mirrors CW_DEFS.blockedApp: NS approaches (SB/NB = app 0,2)
+            // conflict with the N/S crosswalks (cwId 0,1); EW approaches
+            // (WB/EB = app 1,3) conflict with the E/W crosswalks (cwId 2,3).
+            const conflictingCws: readonly number[] =
+              v.app % 2 === 0 ? [0, 1] : [2, 3];
+            const pedInConflict = peds.some(
+              p => conflictingCws.includes(p.cwId) && p.progress < 1,
+            );
+            if (pedInConflict) { v.dist = 0; v.speed = 0; placeVehicle(v); continue; }
+
+            v.turn = sampleTurn();
             v.waypoints = buildPath3D(v.app, v.turn);
             v.wpIdx = 0;
             v.obj.position.set(epx, v.yOffset, epz);
@@ -1538,7 +1511,7 @@ export function IntersectionScene3D({
         // Pedestrian crossings
         if (pedGLTFs.length > 0) {
           for (let cwId = 0; cwId < 4; cwId++) {
-            const canWalk = pedCanWalk(cwId, simTime, gTimes, effectiveSignalOff);
+            const canWalk = pedCanWalkAt(cwId, simTime, gTimes, effectiveSignalOff);
             const wasWalkable = cwWalkablePrev[cwId];
 
             // Queue 1–2 staggered ped spawns at the start of each WALK phase
@@ -1565,7 +1538,7 @@ export function IntersectionScene3D({
           // Move and update pedestrians
           for (let i = peds.length - 1; i >= 0; i--) {
             const p = peds[i];
-            const canWalk = pedCanWalk(p.cwId, simTime, gTimes, effectiveSignalOff);
+            const canWalk = pedCanWalkAt(p.cwId, simTime, gTimes, effectiveSignalOff);
 
             if (canWalk) {
               p.progress += (PED_SPEED / ROAD_W) * dt;
@@ -1601,8 +1574,11 @@ export function IntersectionScene3D({
         const rawDt = Math.min((now - lastT) / 1000, 0.1);
         lastT = now;
         if (!pausedRef.current) {
-          // Match 2D canvas: speed=1 → 30 sim-seconds per real-second (sps=30 × speed)
-          let rem = Math.min(rawDt * speedRef.current * 30, 1.0);
+          // speed=1 → real time (1 sim-second per real-second). Previously
+          // the base was 15, which made even 1× feel like a time-lapse and
+          // was too fast to follow during demos. Cap remains 1.0 s per frame
+          // so a tab-switch pause never integrates a giant step.
+          let rem = Math.min(rawDt * speedRef.current, 1.0);
           while (rem > 0) { const step = Math.min(rem, MAX_PHYS_DT); update(step); rem -= step; }
         }
         renderer.render(scene, camera);

@@ -8,9 +8,12 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { aggregationApi } from '@/services/aggregation';
 import { intersectionsApi } from '@/services/intersections';
 import { streetsApi } from '@/services/streets';
+import {
+  PRESETS, fetchAggregation, getBucket, getPresetRange,
+  type Preset,
+} from '@/lib/aggregation-query';
 import type { AggregationRow, Intersection, Street } from '@/types';
 import type { SSEStatus } from '@/hooks/useSSE';
 import { Download, TrendingUp, Users, Clock, Car, Loader2, FileText, ArrowRight } from 'lucide-react';
@@ -31,40 +34,8 @@ const TYPE_HEX: Record<string, string> = {
   person:     '#0891b2',
 };
 
-// ── Preset date ranges ───────────────────────────────────────────────────────
-
-type Preset = 'today' | 'yesterday' | '7d' | '30d' | 'custom';
-
-const PRESETS: { key: Preset; label: string }[] = [
-  { key: 'today',     label: 'Today'     },
-  { key: 'yesterday', label: 'Yesterday' },
-  { key: '7d',        label: '7 days'    },
-  { key: '30d',       label: '30 days'   },
-  { key: 'custom',    label: 'Custom'    },
-];
-
 function toLocalDateString(d: Date) {
   return d.toISOString().slice(0, 10);
-}
-
-function getPresetRange(preset: Preset): { start: Date; end: Date } {
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const tomorrow = new Date(today.getTime() + 86_400_000);
-  switch (preset) {
-    case 'today':     return { start: today, end: tomorrow };
-    case 'yesterday': return { start: new Date(today.getTime() -86_400_000), end: today };
-    case '7d':        return { start: new Date(today.getTime() -7  * 86_400_000), end: tomorrow };
-    case '30d':       return { start: new Date(today.getTime() -30 * 86_400_000), end: tomorrow };
-    default:          return { start: today, end: tomorrow };
-  }
-}
-
-function getBucket(start: Date, end: Date): 'hour' | 'day' | 'week' {
-  const days = (end.getTime() -start.getTime()) / 86_400_000;
-  if (days <= 2)   return 'hour';
-  if (days <= 180) return 'day';
-  return 'week';
 }
 
 function formatWindowLabel(iso: string, bucket: 'hour' | 'day' | 'week') {
@@ -114,13 +85,11 @@ export function ReportsPage() {
   useEffect(() => {
     if (preset === 'custom' && (!customStart || !customEnd)) return;
     setLoading(true);
-    aggregationApi.history({
-      start: start.toISOString(),
-      end:   end.toISOString(),
-      bucket,
+    fetchAggregation({
+      start, end, bucket,
       intersection_id: selectedIntersection !== 'all' ? Number(selectedIntersection) : null,
-      street_id:       selectedStreet !== 'all'       ? Number(selectedStreet)       : null,
-      direction:       selectedDirection !== 'all'    ? selectedDirection            : null,
+      street_id:       selectedStreet       !== 'all' ? Number(selectedStreet)       : null,
+      direction:       selectedDirection    !== 'all' ? selectedDirection            : null,
     })
       .then(setData)
       .catch(err => toast.error(err.message ?? 'Failed to load history'))
@@ -311,6 +280,20 @@ export function ReportsPage() {
           </Select>
         </div>
       </div>
+
+      {/* Live now strip - operators want current state above the historical view */}
+      {sseData && (
+        <div className="rounded-lg border border-green-100 bg-green-50 px-4 py-2.5 flex items-center justify-between">
+          <span className="text-xs text-green-700 font-medium flex items-center gap-1.5">
+            <span className="size-1.5 rounded-full bg-green-500 animate-pulse" />
+            Live window
+          </span>
+          <span className="text-xs text-green-600/70">
+            {sseData.filter(r => !PEDESTRIAN_TYPES.has(r.object_type)).reduce((a, r) => a + r.count, 0)} vehicles ·{' '}
+            {sseData.filter(r =>  PEDESTRIAN_TYPES.has(r.object_type)).reduce((a, r) => a + r.count, 0)} pedestrians
+          </span>
+        </div>
+      )}
 
       {/* KPI strip */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -534,17 +517,6 @@ export function ReportsPage() {
           )}
         </CardContent>
       </Card>
-
-      {/* Live now strip */}
-      {sseData && (
-        <div className="rounded-lg border border-green-100 bg-green-50 px-4 py-2.5 flex items-center justify-between">
-          <span className="text-xs text-green-700 font-medium">Live window</span>
-          <span className="text-xs text-green-600/70">
-            {sseData.filter(r => !PEDESTRIAN_TYPES.has(r.object_type)).reduce((a, r) => a + r.count, 0)} vehicles ·{' '}
-            {sseData.filter(r =>  PEDESTRIAN_TYPES.has(r.object_type)).reduce((a, r) => a + r.count, 0)} pedestrians
-          </span>
-        </div>
-      )}
 
     </div>
   );

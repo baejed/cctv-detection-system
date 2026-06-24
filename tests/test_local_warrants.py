@@ -88,19 +88,19 @@ def test_w_local_3_triggered_by_low_pcu():
     """W-Local 3 fires and returns chunk names for low-PCU chunks."""
     from server.local_warrants import _compute_w_local_3
 
-    pcu_list = [("AM Peak", 50.0), ("Night", 10.0), ("Early Morning", 5.0)]
+    pcu_list = [("AM Rush", 50.0), ("Evening", 10.0), ("Overnight", 5.0)]
     met, conf, signal_off = _compute_w_local_3(pcu_list, min_pcu=30.0)
     assert met is True
-    assert "Night" in signal_off
-    assert "Early Morning" in signal_off
-    assert "AM Peak" not in signal_off
+    assert "Evening" in signal_off
+    assert "Overnight" in signal_off
+    assert "AM Rush" not in signal_off
     assert conf > 0.0
 
 
 def test_w_local_3_not_triggered_when_all_above_threshold():
     from server.local_warrants import _compute_w_local_3
 
-    pcu_list = [("AM Peak", 50.0), ("PM Peak", 80.0), ("Midday", 40.0)]
+    pcu_list = [("AM Rush", 50.0), ("PM Rush", 80.0), ("Midday", 40.0)]
     met, conf, signal_off = _compute_w_local_3(pcu_list, min_pcu=30.0)
     assert met is False
     assert signal_off == []

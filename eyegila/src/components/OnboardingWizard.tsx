@@ -942,7 +942,7 @@ export function OnboardingWizard({ open, initialStep, onClose }: OnboardingWizar
               <div>
                 <h2 className="text-2xl font-semibold">Enter current signal timing</h2>
                 <p className="text-muted-foreground mt-2">
-                  Enter the existing signal cycle length and green split per approach.
+                  Enter the existing signal cycle length and green time per approach.
                   The phase diagram updates live as you type.
                 </p>
               </div>

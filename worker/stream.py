@@ -133,4 +133,10 @@ def reconnect_stream(
             db.rollback()
 
         cap.release()
-        delay = min(delay * 2, 60)
+        # Backoff cap raised from 60 s → 300 s. With dozens of dead cameras a
+        # 60 s ceiling means a sustained ~1 reconnect/s storm of FFMPEG dials
+        # plus a heartbeat UPDATE per slot, which kept TimescaleDB at 250%+
+        # CPU and made the UI sluggish. The Redis `cam:{id}:retry_now` signal
+        # still wakes the sleeper early when an operator hits "retry" in the
+        # UI, so the longer cap doesn't hurt manual recovery latency.
+        delay = min(delay * 2, 300)

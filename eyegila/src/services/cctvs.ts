@@ -30,12 +30,17 @@ export const cctvsApi = {
   enable: (id: number) =>
     request<void>(`/cctvs/${id}/enable`, { method: 'POST' }),
 
-  snapshotUrl: (id: number) => {
+  snapshotUrl: (id: number, cacheBust?: number | string) => {
     const token = getToken();
     // Without a token the server returns 401 - let the <img onError> show
     // the placeholder instead of issuing a doomed request.
     if (!token) return '';
-    const q = `?token=${encodeURIComponent(token)}`;
+    // The server sets Cache-Control: max-age=5 on snapshots, so a fresh URL
+    // is the only way to force the browser to re-fetch and reveal a camera
+    // that just went offline. Callers that want a stable URL omit cacheBust.
+    const params = new URLSearchParams({ token });
+    if (cacheBust != null) params.set('t', String(cacheBust));
+    const q = `?${params.toString()}`;
     return import.meta.env.DEV
       ? `http://${window.location.hostname}:8000/cctvs/${id}/snapshot${q}`
       : `/api/cctvs/${id}/snapshot${q}`;

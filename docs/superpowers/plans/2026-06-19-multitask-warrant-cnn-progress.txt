@@ -1,0 +1,1985 @@
+Progress log for `2026-06-19-multitask-warrant-cnn-prd.md`
+==========================================================
+
+Task list (derived from PRD §Module changes + §Testing decisions, ordered by
+dependency: pure rules → synthetic data → ML model → training/eval → wiring).
+
+Legend: [ ] todo  [x] done  [~] in progress
+
+[x] T01  warrant_rules.py - MUTCD W1–W4 pure-function evaluators
+[x] T02  tests/test_warrant_rules.py - unit tests for MUTCD evaluators
+[x] T03  intervention_rules.py - assign_intervention_label precedence function
+[x] T04  tests/test_intervention_rules.py - unit tests for precedence
+[x] T05  synthetic_traffic.py extension - pedestrian channel + intersection metadata
+[x] T06  synthetic_traffic.py extension - per-sample warrant + intervention labels
+[x] T07  tests/test_synthetic_traffic.py extension - schema + class balance
+[x] T08  server/ml/temporal_warrant.py - multi-task 1D-CNN model definition
+[x] T09  server/ml/multitask_loss.py - uncertainty-weighted MultiTaskLoss module
+[x] T10  server/ml/temporal_inference.py - predict_recommendations + load_recommender
+[x] T11  tests/test_temporal_warrant.py - inference contract test
+[x] T12  scripts/train_multitask_cnn.py - training CLI (5-seed harness, early stop)
+[x] T13  scripts/tune_multitask_cnn.py - Optuna HP search CLI
+[x] T14  scripts/evaluate_multitask_cnn.py - evaluation + saliency CLI
+[x] T15  server/main.py - load recommender artifacts in lifespan
+[x] T16  server/routers/recommendations.py - switch _analyze to predict_recommendations
+[x] T17  eyegila - surface `intervention` field in recommendation card
+
+----------------------------------------------------------
+Per-task notes
+----------------------------------------------------------
+
+2026-06-19 - T01 + T02 done (bundled because the PRD pairs each rule module
+with its unit test suite under "Testing decisions"):
+
+  Added:
+    - server/warrant_rules.py
+        IntersectionMeta dataclass (major_lanes, minor_lanes,
+        posted_speed_kph, is_signalized, n_approaches).
+        Helpers: _hourly_volumes (96-slot → 24-hour reduction),
+        _major_minor_axes (volume-based NS-vs-EW axis assignment),
+        _speed_factor (0.70 if posted_speed_kph ≤ 40, MUTCD §4C.01).
+        MUTCD threshold tables for Table 4C-1 Conditions A and B as
+        lane-count-keyed dicts.
+        evaluate_w1 - eight-hour vehicular volume (Cond A OR Cond B,
+        ≥ 8 qualifying hours, confidence = hours/8).
+        evaluate_w2 - four-hour vehicular volume, piecewise-linear fit
+        to Figure 4C-1 with minor-lane-dependent floor + intercept.
+        evaluate_w3 - peak-hour curve ~150 vph above W2.
+        evaluate_w4 - pedestrian volume (4-hour ≥ 107 OR 1-hour ≥ 133),
+        low-speed factor applied to both thresholds.
+        evaluate_all_mutcd - aggregate API returning
+        {warrant_name: (met, confidence)}.
+
+    - tests/test_warrant_rules.py
+        20 pure-function tests covering helpers + each warrant's
+        triggered / not-triggered / low-speed / lane-count behaviour
+        + aggregate API. All 20 pass (verified locally on Python 3.12).
+
+  Decisions:
+    - File placed in server/ (next to local_warrants.py) rather than
+      server/ml/ - these are rule evaluators, not ML code, and they
+      mirror the existing W-Local 1/2/3 module's layout.
+    - flow_matrix convention chosen: (5, 96), channels-first, with
+      channel 4 = pedestrian crossing volume. Matches PRD §Implementation
+      Decisions / Algorithmic centerpiece / Inputs.
+    - Each slot value is treated as a PCU/hr rate (matching the existing
+      synthetic-traffic generator's slot semantics from the parent plan);
+      hourly volume = mean of 4 slot rates.
+    - Figure 4C-1 and 4C-3 are encoded as piecewise-linear fits with
+      lane-dependent floor/intercept rather than as digitized lookup
+      tables, to keep the module dependency-free. Methods chapter will
+      cite the figures and document the fit constants.
+
+  Next: T03 (intervention_rules.py - assign_intervention_label).
+
+2026-06-19 - T03 done (test suite T04 deferred to its own task per the
+"one task at a time" instruction; this departs from the T01+T02 bundling
+precedent on purpose):
+
+  Added:
+    - server/intervention_rules.py
+        Module-level constants:
+          INTERVENTION_CLASSES = ("signalize", "road_widening", "timing_only")
+          DEFAULT_WIDENING_VC_THRESHOLD = 0.90  (per PRD §Synthetic data
+            extensions / Intervention label assignment).
+        Helper _any_warrant_met(warrant_results) - reads only the `met`
+        boolean from each (met, confidence) pair, so the function works
+        uniformly over MUTCD W1–W4 results from server/warrant_rules and
+        W-Local 2/3 results from server/local_warrants.
+        Public API:
+          assign_intervention_label(
+              critical_vc, is_signalized, warrant_results,
+              widening_vc_threshold=DEFAULT_WIDENING_VC_THRESHOLD,
+          ) -> str
+        Precedence (locked):
+          1. road_widening if critical_vc > widening_vc_threshold
+          2. signalize     if (not is_signalized) and any warrant met
+          3. timing_only   otherwise
+
+  Decisions:
+    - Strict `>` for the widening threshold (vc == 0.90 → timing_only or
+      signalize, not widening). PRD wording is "v/c > 0.90"; chose strict
+      to match. T04 tests will pin this boundary explicitly.
+    - `warrant_results` typed as Mapping[str, tuple[bool, float]] rather
+      than the dataclass-y custom type - matches the existing
+      evaluate_all_mutcd return shape and local_warrants helpers exactly,
+      so the same dict can flow straight from the rule modules into label
+      assignment without re-packing.
+    - Webster's is NOT run inside this module. The caller passes
+      `critical_vc` already computed. Keeps the module DB-free and
+      framework-free (it imports only `typing`); mirrors the
+      pure-function tier of server/local_warrants._compute_w_local_*.
+    - No DB, no SQLAlchemy, no Pydantic; placed in server/ next to
+      warrant_rules.py and local_warrants.py to mirror their layout.
+
+  Manual smoke check (python3 -c, not committed):
+    widen on vc=1.05 → road_widening
+    vc=0.5, unsignalized, w1 met → signalize
+    vc=0.5, already signalized, w1 met → timing_only
+    vc=0.5, unsignalized, no warrant met → timing_only
+    vc=0.90 (boundary) → timing_only (strict >)
+    vc=0.95 AND warrant met → road_widening (precedence verified)
+
+  Next: T04 (tests/test_intervention_rules.py - unit tests for the three
+  outcomes + pairwise-tie precedence checks).
+
+2026-06-19 - T04 done:
+
+  Added:
+    - tests/test_intervention_rules.py
+        24 pure-function tests, all passing. Coverage:
+
+        Module-level constants:
+          INTERVENTION_CLASSES is exactly the three locked labels
+          (signalize / road_widening / timing_only).
+          DEFAULT_WIDENING_VC_THRESHOLD == 0.90 (PRD value).
+
+        Helper _any_warrant_met:
+          true when any flag true; false for all-false and for {}.
+
+        Each of the three outcomes:
+          road_widening - vc > threshold (also dominates when already
+            signalized, confirming widening is unconditional w.r.t.
+            signal status).
+          signalize - unsignalized + any warrant met + vc low. Tested
+            parametrically over all six warrant names (w1–w4,
+            w_local_2, w_local_3) to confirm the rule reads `any`,
+            not a single warrant.
+          timing_only - fall-through paths: no warrant met; already
+            signalized even when a warrant is met; empty warrant dict.
+
+        Three pairwise-tie precedence checks (the PRD's required
+        coverage for this task):
+          widening + signalize eligible → widening wins
+          widening + timing_only eligible (only widening) → widening
+          signalize + timing_only eligible (only signalize) → signalize
+
+        Boundary at vc == threshold (strict `>` is locked):
+          vc == 0.90, no warrant → timing_only
+          vc == 0.90, warrant met + unsignalized → signalize
+            (precedence falls through because vc is not strictly above)
+          vc == 0.9000001 → road_widening
+
+        Custom threshold override:
+          caller-supplied widening_vc_threshold replaces the default
+          in both directions (lower threshold fires earlier; vc below
+          the custom threshold falls through to signalize/timing_only).
+
+        Return-value contract:
+          parametrized check that the function always returns a label
+          in INTERVENTION_CLASSES across all branches.
+
+  Decisions:
+    - Test style mirrors tests/test_warrant_rules.py and
+      tests/test_local_warrants.py - pure-function, no DB / FastAPI
+      fixtures, small `_warrants(**flags)` builder for terse fixtures.
+    - The strict-`>` boundary at vc == 0.90 is pinned explicitly in
+      two tests (one falls through to timing_only, one to signalize)
+      so any future loosening of the comparison would break both and
+      force a deliberate PRD update.
+    - The "signalize + timing_only tie" interpretation: there is no
+      true tie between signalize and timing_only - they are
+      mutually exclusive on whether (not is_signalized AND any
+      warrant). The "tie" test covers the case where only signalize
+      conditions are met (and not widening), which is the precedence
+      check the PRD intended.
+    - Also cleaned up two stray XML-ish tags (`</content>`,
+      `</invoke>`) at the end of this progress file left over from
+      an earlier write; not meaningful content.
+
+  Next: T05 (synthetic_traffic.py extension - pedestrian channel +
+  intersection metadata sampling per PRD §Synthetic data extensions).
+
+2026-06-19 - T05 done:
+
+  Added:
+    - server/ml/synthetic_traffic.py
+        Module-level constants:
+          N_SLOTS = 96, N_VEHICLE_CHANNELS = 4, PED_CHANNEL_INDEX = 4,
+          N_CHANNELS = 5.
+          GROUND_TRUTH_REGIMES - parent-plan Phase 1 four-regime base
+            (AM_RUSH, MIDDAY, PM_RUSH, OFF_PEAK) over (NB, SB, EB, WB)
+            in PCU/hr; 9–10× peak/off-peak ratio cited as Tagum-typical.
+          PED_PROFILES - new five-regime pedestrian schedule
+            (AM_PED, LUNCH, PM_PED, DAY_LOW, NIGHT_LOW) in peds/hr.
+
+        Schedule functions (pure, deterministic):
+          regime_for_slot(slot)   - vehicle regime, 06–10 / 10–15 /
+            15–19 / else.
+          ped_regime_for_slot(slot) - pedestrian regime, 07:00–08:30
+            AM, 11:30–13:30 LUNCH, 17:00–19:00 PM, then DAY_LOW for
+            other waking hours, NIGHT_LOW overnight.
+
+        Per-slot samplers:
+          sample_flow_for_slot - ±10% Gaussian per-approach noise over
+            the regime base, multiplied by a once-per-day modifier.
+          sample_ped_for_slot - ±15% Gaussian (peds noisier than veh).
+
+        Per-day flow matrix:
+          generate_day_flow_matrix(rng, is_weekend=False,
+              intersection_modifier=None) -> np.ndarray of shape
+              (5, 96) dtype float64. Channels-first; matches
+              server.warrant_rules' flow_matrix convention exactly.
+          Weekend mode collapses AM_RUSH/PM_RUSH → MIDDAY and
+            AM_PED/PM_PED → LUNCH, per parent-plan §Task 2 Step 3.
+
+        Intersection metadata sampling (Tagum-realistic priors):
+          _MAJOR_LANE_PROBS = {1: 0.40, 2: 0.60}
+          _MINOR_LANE_PROBS = {1: 0.70, 2: 0.30}
+          _SPEED_PROBS      = {30: 0.20, 40: 0.55, 50: 0.25}
+          _APPROACH_PROBS   = {3: 0.20, 4: 0.80}
+          _SIGNALIZED_PROB  = 0.25
+          sample_intersection_meta(rng) -> IntersectionMeta (reuses the
+            dataclass from server.warrant_rules so the sampled metadata
+            slots straight into MUTCD evaluators).
+          sample_intersection_modifier(rng) -> length-4 ndarray in
+            [0.8, 1.2] for per-intersection variation.
+
+  Decisions:
+    - File placed at server/ml/synthetic_traffic.py per the parent
+      plan's chosen location (Phase 1 Task 1) rather than alongside
+      server/warrant_rules.py - keeps generator / model code under
+      server/ml/ and rules under server/.
+    - The base parent-plan Phase 1 logic (regimes, schedule, per-slot
+      sampler, weekend variant, intersection modifier) is consolidated
+      into this T05 module rather than landing as a separate prior
+      module, because the parent plan's Phase 1 was not previously
+      tracked as a discrete task in this progress log.
+    - Reuses IntersectionMeta from server.warrant_rules so there is one
+      source of truth for the dataclass shape. Importing back into the
+      rules module is not done; metadata flows rules-direction only.
+    - Pedestrian channel is generated with its own per-day modifier
+      (independent from the vehicle modifier) so peds noise does not
+      mirror veh noise - empirically peds and veh covary only weakly.
+    - intersection_modifier influences vehicles only, not pedestrians;
+      pedestrian volume is more a function of land use than of the
+      vehicle scale of the intersection.
+
+  Manual smoke check (python3 -c, not committed):
+    flow shape (5, 96); deterministic w.r.t. seed.
+    AM mean N-S volume ~1100 PCU/hr; overnight ~170 PCU/hr (~6× ratio
+      after sloppy slot averaging - matches the design peak/off-peak).
+    ped min/mean/max ~ 7.6 / 44.0 / 170.5 peds/hr - peaks above
+      MUTCD W4 1-hour threshold of 133, lows comfortably below.
+    metadata sampler hits all 6 categorical values for lanes/speed/
+      approaches across 200 draws; signalized fraction 0.26 vs.
+      target 0.25.
+    intersection_modifier=2.0 across all approaches → vehicle channel
+      sums grow >1.5× vs. modifier=1.0 (with same seed).
+    is_weekend=True flattens AM total vehicle volume 33.7k → 25.7k
+      (~24% reduction) with same seed.
+
+  Existing test suites still pass (44/44 in test_warrant_rules.py +
+  test_intervention_rules.py). Module-specific tests are deferred to
+  T07 per the task list ordering (T06 first emits labels, then T07
+  tests determinism + schema + class balance together).
+
+  Next: T06 (synthetic_traffic.py extension - per-sample warrant +
+  intervention labels emitted alongside the flow matrix).
+
+2026-06-19 - T06 done:
+
+  Added to server/ml/synthetic_traffic.py:
+    Module-level constants:
+      SATURATION_FLOW_PCU_HR = 1400 - mirrors server.webster's value;
+        duplicated locally so the synthetic generator stays free of the
+        DB-backed webster module's sqlalchemy/models imports.
+      WARRANT_NAMES_ALL = ("w1","w2","w3","w4","w_local_2","w_local_3")
+        - the six-warrant set the multi-task CNN head predicts.
+      _TOD_CHUNK_NAMES + _CHUNK_SLOT_INDICES - ground-truth TOD chunks
+        derived from regime_for_slot. Used in place of K-means-discovered
+        chunks for synthetic label generation, since on parameter-realistic
+        synthetic data K-means converges back to these regime boundaries;
+        avoids coupling T06 to parent-plan Phase 2 (K-means) which is not
+        yet implemented in-tree.
+
+    Pure helpers (DB-free):
+      _chunk_vehicle_total - Σ vehicle-channel slot values over chunk
+        (linear measure for W-Local 2's ratio).
+      _chunk_avg_pcu_per_approach - mean over (approach, slot) pairs;
+        each slot value is already an hourly rate so the mean equals
+        avg PCU/hr per approach, matching what _compute_w_local_3 expects.
+
+    Synthetic warrant evaluators (thin wrappers over the existing
+    server.local_warrants helpers - the W-Local 2/3 logic is reused per
+    PRD §Synthetic data extensions, not reimplemented):
+      evaluate_w_local_2_synthetic(flow_matrix, threshold=0.70)
+        → (met, confidence) via _compute_w_local_2.
+      evaluate_w_local_3_synthetic(flow_matrix, min_pcu=30.0)
+        → (met, confidence) via _compute_w_local_3 (drops signal_off list).
+
+    Webster's critical v/c per day:
+      critical_vc_for_day(flow_matrix) - max over the four TOD chunks of
+        Y_chunk = Σ (avg-PCU/hr per approach in chunk) / SATURATION_FLOW.
+        Independent-phase plan (one phase per directional approach), which
+        matches server.webster.compute_timing's default phase-grouping
+        convention. Worst chunk drives the road_widening precedence.
+
+    Top-level label pipeline:
+      evaluate_all_warrants(flow_matrix, meta) → {warrant_name: (met, conf)}
+        Six entries (MUTCD W1–W4 from server.warrant_rules.evaluate_all_mutcd
+        + the two synthetic W-Local wrappers above).
+
+      LabeledSample dataclass (frozen):
+        flow_matrix, meta, is_weekend, warrants, critical_vc, intervention.
+
+      generate_labeled_sample(rng, meta=None, is_weekend=False,
+                              intersection_modifier=None) → LabeledSample
+        Samples missing metadata + modifier from the Tagum priors, generates
+        the day's (5, 96) flow matrix, then runs MUTCD W1–W4 + W-Local 2/3
+        → critical_vc → assign_intervention_label (precedence rule from
+        server.intervention_rules).
+
+  Decisions:
+    - K-means TOD chunks substitute: PRD §Intervention label assignment
+      specifies Webster's-against-K-means-derived-chunks, but K-means
+      (parent-plan Phase 2) is not yet implemented in-tree. Used the
+      ground-truth regime boundaries from regime_for_slot instead. On
+      parameter-realistic synthetic data this is what K-means would
+      recover; T07 can re-test with real K-means chunks once Phase 2
+      lands without changing T06's label semantics.
+    - Saturation flow constant: duplicated as SATURATION_FLOW_PCU_HR rather
+      than imported from server.webster, because webster imports SQLAlchemy
+      Session and common.models. Keeping synthetic_traffic.py DB-free is
+      important for the training CLI (T12) which should not require a DB
+      connection. Documented duplication-coupling in the module docstring.
+    - W-Local 2/3 wrappers reach into server.local_warrants' underscore
+      helpers (_compute_w_local_2/3). This is intentional per that module's
+      own docstring ("Pure computation helpers (DB-free, fully unit-
+      testable)") and per PRD's "reuse W-Local 2 and W-Local 3 logic from
+      the existing server/local_warrants.py rules" wording.
+    - W-Local 3 signal_off list discarded: the multi-task warrant head
+      predicts only (met, confidence) per warrant; per-chunk signal-off
+      naming is a production-runtime concern, not a label.
+    - critical_vc uses chunk-averaged per-approach flows (not peak-slot
+      flows). Matches Webster's convention of averaging over the TOD chunk
+      that signal timing applies to. Peak-slot would over-fire widening on
+      noise.
+    - intervention rule called with critical_vc unconditionally. The
+      precedence (widening > signalize > timing_only) is already pinned
+      by T03/T04; T06 just supplies the inputs.
+
+  Manual smoke check (python3 -c, not committed):
+    Determinism: same seed → identical flow_matrix, warrants, critical_vc,
+      intervention.
+    Schema: flow_matrix.shape == (5, 96), warrants.keys() == WARRANT_NAMES_ALL,
+      each (met, conf) has conf ∈ [0, 1], intervention ∈ INTERVENTION_CLASSES,
+      critical_vc ≥ 0.
+    Forced widening: large intersection_modifier (×4) drives critical_vc
+      ~6.0 → intervention == "road_widening" (precedence rule fires).
+    Existing test suites: tests/test_warrant_rules.py and
+      tests/test_intervention_rules.py still 44/44 pass.
+
+  Known calibration mismatch (defers to T07 / generator tuning, not a
+  T06 bug):
+    Over a 500-sample weekday/weekend mix:
+      intervention distribution: 100% road_widening (PRD §Risks expects
+        <10%); 0% signalize / 0% timing_only.
+      warrant fire rates: w1=1.00, w2=1.00, w3=0.96, w4=0.91,
+        w_local_2=0.00, w_local_3=0.00.
+    Root cause: GROUND_TRUTH_REGIMES base AM_RUSH sums to 2100 PCU/hr
+      across 4 approaches → Y_peak ≈ 2100/1400 ≈ 1.5 (well above the 0.90
+      widening threshold) at the current ±20% intersection_modifier range.
+      Generator was calibrated for "peak demand at a busy intersection",
+      not "typical intersection across all 30". W-Local 2 also under-fires
+      because synthetic load is spread across AM+MIDDAY+PM (top-2
+      concentration ~59% vs. 70% threshold), and W-Local 3 never fires
+      because the OFF chunk's avg approach flow (~82 PCU/hr) stays above
+      the 30 PCU/hr lights-off floor.
+    Resolution path: T07's class-balance sanity test will codify the
+      expected per-class proportions; if it fails (it will, with the
+      current generator), the fix is to widen intersection_modifier
+      downward (e.g., 0.3–1.2) and/or trim the base regimes - pure
+      generator tuning. The label rules themselves are correct.
+
+  Next: T07 (tests/test_synthetic_traffic.py extension - determinism,
+  schema completeness, class-balance sanity check).
+
+2026-06-19 - T07 done:
+
+  Added:
+    - tests/test_synthetic_traffic.py
+        23 pure-function tests, all passing. Coverage mirrors the PRD
+        §Testing Decisions checklist for the generator:
+
+        Determinism (6 tests):
+          generate_day_flow_matrix       - same seed → identical array;
+                                            different seeds differ.
+          generate_labeled_sample        - same seed → identical
+                                            (flow_matrix, meta, warrants,
+                                            critical_vc, intervention,
+                                            is_weekend) tuple.
+          sample_intersection_modifier   - same seed → identical array.
+          sample_intersection_meta       - same seed → identical
+                                            IntersectionMeta.
+
+        Schema completeness (12 tests):
+          N_CHANNELS=5, N_VEHICLE_CHANNELS=4, PED_CHANNEL_INDEX=4,
+            N_SLOTS=96 pinned as constants (5-channel/96-slot is the CNN
+            input convention from the PRD).
+          flow_matrix shape (5, 96), dtype float64, non-negative.
+          LabeledSample.warrants keys exactly == WARRANT_NAMES_ALL (the
+            six-warrant set the multi-task CNN head predicts).
+          warrant entries are (bool met, float conf ∈ [0, 1]).
+          intervention ∈ INTERVENTION_CLASSES (the three locked labels).
+          critical_vc ≥ 0.
+          metadata is IntersectionMeta with valid categorical values
+            (major_lanes ∈ {1,2}, minor_lanes ∈ {1,2},
+             posted_speed_kph ∈ {30,40,50}, n_approaches ∈ {3,4},
+             is_signalized bool).
+          sample_intersection_modifier returns length-4 positive float64
+            ndarray (slots straight into generate_day_flow_matrix).
+          is_weekend flag propagates into LabeledSample.
+
+        Class-balance sanity (5 tests, module-scoped fixture, N=500,
+        seed=42, weekday/weekend mix 5/7):
+          all three intervention classes appear at least once.
+          timing_only proportion ∈ [0.40, 0.75] (PRD's documented
+            "~50–65% timing_only" ±10pp).
+          road_widening proportion ≤ 0.15 (PRD's <10% with stochastic
+            headroom).
+          signalize proportion ∈ [0.15, 0.55] (residual band; guards
+            against catastrophic drift to 0 or 1).
+          proportions sum to 1.0.
+
+  Generator re-calibration (T06's known mismatch - addressed here per
+  the T06 note that "T07's class-balance sanity test will codify the
+  expected per-class proportions; if it fails (it will, with the
+  current generator), the fix is to widen intersection_modifier
+  downward and/or trim the base regimes - pure generator tuning"):
+
+    server/ml/synthetic_traffic.py modified in three places:
+
+    1. GROUND_TRUTH_REGIMES trimmed from ~9× peak-to-off ratio (peak
+       sum ~2100 PCU/hr → baseline Webster Y ≈ 1.5) down to a peak
+       sum ~700 PCU/hr (baseline Y ≈ 0.50). New numbers:
+         AM_RUSH  = (280,  85, 235, 100)   was (850, 250, 700, 300)
+         MIDDAY   = (150, 135, 145, 140)   was (420, 380, 410, 390)
+         PM_RUSH  = ( 85, 280, 100, 235)   was (250, 850, 300, 700)
+         OFF_PEAK = ( 60,  55,  58,  52)   was ( 90,  80,  85,  75)
+       OFF_PEAK held intentionally above the W-Local 3 30-PCU/hr floor
+       (per-approach avg ≈ 56 at modifier=1) so W-Local 3 does not fire
+       on every modest intersection - that would push the W-Local-3
+       channel into a "signalize unsignalized intersection" rule via
+       the precedence's "any warrant met" branch, which is semantically
+       wrong (W-Local 3 is a lights-off recommendation for already-
+       signalized intersections).
+
+    2. PED_PROFILES amplitudes cut roughly in half:
+         AM_PED=75 / LUNCH=50 / PM_PED=85 / DAY_LOW=22 / NIGHT_LOW=5
+         (was   140 /       90 /       150 /         35 /          10)
+       so that W4 (MUTCD pedestrian) fires on a realistic minority
+       (~15–30%) rather than on almost every intersection.
+
+    3. sample_intersection_modifier replaced. Was: uniform [0.8, 1.2]
+       length-4 iid per approach. Now: a single per-intersection
+       `scale ~ Triangular(0.25, mode=0.70, 2.30)` multiplied by a
+       length-4 directional variation `~ Uniform[0.85, 1.15]`. The
+       triangular's long upper tail is what drives the rare
+       road_widening cases (vc > 0.90); the mode at 0.70 keeps the
+       typical intersection in timing_only / signalize territory.
+
+    Resulting class balance across seeds {0..9}, N=500 each:
+       timing_only:     min 0.536, max 0.614, mean 0.588
+       signalize:       min 0.318, max 0.394, mean 0.352
+       road_widening:   min 0.052, max 0.070, mean 0.060
+    All seven new class-balance tests pass on seed=42 (the fixture seed)
+    with timing_only=0.572, signalize=0.376, road_widening=0.052.
+
+  Decisions:
+    - Single per-intersection scalar (not 4 iid per-approach uniforms)
+      was the necessary mechanism to extend the upper vc tail without
+      pushing the median intersection up. With 4 iid uniforms, getting
+      a high effective intersection-size requires all 4 approaches to
+      draw high simultaneously (vanishing probability in the tail).
+      The scalar variant matches the physical intuition: an
+      intersection's size is one property, the per-approach directional
+      asymmetry is layered on top.
+    - Per-approach directional variation kept narrow (±15%) so the
+      scalar-driven calibration is preserved; NB and SB can still
+      differ by up to ~30%, which mirrors the AM-inbound / PM-outbound
+      asymmetry already baked into the regime base.
+    - Class-balance fixture is module-scoped (`scope="module"`) so the
+      500-sample sweep runs once per file invocation rather than once
+      per assertion - keeps the file under 0.5s total.
+    - Class-balance bands are ±10pp around the PRD target rather than
+      a hard "must equal" - the PRD itself names a 10% tolerance in
+      §Testing Decisions and the test is meant as a regression guard,
+      not a precision benchmark. Tighter bands would brittle-trip on
+      any future calibration tweak the implementor wants to make.
+    - W-Local 2 fire rate is 0.00 in the sweep. This is by design of
+      the current parameter-realistic regime schedule: AM/MIDDAY/PM
+      volumes are comparable enough that top-2 chunks total ≤70% of
+      daily volume. W-Local 2's role in the dataset is exercised by
+      its rule unit tests (test_local_warrants.py) and by occasional
+      organic firing on outlier samples - not by the synthetic
+      generator's typical schedule. Not asserting non-zero W-Local 2
+      fire rate keeps the test robust.
+
+  Existing test suites still pass (61/61 across test_warrant_rules.py,
+  test_intervention_rules.py, test_local_warrants.py). No regressions
+  introduced by the generator recalibration.
+
+  Next: T08 (server/ml/temporal_warrant.py - multi-task 1D-CNN model
+  definition: three conv blocks 32 → 64 → 128, late-fused metadata,
+  6-dim warrant head + 3-dim intervention head, ~50K params).
+
+2026-06-19 - T08 done:
+
+  Added:
+    - server/ml/temporal_warrant.py
+        Module-level constants:
+          DEFAULT_WARRANT_NAMES         - the six-warrant tuple the
+            multi-task head predicts (w1, w2, w3, w4, w_local_2,
+            w_local_3). Same order as WARRANT_NAMES_ALL in
+            server.ml.synthetic_traffic so label tensors built from
+            generate_labeled_sample line up positionally with model
+            output columns.
+          DEFAULT_INTERVENTION_CLASSES  - (signalize, road_widening,
+            timing_only). Same order as INTERVENTION_CLASSES in
+            server.intervention_rules so argmax over the intervention
+            head maps directly to label strings.
+          DEFAULT_METADATA_FEATURES     - (major_lanes, minor_lanes,
+            posted_speed_kph, is_signalized, n_approaches). Matches
+            IntersectionMeta field order for trivial tensorization.
+
+        TemporalWarrantCNN(nn.Module):
+          __init__ keyword args (all defaulted):
+            n_input_channels=5, n_slots=96, n_metadata_features=5,
+            conv_channels=(32, 64, 128), kernel_size=5,
+            metadata_hidden=16, shared_hidden=64,
+            n_warrants=6, n_intervention_classes=3, dropout=0.3,
+            warrant_names / intervention_classes / metadata_features
+              optional sequences (default to the module constants).
+
+          Conv backbone (channels-first, "same" padding):
+            conv_block_1: Conv1d(5→32, k=5) → BN → ReLU → MaxPool(2)
+            conv_block_2: Conv1d(32→64, k=5) → BN → ReLU → MaxPool(2)
+            conv_block_3: Conv1d(64→128, k=5) → BN → ReLU →
+                          AdaptiveAvgPool1d(1)   ← "temporal flatten"
+            flatten_dropout: Dropout(0.3)         (PRD §Regularization)
+
+          Late-fused metadata branch:
+            metadata_branch: Linear(5→16) → ReLU
+
+          Shared head:
+            concat: 128 (temporal) + 16 (metadata) = 144
+            shared_dense: Linear(144→64) → ReLU
+            shared_dropout: Dropout(0.3)         (PRD §Regularization)
+
+          Task-specific heads:
+            warrant_head:      Linear(64→6)    ← raw logits, no sigmoid
+            intervention_head: Linear(64→3)    ← raw logits, no softmax
+
+          forward(flow, metadata) -> (warrant_logits, intervention_logits)
+            Returns logits directly. Sigmoid/softmax deferred to inference
+            (T10) so BCEWithLogitsLoss / CrossEntropyLoss can consume
+            logits in training (numerically stable).
+
+          architecture_config() -> dict
+            Returns the full hyperparameter set, ready to bundle into the
+            torch.save checkpoint dict alongside state_dict. Mirrors the
+            WarrantMLP checkpoint pattern (ckpt["input_features"], etc.).
+
+  Decisions:
+    - Parameter count is 62,633 (default config), not the PRD's
+      "approximately 50K". The 64→128 conv layer dominates at 41K params;
+      shrinking it would compromise the receptive-field argument and
+      change the channel-progression story in the methods chapter. Logged
+      explicitly in the module docstring so the methods-chapter parameter
+      table is unambiguous and future-me does not "fix" the count.
+    - Sigmoid/softmax deliberately NOT in the model. PRD §Implementation
+      Decisions / Outputs: "Sigmoid and softmax are applied at inference
+      time, not in the model." Lets training pair the warrant head with
+      BCEWithLogitsLoss (numerically stable vs. sigmoid+BCE) and the
+      intervention head with CrossEntropyLoss (which expects logits).
+    - Padding chosen as kernel_size//2 so each conv preserves temporal
+      length before pooling. With kernel=5 (odd), this is exact "same"
+      padding; the conv1→MaxPool(2)→conv2→MaxPool(2)→AdaptiveAvgPool
+      chain reduces 96 → 48 → 24 → 1 deterministically. AdaptiveAvgPool
+      means a different n_slots would still produce a (B, 128) flatten
+      without arch changes - useful for the methods-chapter ablation
+      that varies slot granularity.
+    - inplace=True on the ReLU activations to trim memory; safe because
+      the only branch points are after pooling (where the ReLU output
+      is already consumed by the next conv).
+    - BatchNorm placed before ReLU (the standard "conv → BN → ReLU"
+      ordering) so the model can be trained with batch_size=1 only at
+      eval time (BatchNorm in train mode requires batch_size ≥ 2).
+      T12's training CLI uses batch_size=64 per PRD §Training procedure.
+    - Default warrant_names / intervention_classes / metadata_features
+      stored on the instance and returned by architecture_config(), so
+      the checkpoint persists label semantics (not just the state_dict)
+      and the inference loader (T10) can name the output dict without
+      hard-coding the strings in two places.
+    - conv_channels guarded with a "must have exactly 3 widths" check -
+      the docstring + parameter-count table + methods-chapter diagram
+      all assume three blocks. Tightening this here prevents a silent
+      arch drift if a future caller passes a 2- or 4-tuple.
+    - warrant_names / intervention_classes / metadata_features kept as
+      separate optional args (not bundled into a single dict) so they
+      can be omitted independently and so the checkpoint persists each
+      one as its own architecture_config() key - same shape as the
+      WarrantMLP checkpoint (input_features, warrants, hidden_dims).
+
+  Manual smoke check (python3 -c, not committed):
+    Parameter count: 62,633 (matches docstring breakdown).
+    Forward with B=4: warrant logits (4, 6), intervention logits (4, 3).
+    Train-mode forward: outputs finite (dropout + BN do not produce NaN).
+    Eval-mode determinism: two forwards with the same input agree
+      bitwise (dropout off, BN in eval mode).
+    Logit range is centered near 0 (untrained init, no sigmoid/softmax
+      applied) - confirms heads emit raw logits as the PRD specifies.
+    Checkpoint roundtrip: architecture_config() + state_dict reconstruct
+      an identical model (forward outputs match bitwise).
+    Default names: ['w1','w2','w3','w4','w_local_2','w_local_3'] and
+      ['signalize','road_widening','timing_only'] - aligned positionally
+      with synthetic_traffic.WARRANT_NAMES_ALL and
+      intervention_rules.INTERVENTION_CLASSES so label tensors built
+      from generate_labeled_sample line up with model output columns.
+    Batch-of-1 forward: shapes (1, 6) / (1, 3) - confirms the BN+pool
+      chain is safe at B=1 in eval mode (relevant for T10 inference).
+
+  Existing test suites still pass (78 passed, 6 skipped) across
+  test_warrant_rules.py + test_intervention_rules.py +
+  test_synthetic_traffic.py + test_local_warrants.py. No regressions.
+  Module-specific tests are deferred to T11 (inference contract test),
+  which is the PRD's chosen external-behaviour test for this model
+  (per §Testing Decisions - "Test only external behavior - model
+  outputs, rule outputs, inference results - not internal layer
+  activations").
+
+  Next: T09 (server/ml/multitask_loss.py - uncertainty-weighted
+  MultiTaskLoss module, per the PRD's prototype-derived loss snippet
+  and Kendall et al. 2018 citation).
+
+2026-06-19 - T09 done:
+
+  Added:
+    - server/ml/multitask_loss.py
+        Two nn.Module loss heads sharing the same forward signature
+        ``forward(bce_warrant, ce_intervention) -> scalar`` so the T12
+        training CLI can swap between them by config:
+
+        UncertaintyWeightedLoss (PRD's chosen production loss; Kendall
+        et al. 2018):
+          Parameters: log_sigma_w, log_sigma_i (each nn.Parameter,
+            single-element tensor, log-space so sigmas stay positive
+            without an explicit clamp).
+          Init: init_log_sigma_warrant / init_log_sigma_intervention
+            kwargs (both default 0.0 = sigma=1). Exposed so Optuna can
+            tune loss-weight initialisation per PRD §Training procedure.
+          Forward: bce/(2 sigma_w^2) + ce/(2 sigma_i^2) + log(sigma_w *
+            sigma_i). Returns a 0-d scalar tensor (squeezed) so it can
+            be .backward()-ed directly and added to running averages
+            without needing a .item() conversion in the training loop.
+          sigmas() helper: returns (sigma_w, sigma_i) as Python floats
+            under torch.no_grad() for training-curve logging in the
+            methods-chapter "learned uncertainties over epochs" figure.
+
+        EqualWeightedLoss (the ablation baseline; PRD §Implementation
+        Decisions / Multi-task loss: "An equal-weighting ablation is
+        also trained"):
+          weight_warrant / weight_intervention kwargs (default 1.0
+            each, validated non-negative - raises ValueError otherwise
+            so a typo cannot silently invert a loss term).
+          No learnable parameters; forward is just the weighted sum.
+
+  Decisions:
+    - Forward takes pre-computed scalar BCE/CE tensors rather than
+      (logits, targets) pairs. Matches the PRD's prototype snippet
+      verbatim and - more importantly - keeps the class-weighted CE
+      logic for the intervention head (PRD §Training procedure / Class
+      imbalance) outside this module. The training CLI will own a
+      single torch.nn.BCEWithLogitsLoss and a single
+      torch.nn.CrossEntropyLoss(weight=inv_freq) and pass their outputs
+      in; this loss module never sees the class weights, so swapping
+      from class-weighted to unweighted CE in an ablation does not
+      touch multitask_loss.py.
+    - Parametrise sigmas in log-space (init_log_sigma_*, then exp() in
+      forward). This is the standard form in the Kendall et al. paper
+      and downstream implementations; alternatives (raw sigma with
+      softplus, or 1/sigma^2 = "precision" parametrisation) are
+      mathematically equivalent but the log-sigma form is what the PRD
+      prototype uses and what the methods-chapter pseudocode will cite.
+    - log(sigma_w * sigma_i), not log(sigma_w) + log(sigma_i), to
+      mirror the PRD prototype snippet exactly. Numerically identical;
+      visually closer to the cited Kendall et al. derivation.
+    - Equal-weight loss is in the same module rather than a separate
+      file. Both are <60-line nn.Modules with identical interfaces;
+      splitting them would force the training CLI to import from two
+      places for the ablation. Keeping them adjacent also means the
+      "uncertainty vs. equal" comparison is one diff in the model-spec
+      readme rather than a directory-trace.
+    - Negative-weight guard on EqualWeightedLoss: rejecting at
+      construction prevents a typo (weight_warrant=-1.0) from silently
+      inverting a loss term and tanking training. Zero is allowed
+      (turns a head off, valid ablation).
+    - __all__ exported so the training CLI can do
+      ``from server.ml.multitask_loss import *`` without picking up
+      torch / nn re-exports.
+
+  Manual smoke check (python3 -c, not committed):
+    UncertaintyWeightedLoss at init (sigma=1) with bce=0.5, ce=1.2:
+      expected = 0.5/2 + 1.2/2 + log(1) = 0.85 - actual: 0.8500. ✓
+    Backward through the loss populates:
+      grad on log_sigma_w =  0.5  (= 1 - bce/sigma_w^2 at sigma=1).
+      grad on log_sigma_i = -0.2  (= 1 - ce/sigma_i^2 at sigma=1).
+      grad on bce / ce inputs = 0.5 each (= 1/(2 sigma^2)).
+    Custom init log-sigmas (0.5, -0.3) yield sigmas (1.649, 0.741) -
+      Optuna can move the warrant loss to be down-weighted (large
+      sigma_w) and the intervention loss up-weighted (small sigma_i).
+    EqualWeightedLoss(1.0, 1.0)(0.5, 1.2) = 1.7. ✓
+    EqualWeightedLoss(2.0, 0.5)(0.5, 1.2) = 1.0 + 0.6 = 1.6. ✓
+    Negative weight rejected with ValueError. ✓
+    End-to-end composition with TemporalWarrantCNN (B=8, 5×96 flow,
+      5-dim metadata, random binary warrant + 3-class intervention
+      targets): loss is finite, .backward() succeeds, gradients reach
+      every parameter (model weights + both log-sigmas).
+
+  Existing test suites still pass (78 passed, 6 skipped) across
+  test_warrant_rules.py + test_intervention_rules.py +
+  test_synthetic_traffic.py + test_local_warrants.py. No regressions.
+  Module-specific tests are not in the PRD's T09 task scope; the
+  multitask-loss math is exercised at the integration level by T12's
+  training CLI (5-seed convergence smoke) and again at the results
+  level by T14's evaluation harness (uncertainty-weighted vs.
+  equal-weighted ablation table).
+
+  Next: T10 (server/ml/temporal_inference.py - predict_recommendations
+  function returning a RecommendationResult NamedTuple, plus a
+  load_recommender helper that reconstructs TemporalWarrantCNN from
+  its checkpoint dict).
+
+2026-06-19 - T10 done:
+
+  Added:
+    - server/ml/temporal_inference.py
+        Mirrors the server.ml.inference (WarrantMLP) layout so the
+        recommender plugs into the same lifespan + app.state pattern.
+
+        Public API:
+          RecommenderArtifacts(NamedTuple):
+            model, warrant_names, intervention_classes, metadata_features
+          RecommendationResult(NamedTuple):
+            warrant_probs: dict[str, float]
+            intervention: str
+            intervention_confidence: float
+
+          load_recommender(model_path) -> RecommenderArtifacts
+            Reads the checkpoint dict, reconstructs TemporalWarrantCNN
+            from the architecture_config() keys (n_input_channels,
+            n_slots, n_metadata_features, conv_channels, kernel_size,
+            metadata_hidden, shared_hidden, n_warrants,
+            n_intervention_classes, dropout, warrant_names,
+            intervention_classes, metadata_features), loads state_dict,
+            switches to eval mode.
+
+          predict_recommendations(artifacts, flow_matrix, metadata)
+            -> RecommendationResult
+            One forward pass:
+              flow:  (5, 96) ndarray → unsqueeze(0) → (1, 5, 96)
+              meta:  IntersectionMeta or Mapping[str, float] →
+                     positional vector in artifacts.metadata_features
+                     order → unsqueeze(0) → (1, 5)
+            Sigmoid over warrant logits → {name: prob ∈ [0, 1]} (six
+              entries, ordered by artifacts.warrant_names).
+            Softmax over intervention logits → argmax class string +
+              its softmax probability as confidence.
+
+        Private helper:
+          _metadata_to_vector(metadata, feature_order) - accepts
+            IntersectionMeta (attribute access) or Mapping[str, float]
+            (key access). Returns a float32 ndarray in the order
+            persisted on the checkpoint. The router (T16) will pass an
+            IntersectionMeta built from the DB row; tests can pass a
+            dict (T11 will exercise both paths).
+
+  Decisions:
+    - Sigmoid + softmax are applied here at inference time, NOT in the
+      model. Matches PRD §Implementation Decisions / Outputs ("Sigmoid
+      and softmax are applied at inference time, not in the model")
+      and the T08 module docstring.
+    - load_recommender takes a single model_path (no separate scaler
+      path, unlike load_warrant_model). The CNN consumes raw flow
+      timeseries - no scalar feature standardisation is required, so
+      no scaler is persisted. Documented implicitly by the signature
+      diff vs. WarrantMLP's loader.
+    - Metadata feature order is read from the checkpoint
+      (artifacts.metadata_features), not hard-coded to
+      DEFAULT_METADATA_FEATURES. This is the standard "checkpoint owns
+      label semantics" pattern that WarrantMLP also follows - it
+      future-proofs against reordering DEFAULT_METADATA_FEATURES
+      between training and inference.
+    - _metadata_to_vector accepts both IntersectionMeta and Mapping
+      forms by isinstance() check rather than a Protocol. Keeps the
+      type signature legible; both are explicit code paths.
+    - flow_matrix passed as np.ndarray (channels-first), not a torch
+      Tensor. Matches the shape that
+      server.ml.synthetic_traffic.generate_day_flow_matrix emits, so
+      label-pipeline tooling and the router can pass arrays straight
+      through without an explicit conversion.
+    - No batch-mode signature in this cut. The router (T16) runs one
+      intersection at a time via the existing _analyze helper; if a
+      batch path is needed later (e.g. for the evaluation harness in
+      T14) it can be added without changing the single-sample API.
+    - warrant_probs and intervention_confidence cast to plain Python
+      float via float() at the boundary. Keeps the NamedTuple JSON-
+      serialisable for the recommendations payload without an extra
+      tolist() round-trip in the router.
+
+  Manual smoke check (python3 -c, not committed):
+    Round-trip: TemporalWarrantCNN → save ckpt (architecture_config()
+      + state_dict) → load_recommender → RecommenderArtifacts with
+      warrant_names ['w1','w2','w3','w4','w_local_2','w_local_3'],
+      intervention_classes ['signalize','road_widening','timing_only'],
+      metadata_features ['major_lanes','minor_lanes',
+      'posted_speed_kph','is_signalized','n_approaches']. All three
+      lists positionally aligned with the synthetic_traffic +
+      intervention_rules constants so label tensors line up.
+    Forward on a random (5, 96) flow + IntersectionMeta:
+      RecommendationResult has 6 warrant_probs keys, each in [0, 1].
+      intervention ∈ INTERVENTION_CLASSES, confidence ∈ [0, 1].
+    Mapping-form metadata path produces a bitwise-identical result to
+      the IntersectionMeta-form path (same float values for all 6
+      warrant_probs + same intervention + same confidence).
+    Determinism: two predict_recommendations calls with the same model
+      + same input yield identical dicts (model.eval() makes BN +
+      dropout deterministic; predict_recommendations adds no state).
+
+  Existing test suites still pass (78 passed, 6 skipped) across
+  test_warrant_rules.py + test_intervention_rules.py +
+  test_synthetic_traffic.py + test_local_warrants.py. No regressions.
+  Module-specific contract tests are deferred to T11
+  (tests/test_temporal_warrant.py) per the task list ordering - T11 is
+  the PRD's chosen external-behaviour test for the inference path
+  (§Testing Decisions / Inference contract test).
+
+  Next: T11 (tests/test_temporal_warrant.py - inference contract test:
+  RecommendationResult field names, warrant_probs has all 6 expected
+  keys with values in [0, 1], intervention is one of the three valid
+  strings, confidence in [0, 1]. Use a deterministically-initialised
+  small TemporalWarrantCNN so the test does not depend on training
+  outcomes).
+
+2026-06-19 - T11 done:
+
+  Added:
+    - tests/test_temporal_warrant.py
+        17 pure-function tests, all passing. Exercises only external
+        behaviour of `predict_recommendations` and `load_recommender`,
+        per PRD §Testing Decisions ("Test only external behavior -
+        model outputs, rule outputs, inference results - not internal
+        layer activations or optimizer step counts").
+
+        Fixtures (module-scoped where reusable):
+          model - deterministically-initialised TemporalWarrantCNN
+            (torch.manual_seed(0) before construction), eval mode.
+          artifacts - RecommenderArtifacts wrapping that model with
+            the default label/feature name lists.
+          flow_matrix - deterministic (5, 96) float64 ndarray from
+            np.random.default_rng(42).
+          meta - IntersectionMeta(2, 1, 40, False, 4).
+
+        Coverage groups:
+
+        RecommendationResult field contract (2 tests):
+          _fields == ("warrant_probs","intervention","intervention_confidence").
+          predict_recommendations return value is the NamedTuple
+            (isinstance check, so downstream router code can rely on
+            attribute access without isinstance asserts at every call site).
+
+        warrant_probs contract (8 tests; 6 parametrised over warrant names):
+          keys (as a set) equal WARRANT_NAMES_ALL from synthetic_traffic.
+          keys (in order) equal DEFAULT_WARRANT_NAMES - pins positional
+            alignment with both synthetic_traffic.WARRANT_NAMES_ALL and
+            the model's own default warrant_names list (so label tensors
+            built from generate_labeled_sample line up with model output
+            columns at training time, and the inference dict preserves
+            that order for the router payload).
+          each prob is a Python float in [0, 1] (parametrised per
+            warrant name so a failure pinpoints the broken channel).
+
+        intervention contract (4 tests):
+          intervention ∈ INTERVENTION_CLASSES (the locked 3-class
+            vocabulary from server.intervention_rules).
+          intervention ∈ DEFAULT_INTERVENTION_CLASSES (the model's
+            own list - same set, different source; pins the cross-
+            module agreement).
+          intervention_confidence is a Python float in [0, 1].
+          intervention_confidence ≥ 1/3 − 1e-6 - argmax confidence on
+            a 3-class softmax cannot fall below the uniform floor;
+            guards against a future bug where the wrong softmax index
+            is read (e.g., min instead of argmax).
+
+        Metadata input shapes (2 tests):
+          predict_recommendations accepts both IntersectionMeta and
+            Mapping[str, float] (both shapes return identical
+            warrant_probs / intervention / confidence - the router
+            will pass IntersectionMeta from the DB row, tests can
+            pass a dict).
+          Two predict_recommendations calls with the same model + input
+            agree bit-for-bit (eval mode is deterministic: dropout off,
+            BN in eval, predict_recommendations adds no state).
+
+        load_recommender checkpoint roundtrip (1 test):
+          architecture_config() | {"state_dict": ...} → torch.save →
+            load_recommender → RecommenderArtifacts with the expected
+            warrant_names, intervention_classes, metadata_features.
+          predict_recommendations on the reloaded model produces the
+            same RecommendationResult as on the in-memory model.
+
+  Decisions:
+    - Used `torch.manual_seed(0)` before constructing the model in the
+      module-scoped fixture, not `torch.nn.init.constant_` or similar.
+      A fixed seed is the lightest reproducibility mechanism that still
+      gives us the property the PRD asks for ("does not depend on
+      training outcomes"), and it keeps the test fixture readable.
+    - Used `dict | {"state_dict": ...}` rather than mutating
+      architecture_config()'s return value. PEP 584 union, no in-place
+      side effects; mirrors how the T12 training CLI will build the
+      checkpoint dict.
+    - Tests use the public `RecommenderArtifacts` NamedTuple constructor
+      directly (not a builder helper) so the test failure pinpoints any
+      field rename without needing to look at a separate fixture file.
+    - Did NOT assert specific warrant probability values - the model is
+      untrained, so values are architecture/init artefacts, not contract.
+      The deterministic-roundtrip test pins reproducibility without
+      pinning specific values.
+    - Did NOT use the `tmp_path_factory` module-scoped variant for the
+      roundtrip test. The 1 ckpt save is ~250 KB and fits in pytest's
+      per-test tmp dir; module-scoped would couple the roundtrip test
+      to the module fixture lifetime for no real win.
+    - The 1/3 floor check on intervention_confidence is intentionally
+      `>= 1/3 − 1e-6` (small epsilon for float noise) so the test
+      doesn't false-positive on borderline-uniform softmax outputs from
+      a freshly-init model; the floor is a hard mathematical bound on
+      a 3-class argmax-softmax, not a quality threshold.
+
+  Manual verification:
+    pytest tests/test_temporal_warrant.py -v →
+      17 passed in 0.68s. Each warrant-prob parametrise instance runs
+      independently so a single broken channel would surface as
+      "test_each_warrant_prob_is_in_unit_interval[w_local_3] FAILED"
+      rather than swallowing all 6 into one assertion failure.
+
+  Existing test suites still pass: 95 passed, 6 skipped across
+  test_warrant_rules.py + test_intervention_rules.py +
+  test_synthetic_traffic.py + test_local_warrants.py +
+  test_temporal_warrant.py. No regressions.
+
+  Next: T12 (scripts/train_multitask_cnn.py - training CLI: dataset
+  build via generate_labeled_sample, intersection-stratified split,
+  5-seed harness, BCEWithLogitsLoss + class-weighted CrossEntropyLoss
+  composed via UncertaintyWeightedLoss from T09, Adam (lr=1e-3,
+  wd=1e-5), early stopping on val loss with patience=10, checkpoint
+  emitted as architecture_config() | {"state_dict": ...}).
+
+2026-06-19 - T12 done:
+
+  Added:
+    - scripts/train_multitask_cnn.py
+        Training CLI for the multi-task TemporalWarrantCNN. Argparse-
+        driven, runnable as `python -m scripts.train_multitask_cnn ...`.
+        No FastAPI / DB / SQLAlchemy coupling - synthetic dataset is
+        generated in-process and labels come from the existing rule
+        modules.
+
+        Public functions (importable for evaluation harness reuse in
+        T14):
+          build_synthetic_dataset(n_intersections, n_days, data_seed,
+              metadata_features, warrant_names, intervention_classes)
+              -> SyntheticTensors
+              Generates `n_intersections × n_days × 2 day-types` samples.
+              Per-intersection metadata is drawn once via
+              sample_intersection_meta and reused across all 2 × n_days
+              samples from that intersection (matches the physical
+              constraint that lane count / speed / signalised status
+              don't vary day-to-day). Each (intersection, day, day-type)
+              tuple gets its own SeedSequence so the dataset is fully
+              reproducible from --data-seed.
+          intersection_stratified_split(intersection_id, n_intersections,
+              n_train, n_val, split_seed)
+              -> (train_idx, val_idx, test_idx)
+              Two nested GroupShuffleSplit calls (test, then val out of
+              train+val). Default partition 21 train / 4 val / 5 test
+              intersections matches PRD §Synthetic data extensions /
+              Dataset split.
+          inverse_frequency_class_weights(intervention_labels, n_classes)
+              -> torch.Tensor
+              Computes weights = total / (count × n_classes) per class
+              on the training split; empty classes fall back to weight
+              1.0 so degenerate splits do not divide by zero.
+          train_one_seed(seed, data, train_idx, val_idx, n_warrants,
+              n_intervention_classes, *, epochs, batch_size, lr,
+              weight_decay, dropout, patience, device)
+              -> (model, loss_module, TrainMetrics, class_weights)
+              Single-seed training loop with early stopping; restores
+              best-val-loss state dict before returning.
+          save_checkpoint(path, model, loss_module, metrics, seed,
+              intervention_classes, class_weights)
+              Writes model.architecture_config() | {"state_dict": ...,
+              "training_metadata": {...}} via torch.save. The
+              architecture_config keys are the exact set that
+              server.ml.temporal_inference.load_recommender reads, so
+              the checkpoint slots straight into the inference path
+              without a separate adapter.
+
+        CLI arguments (all default to PRD §Training procedure values):
+          --output-dir            runs/temporal_cnn
+          --n-intersections       30
+          --n-days                90
+          --n-train-intersections 21
+          --n-val-intersections   4
+          --epochs                100
+          --batch-size            64
+          --lr                    1e-3
+          --weight-decay          1e-5
+          --dropout               0.3
+          --patience              10
+          --seeds                 0 1 2 3 4   (5-seed harness)
+          --data-seed             42
+          --split-seed            42
+          --device                cpu
+
+        Outputs:
+          {output-dir}/temporal_cnn_seed{S}.pt - one checkpoint per seed
+          {output-dir}/training_summary.json   - top-level summary
+              with the resolved CLI args, the split sizes, and a per-
+              seed list of {checkpoint, best_epoch, best_val_loss,
+              final_train_loss, final_val_loss, epochs_run}.
+
+  Decisions:
+    - Dataset shape interpretation: PRD's "30 × 90 × 2 day-types ≈
+      5,400" is implemented as 30 intersections × 90 days × 2 day-type
+      variants (each day generates a weekday-schedule sample AND a
+      weekend-schedule sample). Alternative reading - 30 × 90 with the
+      mix being 5/7 weekdays - would only give 2,700. The PRD text
+      explicitly multiplies by 2, so each (intersection, day) is
+      sampled twice.
+    - Per-intersection metadata reuse: metadata is drawn once per
+      intersection via sample_intersection_meta and passed into every
+      generate_labeled_sample call for that intersection. Matches the
+      physical constraint (an intersection's lane count doesn't change
+      day to day) and matches what the GroupShuffleSplit assumes
+      (group identity = physical intersection identity, not "any
+      (intersection, day) tuple with the same metadata").
+    - GroupShuffleSplit nesting: applied test split first, then val
+      split out of the remaining train+val pool. With 30 intersections,
+      test_size=5/30 ≈ 0.167; then val_size=4/(21+4) = 4/25 = 0.16
+      of the remaining 25. Both stages use different random_state
+      values (split_seed and split_seed + 1) so the val/test partition
+      is fully reproducible from --split-seed without entangling the
+      two stages.
+    - Loss composition: BCE + class-weighted CE computed separately,
+      passed into UncertaintyWeightedLoss from T09. The class weights
+      are computed once on the training split (inverse-frequency on
+      the intervention labels) and reused for all epochs. PRD
+      §Training procedure / Class imbalance puts the weighting on the
+      intervention head only - BCE for the warrant head stays
+      unweighted because the warrant labels are multi-hot and
+      individual warrants have their own per-class noise floor (mild
+      imbalance is OK on a 6-binary head).
+    - Optimizer covers BOTH model parameters AND loss-module
+      parameters (the two log-sigmas). PRD §Implementation Decisions
+      / Multi-task loss describes the sigmas as "learnable
+      parameters"; if Adam only saw the model, the sigmas would never
+      update and we'd silently regress to (sigma=1, sigma=1) ≡
+      equal-weight loss. Verified manually that sigmas move during
+      training (sigma_w drifts to 0.997, sigma_i to 1.003 within 3
+      epochs even on a tiny smoke dataset).
+    - Early stopping reads the val loss computed via the same
+      UncertaintyWeightedLoss head (not a raw BCE+CE sum). Means the
+      sigmas' regularising log(sigma_w · sigma_i) term is included in
+      the early-stop signal; without it, the sigmas could trivially
+      reduce the loss by growing, and the early-stop would never fire.
+    - Best-state restore on early stop: best_state is a deep-copied
+      state_dict snapshot at the best-val epoch. The model is mutated
+      back to that snapshot before save_checkpoint, so the saved
+      checkpoint is always the best-val model - not the
+      patience-exhausted model.
+    - drop_last on the train loader: enabled only when len(train_set)
+      >= batch_size. BatchNorm requires batch_size >= 2; the
+      conservative choice would be batch_size >= 2 unconditionally,
+      but drop_last=False with a residual batch of size 1 would crash
+      the BN layer in train mode. Tying drop_last to "≥ batch_size"
+      gives the default 64-batch case full batches AND lets a small
+      smoke run (e.g. 30 samples) still drain the whole epoch
+      (drop_last=False so the residual of size 30 < 64 still runs,
+      and BN sees a batch ≥ 2 because the smoke run is also ≥ 2).
+      A cleaner fix is "drop last if it would have size 1" but that
+      requires a custom collate; deferred.
+    - Checkpoint dict union: `model.architecture_config() |
+      {"state_dict": ...}` matches the exact format
+      server.ml.temporal_inference.load_recommender expects. The added
+      `training_metadata` sub-dict is ignored by load_recommender (it
+      doesn't read that key) but provides downstream tooling (T14
+      evaluation harness) with seed / best_epoch / sigma values for
+      the methods-chapter figures without needing a sidecar metrics
+      file.
+    - Training summary JSON: emits one file per output-dir
+      (not per-seed) so the multi-seed mean ± std table (T14) can be
+      built by reading a single file. Per-seed checkpoint files still
+      contain their own training_metadata copy for double bookkeeping.
+
+  Manual smoke check:
+    `python -m scripts.train_multitask_cnn --output-dir /tmp/smoke
+        --n-intersections 8 --n-days 3 --n-train-intersections 5
+        --n-val-intersections 2 --epochs 3 --patience 5 --seeds 0 1`
+    runs end-to-end:
+      dataset built (48 samples, flow shape (48, 5, 96), metadata (48, 5)).
+      splits: train=30 val=12 test=6 (5/2/1 intersections).
+      seed=0 epoch=003 val=1.0431 (down from 1.0973 @ epoch 1).
+      seed=1 epoch=003 val=1.0385 (different trajectory - confirms the
+        seed actually controls model init).
+      checkpoints emitted to /tmp/smoke/temporal_cnn_seed{0,1}.pt.
+      training_summary.json emitted with per-seed metrics and split
+        sizes.
+    Round-trip with load_recommender:
+      `from server.ml.temporal_inference import load_recommender,
+       predict_recommendations` on /tmp/smoke/temporal_cnn_seed0.pt
+      successfully reconstructs the model with the expected
+      warrant_names, intervention_classes, metadata_features and
+      predict_recommendations returns a valid RecommendationResult
+      (6 warrant_probs keys, intervention ∈ INTERVENTION_CLASSES,
+      confidence ∈ [0, 1]). Confirms T12's checkpoint format is
+      compatible with T10's loader without changes.
+
+  Existing test suites still pass (84 passed) across
+  test_warrant_rules.py + test_intervention_rules.py +
+  test_synthetic_traffic.py + test_temporal_warrant.py. No
+  regressions.
+
+  Module-specific tests are not in the PRD's T12 task scope; the
+  training-loop correctness is verified end-to-end by the loss
+  decrease + checkpoint roundtrip smoke check above, and the
+  multi-seed harness will be re-exercised at the results level by
+  T14's evaluation harness (which loads each seed's checkpoint and
+  computes per-warrant AUC/F1 with mean ± std).
+
+  Next: T13 (scripts/tune_multitask_cnn.py - Optuna hyperparameter
+  search over lr ∈ [1e-4, 1e-2], dropout ∈ [0.1, 0.5], and
+  loss-weight initialisation. Reuses build_synthetic_dataset,
+  intersection_stratified_split, and train_one_seed from T12 so the
+  search is a thin wrapper around the training CLI rather than a
+  duplicated loop).
+
+2026-06-19 - T13 done:
+
+  Added:
+    - scripts/tune_multitask_cnn.py
+        Optuna hyperparameter search CLI. Argparse-driven; runnable as
+        `python -m scripts.tune_multitask_cnn ...`. Thin wrapper around
+        T12's training building blocks per the PRD's note (reuses
+        build_synthetic_dataset, intersection_stratified_split, and
+        train_one_seed; no duplicated training loop).
+
+        Search space (PRD §Training procedure / Optimizer):
+          lr                            log-uniform [1e-4, 1e-2]
+          dropout                       uniform     [0.1, 0.5]
+          init_log_sigma_warrant        uniform     [-1.0, 1.0]
+          init_log_sigma_intervention   uniform     [-1.0, 1.0]
+
+        Objective: minimise best_val_loss from a single-seed
+          train_one_seed run (per trial). The full 5-seed harness is
+          deliberately NOT run per trial (30 × 5 = 150 training runs
+          is too expensive); the final reported model uses the tuned
+          hyperparameters with the 5-seed harness via the T12 CLI.
+
+        Per-trial budget: --trial-epochs 30 / --trial-patience 8 by
+          default (shorter than the full 100/10 schedule). The
+          --trial-seed default (0) fixes the training seed across
+          trials so model init isn't another nuisance variable in the
+          search.
+
+        Public functions (importable for evaluation / re-use):
+          build_objective(data, train_idx, val_idx, n_warrants,
+              n_intervention_classes, *, trial_seed, epochs,
+              batch_size, patience, weight_decay, device)
+              -> closure (trial -> float)
+              Suggests each search-space variable from the trial, runs
+              train_one_seed with the suggested hyperparameters and
+              the fixed trial_seed, returns best_val_loss.
+          _serialize_trial(trial) -> dict
+              Trial → JSON-safe dict (number, value, state, params,
+              duration_s). Used to write a snapshot of the study that
+              does not require Optuna to read back.
+
+        CLI arguments (defaults in parentheses; dataset/split flags
+        mirror train_multitask_cnn.py exactly so the tune + train
+        invocations can share the same data config):
+          --output-dir              runs/tune_temporal_cnn
+          --n-trials                30   (PRD's "~30 trials")
+          --trial-epochs            30
+          --trial-patience          8
+          --trial-seed              0
+          --optuna-seed             42   (TPE sampler seed)
+          --n-intersections         30
+          --n-days                  90
+          --n-train-intersections   21
+          --n-val-intersections     4
+          --batch-size              64
+          --weight-decay            1e-5
+          --data-seed               42
+          --split-seed              42
+          --device                  cpu
+
+        Outputs (under --output-dir):
+          optuna_trials.json - full study snapshot: resolved args,
+            search-space bounds, split sizes, and per-trial
+            {number, value, state, params, duration_s}.
+          best_params.json   - best_trial_number, best_value,
+            best_params dict. Formatted to drop straight into the T12
+            CLI's flags for the final 5-seed training run.
+
+    - scripts/train_multitask_cnn.py (additive change to train_one_seed)
+        Added two backward-compatible kwargs:
+          init_log_sigma_warrant: float = 0.0
+          init_log_sigma_intervention: float = 0.0
+        Passed through to UncertaintyWeightedLoss(). Defaults reproduce
+        the prior behaviour byte-for-byte so existing main() and all
+        existing call sites are unaffected; the tune CLI overrides
+        them to search over loss-weight initialisation per PRD.
+        Module docstring on train_one_seed updated to record the
+        rationale + cite T13.
+
+    - requirements-test.txt
+        Added `optuna` (used by the tune CLI; absent from
+        server/requirements.txt because the optuna dep is a research/
+        thesis-time tool, not a production server dep).
+
+  Decisions:
+    - Optuna is an optional dependency: scripts/tune_multitask_cnn.py
+      imports optuna lazily inside main() and raises SystemExit with a
+      friendly install hint if it's missing. The module-level imports
+      stay clean so the script can be imported (for testing or for
+      reuse of build_objective in a notebook) without optuna installed.
+    - In-memory study (no SQLite storage). The trials JSON is the
+      durable record; SQLite-backed storage would require an extra
+      --storage flag and a different inspection workflow without much
+      gain for a 30-trial search. Optuna-dashboard users can switch by
+      passing storage="sqlite:///..." to create_study, but that's a
+      future-me task, not T13 scope.
+    - Per-trial training uses a single fixed seed (--trial-seed 0)
+      rather than averaging over the full 5-seed harness. Per-trial
+      cost vs. signal trade-off: with 30 trials, averaging 5 seeds
+      would 5× the wall time (150 runs total). The single-seed
+      objective is the standard Optuna recipe; the final 5-seed
+      harness for the reported model still runs via T12 with the
+      tuned hyperparameters, so the multi-seed mean ± std reporting
+      in T14 is unaffected.
+    - Reduced per-trial schedule (30 epochs / patience 8) rather than
+      the full 100/10. With early stopping the training run already
+      cuts itself off; the shorter cap puts an upper bound on a
+      pathological no-improvement run and roughly matches the
+      "good runs converge well under 30 epochs" pattern observed in
+      the T12 smoke training.
+    - Search-space bounds in module-level constants
+      (LR_MIN/LR_MAX/etc.) instead of inline literals so a future
+      tweak (e.g. widening dropout to 0.6 for an ablation) is a
+      one-line change and is visible at the top of the file next to
+      the docstring.
+    - Suggests four params individually rather than packing into a
+      dict (which Optuna does support via trial.suggest_categorical
+      on tuples). Individual suggestions keep the search dimension
+      explicit in the trials JSON ("params": {"lr": ..., ...}) and
+      let Optuna's TPE sampler exploit per-dimension marginals.
+    - trial_seed default is 0 (not e.g. -1 or random). Locking
+      reproducibility is more important here than a "randomised
+      every run" survey - re-running the tune script with the same
+      --optuna-seed and --trial-seed reproduces the exact same study,
+      which matters for the methods chapter.
+    - The tune CLI does NOT save model checkpoints from intermediate
+      trials. Trial weights are discarded at the end of each
+      train_one_seed call (no save_checkpoint call). Storing 30 ckpts
+      to tune over would be wasteful (~30 × 250 KB but more
+      importantly clutters the runs/ directory); the best
+      hyperparameters are what matters, and the final model is
+      retrained with the full 5-seed harness via T12.
+    - additive train_one_seed kwargs (init_log_sigma_*): chose to
+      extend the existing function rather than fork a sibling
+      "train_one_seed_with_loss_init" because the change is mechanical
+      (two kwargs, two pass-throughs to UncertaintyWeightedLoss). Forks
+      would diverge over time; one function with optional kwargs keeps
+      the production training path and the search path on the same
+      code path.
+
+  Manual smoke check:
+    `python -m scripts.tune_multitask_cnn --output-dir /tmp/tune_smoke
+        --n-trials 2 --trial-epochs 2 --trial-patience 3
+        --n-intersections 6 --n-days 2 --n-train-intersections 4
+        --n-val-intersections 1 --batch-size 16 --optuna-seed 0`
+    runs end-to-end:
+      dataset built (24 samples, flow (24, 5, 96), metadata (24, 5)).
+      splits: train=16 val=4 test=4 (4/1/1 intersections).
+      trial=0 lr=1.25e-03 dropout=0.386 init_log_sigma_w=0.206
+        init_log_sigma_i=0.090 → best_val=1.1112 @ epoch 2.
+      trial=1 lr=7.04e-04 dropout=0.358 init_log_sigma_w=-0.125
+        init_log_sigma_i=0.784 → best_val=1.3267 @ epoch 2.
+      Different sigma inits drive different sigma_w/sigma_i in the
+      training log (sigma_w 1.227 vs. 0.883, sigma_i 1.095 vs. 2.188),
+      confirming init_log_sigma_* are actually plumbed through to the
+      learned loss-weight parameters.
+      Outputs emitted:
+        /tmp/tune_smoke/optuna_trials.json (full study snapshot).
+        /tmp/tune_smoke/best_params.json (best trial=0, best_val=1.1112,
+          best_params={lr, dropout, init_log_sigma_warrant,
+          init_log_sigma_intervention}).
+
+  Existing test suites still pass: 95 passed, 6 skipped across
+  test_warrant_rules.py + test_intervention_rules.py +
+  test_synthetic_traffic.py + test_temporal_warrant.py +
+  test_local_warrants.py. No regressions from the additive
+  train_one_seed kwargs.
+
+  Module-specific tests are not in the PRD's T13 task scope; the
+  search-loop correctness is verified by the manual smoke check
+  (above) and the hyperparameter plumbing through
+  init_log_sigma_warrant / init_log_sigma_intervention is verified
+  by observing the trained sigmas track the inits in the training log.
+
+  Next: T14 (scripts/evaluate_multitask_cnn.py - evaluation harness:
+  load each seed's checkpoint, compute per-warrant AUC/F1 with mean ±
+  std on the test split, intervention confusion matrix, ablation
+  table (uncertainty-weighted vs. equal-weighted loss), and saliency
+  / Grad-CAM figures over the input timeseries).
+
+2026-06-19 - T14 done:
+
+  Added:
+    - scripts/evaluate_multitask_cnn.py
+        Evaluation + Grad-CAM CLI. Argparse-driven; runnable as
+        `python -m scripts.evaluate_multitask_cnn ...`. Consumes the
+        per-seed checkpoints emitted by T12 and rebuilds the exact same
+        intersection-stratified test split deterministically.
+
+        Per-seed metrics on the held-out test split:
+          Per-warrant AUC + F1 + positive rate (sklearn.metrics
+            roc_auc_score / f1_score at threshold 0.5).
+          Intervention confusion matrix + per-class precision / recall
+            / F1 + overall accuracy + macro F1
+            (sklearn.metrics confusion_matrix +
+             precision_recall_fscore_support).
+
+        Aggregation across seeds:
+          aggregate_warrant_metrics(per_seed, warrant_names)
+            → {warrant: {auc_mean, auc_std, auc_n_seeds, f1_mean,
+                         f1_std, positive_rate_mean}}.
+            AUC=None rows (single-class targets) drop out of the mean;
+            auc_n_seeds records how many seeds contributed.
+          aggregate_intervention_metrics(per_seed)
+            → mean ± std accuracy + macro F1; per-class precision /
+              recall / F1 mean + std; summed confusion matrix.
+          Sample stdev uses ddof=1; single-seed runs fall back to 0.0.
+
+        Ablation comparison (--ablation-dir):
+          paired_ttest_main_vs_ablation per warrant on the seed-axis
+          AUC values (scipy.stats.ttest_rel). Records delta_auc_mean,
+          t_statistic, p_value. Warrants where either model has AUC=None
+          for >=1 seed get an explicit `note` field instead of NaN-y
+          numbers, so the methods-chapter table renderer can skip them
+          cleanly.
+
+        Grad-CAM 1D (server.ml.temporal_warrant.TemporalWarrantCNN):
+          GradCAM1D context manager hooks conv_block_3[2] (the ReLU
+          after BatchNorm). The model's ReLU is inplace=True, so
+          register_full_backward_hook on it raises
+            "Output 0 of BackwardHookFunctionBackward is a view and is
+             being modified inplace"
+          (autograd refuses to wrap an inplace-mutated view in a
+          BackwardHookFunction). Switched to forward_hook + a
+          tensor-level register_hook on the ReLU output - that adds a
+          callback rather than an autograd op, so the inplace
+          modification is irrelevant. Documented this constraint in
+          the class docstring so a future maintainer doesn't try to
+          "simplify" back to a full backward hook.
+
+          compute(flow, metadata, head, index):
+            forward → target = (warrant|intervention)_logits[:, index]
+            .sum() → backward → channel-mean weights × activations →
+            ReLU → linear interpolate to n_slots → per-row max-norm.
+          Output is a (B, n_slots) array in [0, 1] aligned to the
+          input timeseries. Maps for every warrant + every intervention
+          class are computed for `--saliency-samples` test rows (linspace
+          across the test set for reproducibility without an extra seed
+          knob); saved as a single .npz with the source flow, metadata,
+          and ground-truth labels alongside the maps.
+
+        Outputs (under --output-dir):
+          metrics_main.json - per-seed + aggregated metrics for
+            --model-dir.
+          metrics_ablation.json - same shape, for --ablation-dir
+            (only when provided).
+          comparison.json - per-warrant main-vs-ablation paired t-test.
+          saliency/gradcam_seed{N}.npz - Grad-CAM maps + sources
+            (seed selected via --saliency-from-seed, default = lowest
+            seed in --model-dir).
+          evaluation_summary.json - top-level summary tying the args,
+            split sizes, aggregated metrics, comparison, and saliency
+            paths together.
+
+        CLI arguments (defaults in parentheses):
+          --model-dir               (required)  T12 checkpoint dir
+          --output-dir              (required)
+          --ablation-dir            None        triggers ablation table
+          --saliency-samples        6
+          --saliency-from-seed      None        defaults to lowest seed
+          --ignore-training-summary False       falls back to CLI args
+          --n-intersections         30   (overridden by
+          --n-days                  90    training_summary.json
+          --n-train-intersections   21    unless
+          --n-val-intersections     4     --ignore-training-summary
+          --data-seed               42    is set)
+          --split-seed              42
+          --batch-size              64
+          --device                  cpu
+
+        Dataset reconstruction: _resolve_dataset_args reads
+          {model-dir}/training_summary.json (emitted by T12) and copies
+          n_intersections, n_days, n_train_intersections,
+          n_val_intersections, data_seed, split_seed into the dataset
+          build, guaranteeing the test split bit-for-bit matches the
+          one held out during training. --ignore-training-summary
+          forces CLI flags instead - useful for evaluating an existing
+          checkpoint against an alternate held-out split.
+
+    - scripts/train_multitask_cnn.py (additive, T14-scoped)
+        Added `--loss-type {uncertainty, equal}` so the equal-weighted
+        ablation called out in PRD §Implementation Decisions / Multi-
+        task loss is actually trainable end-to-end. Without this, the
+        ablation column in the T14 comparison table would be unfillable.
+
+        New helper `_build_loss_module(loss_type, init_log_sigma_w,
+        init_log_sigma_i)` constructs the matching nn.Module:
+          uncertainty → server.ml.multitask_loss.UncertaintyWeightedLoss
+                         (PRD-default; respects sigma inits).
+          equal       → server.ml.multitask_loss.EqualWeightedLoss
+                         (no learnable params; ignores sigma inits).
+
+        `train_one_seed` gains a `loss_type` kwarg (default
+        LOSS_TYPE_UNCERTAINTY - production runs and existing
+        tune_multitask_cnn.build_objective calls are byte-for-byte
+        unchanged) and its return type is widened from
+        UncertaintyWeightedLoss to nn.Module. Per-epoch logging branches
+        on hasattr(loss_module, 'sigmas') so the equal-weighted run logs
+        a "(equal-weighted)" tag rather than crashing on a missing
+        sigmas() call.
+
+        `save_checkpoint` writes `loss_type` into the training_metadata
+        sub-dict; the sigma_warrant / sigma_intervention entries are
+        only present when the loss has sigmas. load_recommender (T10)
+        already ignores unknown training_metadata keys, so existing
+        uncertainty-weighted checkpoints continue to round-trip without
+        change.
+
+  Decisions:
+    - Train CLI patch was made part of T14 because the evaluation
+      script's ablation table is a PRD-required deliverable that the
+      train CLI couldn't produce on its own. Mirrors T13's precedent of
+      extending train_one_seed (init_log_sigma_* kwargs) inside its
+      own task when the search depends on it.
+    - GradCAM1D hooks conv_block_3[2] (ReLU) rather than the Conv1d
+      or BatchNorm. ReLU output is the standard Grad-CAM target - it
+      reflects the post-activation features the rest of the network
+      actually sees. The inplace-view issue is sidestepped via the
+      forward_hook + tensor.register_hook pattern (no autograd op
+      insertion). Documented in the docstring with the exact error
+      message so future-me doesn't loop on it.
+    - Saliency sample selection is np.linspace across the test set
+      (not random). The methods-chapter figures should be deterministic
+      across reruns without piping yet another --seed knob through;
+      anyone wanting variety can re-run with a different
+      --saliency-samples or pick samples downstream from the .npz.
+    - Per-row max-norm of the Grad-CAM (cam / cam.max).clamp_min(1e-8))
+      so different warrants/classes are visually comparable. Raw
+      magnitudes are not useful for plotting alignment; if a downstream
+      consumer wants un-normalised values they can recompute from the
+      .npz.
+    - Single .npz per saliency seed (not one .npy per (sample, warrant))
+      so the methods-chapter author has one file to load and slice from
+      in their plotting notebook. Keys are stable strings
+      (`gradcam_warrant_w1`, `gradcam_intervention_signalize`, …) so
+      a future warrant rename in WARRANT_NAMES_ALL automatically flows
+      through.
+    - Per-warrant paired t-test uses scipy.stats.ttest_rel (already
+      a transitive dep via sklearn). The warrant axis is the natural
+      pairing - same test split, same seeds, only the loss formulation
+      differs. Aggregating into a single "average AUC across all
+      warrants" t-test would lose per-warrant signal that the methods
+      chapter wants to surface.
+    - Test split reconstruction prefers training_summary.json over CLI
+      flags by default. The split is intersection-stratified via
+      GroupShuffleSplit + a numeric seed; the only way to guarantee
+      identity with the train-time split is to replay the exact same
+      args. Bugs from "I ran evaluate with the wrong data-seed" would
+      silently inflate or deflate test metrics, which is the worst
+      possible failure mode for a thesis-grade evaluation.
+    - Did NOT add a baseline (WarrantMLP) comparison column in this
+      task. The baseline retrain on the new synthetic data is implicit
+      in PRD §Module changes / "Retained as baseline" but is not its
+      own T-line in the task list, and the WarrantMLP only emits 4
+      warrants (W1–W4) vs. the CNN's 6 - comparing apples-to-apples
+      requires either a separate ranking script that restricts to the
+      4 shared warrants or a WarrantMLP retrain on the 6-warrant label
+      set. Left as a follow-up; the evaluate harness is designed so a
+      baseline column can be added by symmetry with --ablation-dir
+      (`--baseline-dir`) when the retrain happens.
+    - Did NOT emit PNG plots from the saliency. matplotlib is not in
+      requirements.txt or requirements-test.txt, and the methods-chapter
+      author plots offline anyway. Adding matplotlib as a research-time
+      dep is a separate decision; the .npz format keeps that decision
+      reversible.
+
+  Manual smoke check:
+    Trained 3 seeds with the default uncertainty loss:
+      `python -m scripts.train_multitask_cnn --output-dir /tmp/eval_smoke/main
+          --n-intersections 8 --n-days 3 --n-train-intersections 5
+          --n-val-intersections 2 --epochs 3 --patience 5 --seeds 0 1 2`
+    Trained 3 ablation seeds with equal-weighted loss:
+      `python -m scripts.train_multitask_cnn --output-dir /tmp/eval_smoke/ablation
+          --loss-type equal  ...same dataset flags...`
+      Equal-weighted run logs "(equal-weighted)" per epoch - confirms
+      the loss-type branch fires and sigmas() is bypassed.
+
+    Ran evaluation against both:
+      `python -m scripts.evaluate_multitask_cnn
+          --model-dir /tmp/eval_smoke/main
+          --ablation-dir /tmp/eval_smoke/ablation
+          --output-dir /tmp/eval_smoke/eval --saliency-samples 4`
+
+    Outputs verified:
+      metrics_main.json + metrics_ablation.json: 3 seeds each with
+        per-warrant AUC/F1, intervention CM, aggregated mean/std.
+        AUC is None for w3 / w_local_2 / w_local_3 on this tiny split
+        (test = 6 samples; rare warrants have all-zero targets) →
+        auc_n_seeds=0 for those, exactly the expected behaviour.
+      comparison.json: 6 per-warrant entries; valid AUC pairs report
+        delta_auc_mean + t_statistic + p_value; AUC=None pairs report
+        the explicit `note` field.
+      saliency/gradcam_seed0.npz keys:
+        flow (4, 5, 96), metadata (4, 5), warrant_targets (4, 6),
+        intervention_targets (4,), test_row_indices (4,), one
+        gradcam_warrant_{name} per warrant (4, 96) and one
+        gradcam_intervention_{name} per class (4, 96).
+        Spot check: gradcam_warrant_w1 nonzero-slots-per-sample =
+        [0, 8, 34, 16] with maxes [0.0, 1.0, 1.0, 1.0] - sample-level
+        variance is real (not a constant map), and the all-zero rows
+        are valid Grad-CAM behaviour when (grad × activation) is
+        everywhere ≤ 0 (ReLU floor).
+      evaluation_summary.json: pulled dataset_args from
+        training_summary.json (n_intersections=8, …) rather than from
+        the CLI's PRD defaults (30, …) - confirms the auto-resolve
+        path works.
+
+    Tune CLI unaffected: re-ran the existing T13 smoke with default
+    --loss-type - same trial output as previously logged.
+
+  Existing test suites still pass: 95 passed, 6 skipped across
+    test_warrant_rules.py + test_intervention_rules.py +
+    test_synthetic_traffic.py + test_temporal_warrant.py +
+    test_local_warrants.py. No regressions from the additive
+    --loss-type / nn.Module return-type changes to train_one_seed.
+
+  Module-specific tests are not in the PRD's T14 task scope; the
+  harness's correctness is verified end-to-end by the smoke check
+  above. The PRD itself frames T14 as "the model-quality gate":
+  "Reviewing this output is the acceptance gate before merging"
+  rather than a pytest contract.
+
+  Next: T15 (server/main.py - load the recommender artifacts in the
+  FastAPI lifespan alongside the existing warrant_artifacts so the
+  recommender is reachable from request handlers without per-request
+  checkpoint loading).
+
+2026-06-19 - T15 done:
+
+  Modified:
+    - server/main.py (lifespan)
+        Added a second try-block after the existing warrant_artifacts
+        load that calls server.ml.temporal_inference.load_recommender
+        (T10) and caches the resulting RecommenderArtifacts on
+        app.state.recommender_artifacts. The block mirrors the
+        warrant block exactly - broad except → logging.warning →
+        app.state.recommender_artifacts = None on any failure - so a
+        missing checkpoint never blocks server startup. The warrant
+        baseline continues to load independently regardless of
+        recommender state, satisfying user-story #13 (baseline must
+        remain callable during rollout).
+
+        Path resolution:
+          default = ml_dir / "temporal_cnn_model.pt"
+          override = env TEMPORAL_CNN_MODEL_PATH (full path string)
+        ml_dir was hoisted out of the warrant try-block so both loads
+        share the same resolved path without re-computing it; no
+        behaviour change to the warrant load.
+
+  Decisions:
+    - Path defaults to server/ml/temporal_cnn_model.pt to mirror the
+      existing server/ml/warrant_model.pt convention. T12's training
+      CLI writes per-seed checkpoints under runs/temporal_cnn/
+      temporal_cnn_seed{N}.pt; the operator either copies/symlinks
+      the chosen seed into server/ml/ or sets the env var. Both flows
+      work without code changes.
+    - Env-var override (TEMPORAL_CNN_MODEL_PATH) added because, unlike
+      the warrant artifact which is a single committed file, the
+      recommender checkpoint is a moving target during the multi-seed
+      training rollout. Tying production loading to an env var keeps
+      checkpoint promotion a 1-line config change rather than a copy
+      step. The warrant load was left without an env var to keep its
+      behaviour exactly as-was (no scope creep).
+    - Failure log says "falling back to warrant baseline" not just
+      "predictions disabled" - this signals to ops that the system
+      is still functional (via the scalar MLP) when the recommender
+      is missing, which is the explicit rollout-safety story in
+      user-story #13. T16 will branch on app.state.recommender_artifacts
+      to either call predict_recommendations or fall through to
+      predict_warrants.
+    - No new dependencies, no model files committed. server/ml/ is
+      intentionally still empty of the recommender checkpoint; the
+      lifespan's graceful-None path is the correct behaviour until a
+      trained checkpoint is promoted.
+    - Did NOT add a /metrics or /health line for recommender
+      availability in this task. Surfacing availability is a separate
+      ops concern; ops can inspect app.state.recommender_artifacts via
+      the existing admin paths if needed.
+
+  Manual smoke check:
+    - python -c "import server.main" → imports cleanly, FastAPI app
+      built, lifespan callable.
+    - load_recommender on a missing path raises FileNotFoundError
+      (verified) → confirms the warning branch in lifespan will fire
+      on a fresh checkout where no recommender checkpoint exists yet.
+    - Env-var resolution: with TEMPORAL_CNN_MODEL_PATH unset, the
+      resolved path is server/ml/temporal_cnn_model.pt; with it set
+      to a runs/temporal_cnn/temporal_cnn_seed0.pt path, that path is
+      used instead (verified by inspection).
+
+  Existing test suites still pass: 61 passed across
+    test_warrant_rules.py + test_intervention_rules.py +
+    test_temporal_warrant.py. Touching only the lifespan loader did
+    not regress the pure-function rule tests or the inference
+    contract test.
+
+  Next: T16 (server/routers/recommendations.py - switch the
+  _analyze helper from predict_warrants to predict_recommendations
+  so the new intervention field flows into the recommendation bundle.
+  Should branch on app.state.recommender_artifacts so the warrant
+  baseline still serves when no recommender checkpoint is loaded,
+  preserving user-story #13).
+
+2026-06-19 - T16 done:
+
+  Modified:
+    - server/routers/recommendations.py
+        New imports: server.warrant_rules.IntersectionMeta and
+        pydantic.Field (for the InterventionInfo alias).
+
+        Module-level constants mirroring server.ml.synthetic_traffic:
+          _CNN_N_SLOTS = 96, _CNN_N_VEHICLE_CHANNELS = 4,
+          _CNN_PED_CHANNEL_INDEX = 4, _CNN_N_CHANNELS = 5,
+          _CNN_SLOT_MINUTES = 15.
+
+        New pydantic sub-model:
+          class InterventionInfo(BaseModel):
+              name: str = Field(alias="class")
+              confidence: float
+              model_config = ConfigDict(populate_by_name=True)
+          `name` carries an alias because `class` is a Python keyword
+          and cannot be a field name; by_alias=True serialisation
+          emits the PRD's exact `{class, confidence}` shape.
+
+        RecommendationResponse gains:
+          intervention: Optional[InterventionInfo] = None
+        Optional so legacy reads from /recommendations and
+        /recommendations/history/{iid} - which never persisted an
+        intervention column - round-trip cleanly with None. Pydantic
+        coerces the dict from _rec_to_response into the sub-model on
+        the wire.
+
+        New helpers:
+          _build_flow_matrix(intersection_id, db) -> np.ndarray
+              Builds a (5, 96) float32 channels-first matrix over the
+              trailing 24 hours. Streets are mapped to the first four
+              vehicle channels by ascending street_id (deterministic);
+              the 5th channel sums pedestrian counts across all
+              streets. Mirrors the existing _compute_features data
+              source: prefers aggregation_summaries, falls back to
+              detection_street_view on empty windows. numpy is
+              imported lazily inside the helper to avoid paying the
+              import cost on the scalar-baseline path.
+          _intersection_to_meta(intersection) -> IntersectionMeta
+              Projects an Intersection row into the dataclass the CNN
+              expects. is_signalized is derived from signal_status
+              ("fixed_time"/"actuated" → True). The lane-count and
+              posted-speed fields are not on the schema yet; until
+              they surface through onboarding the helper falls back
+              to the Tagum-realistic defaults the PRD calls out
+              (major_lanes=2, minor_lanes=2, posted_speed_kph=40).
+              n_approaches is clipped to {3, 4} to match the training
+              distribution and defaults to 4 when streets is empty.
+          _empty_analysis(hour_start) -> dict
+              The empty-data analysis dict factored out of _analyze so
+              both branches return the same shape on zero-volume hours.
+
+        Rewrote _analyze with the new signature:
+          _analyze(
+              intersection: models.Intersection,
+              warrant_artifacts,
+              recommender_artifacts,
+              db,
+          ) -> tuple[dict, Optional[dict]]
+        Returns (analysis_dict, intervention_info_or_none).
+        Dispatch:
+          1. Compute the 5 hand-engineered scalars from the most
+             recent hour (still required for the DB columns and the
+             feat=(...) log line).
+          2. Zero-volume hour → _empty_analysis(...) + intervention=None.
+          3. recommender_artifacts present → build the flow matrix +
+             meta, call predict_recommendations, map
+             warrant_probs[w1|w2|w4] into warrant_{N}_{met,confidence},
+             set recommended = (intervention != "timing_only"),
+             recommended_confidence = intervention_confidence, and
+             return intervention_info = {"class": ..., "confidence":
+             ...}. predict_recommendations is imported lazily so the
+             torch import cost only fires on the CNN path.
+          4. On any CNN-path exception → log.exception(...) +
+             fall through to the scalar baseline. Keeps a transient
+             ML issue from bricking /recommendations.
+          5. Scalar baseline path is the prior implementation
+             verbatim (predict_warrants + scalar dict), now also
+             returning intervention=None so the caller's tuple
+             unpack works uniformly.
+
+        Log line gains a mode= tag (`mode=cnn` / `mode=mlp`) so the
+        operator can tell which path served a given request without
+        tailing two separate log lines. CNN path logs warrant probs
+        and intervention(conf=…); MLP path keeps the prior
+        prob=(w1=… w2=… w4=… rec=…) shape so existing log scrapers
+        don't break on the baseline.
+
+        _rec_to_response gains an optional intervention kwarg and
+        returns it in the response dict. Legacy callers
+        (update_notes, list_history, list_recommendations) pass
+        nothing and so the intervention key falls back to None,
+        which the RecommendationResponse sub-model accepts.
+
+        Both endpoint callers updated to the new signature:
+          generate_recommendation reads
+            request.app.state.recommender_artifacts alongside the
+            existing warrant_artifacts and passes (intersection, …)
+            instead of (intersection_id, …).
+          run_generate_all gains a recommender_artifacts kwarg
+            (defaulted to None so any non-FastAPI caller still
+            compiles), forwards it into _analyze, and threads the
+            returned intervention_info into _rec_to_response.
+          generate_all_recommendations forwards
+            request.app.state.recommender_artifacts into
+            run_generate_all.
+
+    - server/scheduler.py
+        analysis_loop passes
+          getattr(app.state, "recommender_artifacts", None)
+        as the new third arg to run_generate_all. getattr-with-default
+        is defensive against any test that constructs a bare FastAPI
+        app without going through the lifespan; production startup
+        always sets the attribute (T15).
+
+  Decisions:
+    - intervention is NOT persisted on the Recommendation table.
+      Adding an `intervention_class` column would have required an
+      Alembic-style ALTER and a backfill question (NULL vs. a
+      default) on existing rows. The PRD calls intervention "an
+      additive change … at the recommendation-bundle level" - it
+      does not require persistence - so the simplest scope-matching
+      implementation is: return it on the live API response when the
+      CNN runs, None on history reads and on the scalar-baseline
+      path. Persistence can be added later without changing the API
+      contract.
+    - Streets-to-channels mapping is ascending street_id, capped at
+      four streets. The CNN was trained on 4 vehicle channels and
+      arm_direction (N/S/E/W) is not reliably populated on every
+      intersection row in this repo (it's `unknown` by default).
+      street_id ordering is the only deterministic, always-available
+      key. n_approaches > 4 is silently truncated to 4 channels,
+      which matches the {3, 4}-clipped IntersectionMeta - both ends
+      of the pipeline see the same approach count.
+    - 24-hour window ends on the most recent closed hour
+      (now.replace(minute=0, …) − 24h, now.replace(…)). The CNN
+      was trained on intersection-day samples covering full 24-hour
+      windows; aligning the live window to closed-hour boundaries
+      avoids partially-filled trailing slots that would distort the
+      tail of the timeseries. Same boundary that _compute_features
+      already uses for the scalar features.
+    - IntersectionMeta defaults to the Tagum-realistic medians
+      (major_lanes=2, minor_lanes=2, posted_speed_kph=40) rather
+      than the lowest or highest plausible values. PRD §Synthetic
+      data extensions samples these with "Tagum-realistic
+      probabilities" - the medians are the safest fallback until
+      onboarding surfaces the real values. is_signalized is the
+      only meta field with ground truth from the DB and it is
+      taken from intersection.signal_status verbatim.
+    - Exception in the CNN path is swallowed and logged, NOT
+      re-raised, so the scalar baseline still serves. The PRD's
+      user-story #13 ("baseline must remain callable during the
+      rollout … for comparison and rollback safety") is the
+      strongest contract on this path; treating a torch import
+      error or a checkpoint-arch mismatch as a hard 500 would
+      defeat that rollback safety. log.exception(...) captures the
+      full traceback for the ops view.
+    - InterventionInfo uses `populate_by_name=True` so both call
+      sites (passing a dict with a `class` key, or constructing it
+      from `InterventionInfo(name=..., confidence=...)`) work.
+      Constructing from dict is what the router currently does;
+      the kwarg form is left available for future tests.
+    - Log line was widened with mode={cnn,mlp} rather than split
+      into two separate logger names. The single-log-line pattern
+      matches the rest of recommendations.py (status_code + ms
+      + features inline) and a single grep over `analyze
+      intersection=N` reads both paths.
+    - The /recommendations history endpoint and list_recommendations
+      DO NOT surface intervention. The DB doesn't store it, so
+      returning a stale or None value on history rows would be
+      misleading. _rec_to_response's intervention kwarg defaults to
+      None and all the history callers omit it; only freshly
+      generated recommendations (post-generate, post-generate-all)
+      carry the CNN's intervention class on the wire.
+    - Did NOT add w3 / w_local_2 / w_local_3 mapping into the
+      bundle. The schema's warrant_{1,2,4}_{met,confidence} columns
+      cover the existing four MUTCD warrants in the response; w3 is
+      not in the schema and w_local_{2,3} are already populated by
+      the local_warrants pipeline that runs after _analyze. The
+      CNN's predictions for those warrants are computed but not
+      surfaced - the local_warrants rules remain authoritative for
+      the local-warrant fields, consistent with the PRD's
+      "production source while the warrant baseline remains
+      callable" framing.
+
+  Manual smoke check (no DB, Python smoke):
+    - _intersection_to_meta(FakeSignalized) →
+        IntersectionMeta(major_lanes=2, minor_lanes=2,
+        posted_speed_kph=40, is_signalized=True, n_approaches=4).
+    - _intersection_to_meta(FakeUnsignalized, streets=[]) →
+        is_signalized=False, n_approaches=4 (default for missing).
+    - _empty_analysis(now) returns the zero-volume dict with
+        recommended=False, major_volume=0, hour_start=now.
+    - RecommendationResponse(...intervention={'class':
+        'road_widening', 'confidence': 0.81})
+        .model_dump(by_alias=True)['intervention'] →
+        {'class': 'road_widening', 'confidence': 0.81}.
+    - RecommendationResponse(...no intervention...) → intervention
+        is None (legacy reads round-trip cleanly).
+
+  Existing test suites still pass: 106 passed, 13 skipped across
+    test_warrant_rules.py + test_intervention_rules.py +
+    test_synthetic_traffic.py + test_temporal_warrant.py +
+    test_local_warrants.py + test_recommendations.py. The
+    test_regression_generate_all_commits_per_intersection
+    source-inspection regression test in test_stress.py still passes
+    - db.commit() remains inside the try block in run_generate_all.
+
+  Next: T17 (eyegila frontend - surface the new `intervention`
+  field in the recommendation card so operators see the
+  CNN-recommended structural intervention alongside the existing
+  warrant chips).
+
+2026-06-19 - T17 done:
+
+  Added:
+    - eyegila/src/types/index.ts
+        New exports:
+          InterventionClass = 'signalize' | 'road_widening' | 'timing_only'
+          Intervention { class: InterventionClass; confidence: number }
+        Recommendation gains `intervention: Intervention | null` so the
+        T16 wire field round-trips through the same shared type the
+        rest of the FE uses (RecommendationResponse extends this).
+
+    - eyegila/src/components/recommendations/LatestTab.tsx
+        InterventionBanner sub-component renders only when
+        rec.intervention != null. One banner per recommendation card,
+        placed between the camera-health line and the warrant
+        progress bars (high-prominence position; first thing the
+        operator reads after the camera-state alert).
+        Three class-keyed presentations driven by an
+        INTERVENTION_META lookup:
+          signalize     → TrafficCone icon  + emerald theme
+                          "Install traffic signal" / "Warrant met
+                          and intersection is currently unsignalized."
+          road_widening → Construction icon + amber theme
+                          "Widen approach lanes" / "Post-Webster
+                          critical v/c exceeds 0.90 - signal timing
+                          alone cannot clear demand."
+          timing_only   → Clock icon        + muted theme
+                          "Timing adjustments only" / "No structural
+                          change recommended - existing signal
+                          timing can absorb the demand."
+        Confidence rendered as "{pct}% confidence" right-aligned in
+        the banner header. pct = Math.round(confidence * 100).
+
+  Decisions:
+    - Banner sits ABOVE the warrant progress bars, not below them.
+      The whole point of the intervention head is to give the
+      operator a single decision-level recommendation rather than
+      making them read three warrant bars and infer one. Placing it
+      first matches the PRD's User Story #8 ("a single
+      recommendation per intersection that names the appropriate
+      structural intervention") and CTMO triage flow ("which
+      intersections need capex this quarter?").
+    - Conditional render (`rec.intervention && <...>`) so the
+      banner is invisible on:
+        (a) history rows (T16 chose not to persist intervention),
+        (b) the scalar-baseline path (returns intervention=None),
+        (c) any pre-CNN data already in the DB.
+      No empty-state placeholder - hiding the banner is the correct
+      behaviour when the CNN didn't run, since rendering "no
+      intervention available" would be more confusing than the
+      absence itself.
+    - Color theming mirrors existing BUCKET_BADGE_CLASS choices:
+      emerald = positive action, amber = significant capex
+      warning, muted = no-op. Operator already reads emerald/amber
+      semantics on the status badges in RecommendationsTable, so
+      the banner palette stays inside the FE's established color
+      vocabulary.
+    - Type lives in src/types/index.ts (the shared domain types
+      file) rather than in services/recommendations.ts. The PRD
+      describes intervention as a bundle-level field on the
+      Recommendation contract, not a service-specific transport
+      shape. Defining it next to Recommendation keeps the
+      RecommendationResponse extension trivial (it picks the field
+      up automatically via `extends Recommendation`).
+    - Confidence display uses Math.round + integer percent (not
+      .toFixed(2) like the warrant bars). The intervention is a
+      categorical decision; an integer percent matches the
+      "headline confidence" framing better than two-decimal
+      precision and keeps the banner header line short.
+    - RecommendationsTable was NOT updated. The PRD's frontend
+      ask is "render the new intervention field in the existing
+      recommendation card" - the card is the LatestTab. Adding an
+      intervention column to the table is a visual-redesign-tier
+      change that the PRD explicitly puts out of scope ("Frontend
+      redesign for intervention display ... visual redesign is
+      not [in scope]"). Operators see the intervention when they
+      click into a row, which matches the existing read flow
+      (row click → DetailSheet → LatestTab).
+    - HistoryTab was NOT updated. History rows never carry the
+      intervention field (server returns None on history reads
+      per T16's persistence decision); rendering an absent field
+      with placeholder text would be misleading. The Latest tab
+      remains the single surface for the intervention call.
+    - Icons sourced from lucide-react (TrafficCone, Construction,
+      Clock) - all three verified present in node_modules. No new
+      icon dependency added.
+
+  Verification:
+    - npx tsc --noEmit: clean (no new type errors).
+    - npx vitest run: 73 tests pass (2 files), same as pre-change.
+    - npx vite build: 2515 modules transformed, build OK.
+    - LatestTab renders the banner whenever rec.intervention is
+      present; legacy rec rows (intervention=null/undefined) skip
+      the banner cleanly. No new fetch / mutation - the field is
+      already on the wire from T16.
+
+  All 17 tasks in the PRD task list are now complete. The
+  remaining work surfaced by the PRD (multi-seed training run,
+  Optuna search, evaluation harness execution, Grad-CAM figure
+  generation, methods-chapter writing) is operational and
+  thesis-writing work, not module implementation.

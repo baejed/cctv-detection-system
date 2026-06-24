@@ -17,15 +17,16 @@ import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
   BarChart3, MapPin, Users, LogOut,
-  Wifi, WifiOff, Loader2, ServerCrash, Video,
+  Wifi, WifiOff, Loader2, ServerCrash, Video, Camera,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const NAV_ITEMS = [
-  { to: '/',        label: 'Intersections', icon: MapPin,    end: true },
-  { to: '/reports', label: 'Reports',       icon: BarChart3           },
-  { to: '/videos',  label: 'Videos',        icon: Video               },
-  { to: '/users',   label: 'Users',         icon: Users               },
+  { to: '/',        label: 'Dashboard', icon: MapPin,    end: true },
+  { to: '/cameras', label: 'Cameras',   icon: Camera              },
+  { to: '/reports', label: 'Reports',   icon: BarChart3           },
+  { to: '/videos',  label: 'Videos',    icon: Video               },
+  { to: '/users',   label: 'Users',     icon: Users               },
 ];
 
 const SSE_INDICATOR: Record<SSEStatus, { icon: React.ReactNode; label: string; color: string; tip: string }> = {

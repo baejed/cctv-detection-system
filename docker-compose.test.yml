@@ -11,6 +11,7 @@ services:
   timescaledb:
     image: timescale/timescaledb:latest-pg16
     container_name: eyegila-test-db
+    shm_size: '512mb'
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres

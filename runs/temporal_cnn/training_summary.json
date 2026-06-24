@@ -1,0 +1,38 @@
+{
+  "args": {
+    "output_dir": "runs/temporal_cnn",
+    "n_intersections": 30,
+    "n_days": 90,
+    "n_train_intersections": 21,
+    "n_val_intersections": 4,
+    "epochs": 30,
+    "batch_size": 64,
+    "lr": 0.001,
+    "weight_decay": 1e-05,
+    "dropout": 0.3,
+    "patience": 5,
+    "seeds": [
+      0
+    ],
+    "data_seed": 42,
+    "split_seed": 42,
+    "device": "cpu",
+    "loss_type": "uncertainty"
+  },
+  "split_sizes": {
+    "train": 3780,
+    "val": 720,
+    "test": 900
+  },
+  "per_seed": [
+    {
+      "seed": 0,
+      "checkpoint": "runs/temporal_cnn/temporal_cnn_seed0.pt",
+      "best_epoch": 29,
+      "best_val_loss": -0.848597870932685,
+      "final_train_loss": -0.6924742924965034,
+      "final_val_loss": -0.8466323720084297,
+      "epochs_run": 30
+    }
+  ]
+}

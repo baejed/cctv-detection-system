@@ -112,16 +112,10 @@ export function UsersPage() {
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold tracking-tight">Users</h1>
-        <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={() => { setAuthed(false); setAdminKey(''); }}>
-            <KeyRound data-icon="inline-start" />
-            Change Key
-          </Button>
-          <Button size="sm" onClick={openCreate}>
-            <Plus data-icon="inline-start" />
-            Add User
-          </Button>
-        </div>
+        <Button size="sm" onClick={openCreate}>
+          <Plus data-icon="inline-start" />
+          Add User
+        </Button>
       </div>
 
       <Card>

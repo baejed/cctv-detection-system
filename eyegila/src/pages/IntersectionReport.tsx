@@ -3,7 +3,8 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { intersectionsApi } from '@/services/intersections';
 import { streetsApi } from '@/services/streets';
 import { recommendationsApi, type RecommendationResponse } from '@/services/recommendations';
-import { simulationApi, type SimulationResponse, type SimulationChunk } from '@/services/simulation';
+import { simulationApi, type SimulationResponse } from '@/services/simulation';
+import { selectPeakChunk } from '@/lib/simulation';
 import { timingApi, type TimingChunk } from '@/services/timing';
 import type { Intersection, Street } from '@/types';
 import { Button } from '@/components/ui/button';
@@ -21,11 +22,6 @@ import { cn } from '@/lib/utils';
 function fmt(n: number | null | undefined, unit = 's'): string {
   if (n == null) return '-';
   return `${n.toFixed(1)}${unit}`;
-}
-
-function pickPeakChunk(sim: SimulationResponse | null): SimulationChunk | null {
-  if (!sim || sim.chunks.length === 0) return null;
-  return [...sim.chunks].sort((a, b) => b.volume_pcu_hr - a.volume_pcu_hr)[0] ?? null;
 }
 
 export function IntersectionReportPage() {
@@ -82,7 +78,7 @@ export function IntersectionReportPage() {
     );
   }
 
-  const peak = pickPeakChunk(sim);
+  const peak = selectPeakChunk(sim);
   // Pick the timing chunk that matches the peak sim chunk, else first available.
   const recommendedTiming = peak
     ? (timing.find(t => t.chunk_name === peak.chunk_name) ?? timing[0] ?? null)

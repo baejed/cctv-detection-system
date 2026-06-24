@@ -1,1 +1,13 @@
-The 2d/3d simulation should work properly. It should be clear how much time will be saved by adding a lot of traffic. I don't see anything on 3d. It should have complete physics simulation with collision and follow the traffic light states. If that doesn't work, there's no way to justify the time saved. If not possible, just tell me. we have a lot of data, but we are not really showing. We are just telling. Maybe this is because of the test data from --scenario? Let's improve that test data also. Reset all data and run the script for me. 
+New note
+Add shortcut to signal timing page when selecting intersection from the map
+
+When selecting a time range in the bar graph, divide the total vehicle count found in that range by the length of the range in hours to get vehicles per hour, then feed that rate to the simulation
+
+Button to redirect from the selected intersection to its report page.
+
+We also need to have the report page and the print on Intersection Detail Page to have a conculsion or summary but for technical people. We already have something technical, we need to figure out how to communicate it now.
+
+There should also be an easy way to see the traffic light that needs to be changed like an overview that people can act on.
+
+
+Also, is it possible to have a way to have actual noises of cars and horns etc on 3d simulation

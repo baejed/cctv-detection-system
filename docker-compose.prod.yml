@@ -19,6 +19,9 @@ services:
     image: timescale/timescaledb:latest-pg16
     container_name: timescaledb
     restart: always
+    # /dev/shm size for parallel queries / hash aggregates. Without this the
+    # SSE aggregation rollup hits "could not resize shared memory segment".
+    shm_size: '2gb'
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}

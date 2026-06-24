@@ -6,8 +6,9 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
-import { CheckCircle2, RefreshCw, Loader2, ArrowUp, ArrowDown, BarChart2 } from 'lucide-react';
+import { CheckCircle2, RefreshCw, Loader2, ArrowUp, ArrowDown, BarChart2, TrafficCone, Construction, Clock } from 'lucide-react';
 import { statusBucket, BUCKET_LABEL, BUCKET_BADGE_CLASS } from './statusBucket';
+import type { InterventionClass } from '@/types';
 
 export type SortKey =
   | 'name' | 'status'
@@ -48,6 +49,7 @@ export function RecommendationsTable({
           <TableRow>
             <Th label="Intersection"  k="name"      sort={sort} onClick={toggleSort} />
             <Th label="Status"        k="status"    sort={sort} onClick={toggleSort} />
+            <TableHead className="whitespace-nowrap" title="Recommended structural intervention (multi-task CNN)">Action</TableHead>
             <Th label="W1"            k="w1"        sort={sort} onClick={toggleSort} numeric />
             <Th label="W2"            k="w2"        sort={sort} onClick={toggleSort} numeric />
             <Th label="W4"            k="w4"        sort={sort} onClick={toggleSort} numeric />
@@ -77,6 +79,7 @@ export function RecommendationsTable({
                     {BUCKET_LABEL[bucket]}
                   </Badge>
                 </TableCell>
+                <InterventionCell intervention={rec.intervention} />
                 <ProbCell met={rec.warrant_1_met} value={rec.warrant_1_confidence} />
                 <ProbCell met={rec.warrant_2_met} value={rec.warrant_2_confidence} />
                 <ProbCell met={rec.warrant_4_met} value={rec.warrant_4_confidence} />
@@ -157,6 +160,31 @@ function NumCell({ value }: { value: number | null }) {
   return (
     <TableCell className="text-right tabular-nums text-muted-foreground">
       {value ?? '-'}
+    </TableCell>
+  );
+}
+
+export const INTERVENTION_CHIP: Record<InterventionClass, { Icon: typeof TrafficCone; label: string; className: string }> = {
+  signalize:     { Icon: TrafficCone,  label: 'Signalize',  className: 'border-emerald-500 text-emerald-700 bg-emerald-50 dark:bg-emerald-950/30 dark:text-emerald-300' },
+  road_widening: { Icon: Construction, label: 'Widen',      className: 'border-amber-500  text-amber-700  bg-amber-50  dark:bg-amber-950/30  dark:text-amber-300' },
+  timing_only:   { Icon: Clock,        label: 'Timing',     className: 'border-border     text-muted-foreground' },
+};
+
+export function interventionConfidencePercent(confidence: number): number {
+  return Math.round(confidence * 100);
+}
+
+function InterventionCell({ intervention }: { intervention: { class: InterventionClass; confidence: number } | null }) {
+  if (!intervention) {
+    return <TableCell><span className="text-muted-foreground text-[10px]">-</span></TableCell>;
+  }
+  const meta = INTERVENTION_CHIP[intervention.class];
+  return (
+    <TableCell>
+      <Badge variant="outline" className={cn('text-[10px] gap-1', meta.className)} title={`${interventionConfidencePercent(intervention.confidence)}% confidence`}>
+        <meta.Icon className="size-3" />
+        {meta.label}
+      </Badge>
     </TableCell>
   );
 }

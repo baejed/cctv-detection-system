@@ -257,7 +257,7 @@ describe('Recommendation type', () => {
     major_volume: 1200, minor_volume: 200, peds: 10,
     vpm: 25, phf: 0.87, hour_start: '2026-06-15T07:00:00Z',
     notes: null, generated_at: '2026-06-15T08:00:00Z',
-    timing_cycle: 90, timing_chunk: 'AM Peak',
+    timing_cycle: 90, timing_chunk: 'AM Rush',
   };
 
   it('all confidence values are in [0, 1]', () => {
@@ -362,7 +362,7 @@ describe('statusBucket()', () => {
 
 describe('SimulationChunk', () => {
   const chunk = {
-    chunk_name: 'AM Peak',
+    chunk_name: 'AM Rush',
     delay_before: 12.3,
     delay_after: 8.7,
     los_before: 'B',

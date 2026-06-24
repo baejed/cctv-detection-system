@@ -1,0 +1,197 @@
+{
+  "model_dir": "runs/temporal_cnn",
+  "test_size": 900,
+  "per_seed": [
+    {
+      "seed": 0,
+      "checkpoint": "runs/temporal_cnn/temporal_cnn_seed0.pt",
+      "warrants": [
+        {
+          "name": "w1",
+          "auc": 0.9842795158712034,
+          "f1": 0.8091168091168092,
+          "positive_rate": 0.16111111111111112
+        },
+        {
+          "name": "w2",
+          "auc": 0.9766635419286493,
+          "f1": 0.8257372654155496,
+          "positive_rate": 0.20333333333333334
+        },
+        {
+          "name": "w3",
+          "auc": 0.9892984542211652,
+          "f1": 0.7967479674796748,
+          "positive_rate": 0.06555555555555556
+        },
+        {
+          "name": "w4",
+          "auc": 0.9561915887850467,
+          "f1": 0.044444444444444446,
+          "positive_rate": 0.04888888888888889
+        },
+        {
+          "name": "w_local_2",
+          "auc": null,
+          "f1": 0.0,
+          "positive_rate": 0.0
+        },
+        {
+          "name": "w_local_3",
+          "auc": 0.9993359797906892,
+          "f1": 0.935672514619883,
+          "positive_rate": 0.09444444444444444
+        }
+      ],
+      "intervention": {
+        "classes": [
+          "signalize",
+          "road_widening",
+          "timing_only"
+        ],
+        "confusion_matrix": [
+          [
+            152,
+            12,
+            14
+          ],
+          [
+            0,
+            37,
+            0
+          ],
+          [
+            53,
+            9,
+            623
+          ]
+        ],
+        "per_class_precision": {
+          "signalize": 0.7414634146341463,
+          "road_widening": 0.6379310344827587,
+          "timing_only": 0.978021978021978
+        },
+        "per_class_recall": {
+          "signalize": 0.8539325842696629,
+          "road_widening": 1.0,
+          "timing_only": 0.9094890510948905
+        },
+        "per_class_f1": {
+          "signalize": 0.793733681462141,
+          "road_widening": 0.7789473684210526,
+          "timing_only": 0.9425113464447806
+        },
+        "accuracy": 0.9022222222222223,
+        "macro_f1": 0.8383974654426581
+      }
+    }
+  ],
+  "aggregated_warrants": {
+    "w1": {
+      "auc_mean": 0.9842795158712034,
+      "auc_std": 0.0,
+      "auc_n_seeds": 1,
+      "f1_mean": 0.8091168091168092,
+      "f1_std": 0.0,
+      "positive_rate_mean": 0.16111111111111112
+    },
+    "w2": {
+      "auc_mean": 0.9766635419286493,
+      "auc_std": 0.0,
+      "auc_n_seeds": 1,
+      "f1_mean": 0.8257372654155496,
+      "f1_std": 0.0,
+      "positive_rate_mean": 0.20333333333333334
+    },
+    "w3": {
+      "auc_mean": 0.9892984542211652,
+      "auc_std": 0.0,
+      "auc_n_seeds": 1,
+      "f1_mean": 0.7967479674796748,
+      "f1_std": 0.0,
+      "positive_rate_mean": 0.06555555555555556
+    },
+    "w4": {
+      "auc_mean": 0.9561915887850467,
+      "auc_std": 0.0,
+      "auc_n_seeds": 1,
+      "f1_mean": 0.044444444444444446,
+      "f1_std": 0.0,
+      "positive_rate_mean": 0.04888888888888889
+    },
+    "w_local_2": {
+      "auc_mean": null,
+      "auc_std": 0.0,
+      "auc_n_seeds": 0,
+      "f1_mean": 0.0,
+      "f1_std": 0.0,
+      "positive_rate_mean": 0.0
+    },
+    "w_local_3": {
+      "auc_mean": 0.9993359797906892,
+      "auc_std": 0.0,
+      "auc_n_seeds": 1,
+      "f1_mean": 0.935672514619883,
+      "f1_std": 0.0,
+      "positive_rate_mean": 0.09444444444444444
+    }
+  },
+  "aggregated_intervention": {
+    "classes": [
+      "signalize",
+      "road_widening",
+      "timing_only"
+    ],
+    "accuracy_mean": 0.9022222222222223,
+    "accuracy_std": 0.0,
+    "macro_f1_mean": 0.8383974654426581,
+    "macro_f1_std": 0.0,
+    "per_class_precision_mean": {
+      "signalize": 0.7414634146341463,
+      "road_widening": 0.6379310344827587,
+      "timing_only": 0.978021978021978
+    },
+    "per_class_precision_std": {
+      "signalize": 0.0,
+      "road_widening": 0.0,
+      "timing_only": 0.0
+    },
+    "per_class_recall_mean": {
+      "signalize": 0.8539325842696629,
+      "road_widening": 1.0,
+      "timing_only": 0.9094890510948905
+    },
+    "per_class_recall_std": {
+      "signalize": 0.0,
+      "road_widening": 0.0,
+      "timing_only": 0.0
+    },
+    "per_class_f1_mean": {
+      "signalize": 0.793733681462141,
+      "road_widening": 0.7789473684210526,
+      "timing_only": 0.9425113464447806
+    },
+    "per_class_f1_std": {
+      "signalize": 0.0,
+      "road_widening": 0.0,
+      "timing_only": 0.0
+    },
+    "summed_confusion_matrix": [
+      [
+        152,
+        12,
+        14
+      ],
+      [
+        0,
+        37,
+        0
+      ],
+      [
+        53,
+        9,
+        623
+      ]
+    ]
+  }
+}

@@ -7,11 +7,11 @@ from sqlalchemy.orm import Session
 from common.models import TodChunk
 
 TOD_DEFAULTS: list[tuple[str, int, int]] = [
-    ("Early Morning", 0,    360),   # 00:00 – 06:00
-    ("AM Peak",       360,  540),   # 06:00 – 09:00
-    ("Midday",        540,  720),   # 09:00 – 12:00
-    ("PM Peak",       720,  1080),  # 12:00 – 18:00
-    ("Night",         1080, 1440),  # 18:00 – 24:00
+    ("Overnight", 0,    360),   # 00:00 – 06:00
+    ("AM Rush",   360,  540),   # 06:00 – 09:00
+    ("Midday",    540,  720),   # 09:00 – 12:00
+    ("PM Rush",   720,  1080),  # 12:00 – 18:00
+    ("Evening",   1080, 1440),  # 18:00 – 24:00
 ]
 
 
